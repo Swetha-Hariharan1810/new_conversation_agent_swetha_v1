@@ -25,8 +25,12 @@ def get_fast_path_route(state: State) -> str | None:
     if signal.status == AgentStatus.COMPLETE and signal.closure_requested:
         return "closure_agent"
 
-    # After verification — no domain agents, go to closure
+    # After verification — route to the correct domain agent
     if member_verified and active_agent == "verification_agent":
+        intent = state.get("call_intent", "")
+        if intent == "provider_services":
+            return "provider_search_agent"
+        # No other domain agents implemented yet → closure
         return "closure_agent"
 
     return None

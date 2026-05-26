@@ -87,3 +87,15 @@ class State(TypedDict):
     new_intent_detected: str
     offtopic_global_count: int
     closure_requested: bool
+
+    # ── Provider Search context ───────────────────────────────────────────────
+    provider_type: str
+    zip_code_used: str
+    provider_list_sent: bool
+    delivery_timestamp: str
+    fax_confirmed: bool
+    fax_update_requested: bool
+    email_confirmed: bool
+    email_update_requested: bool
+    delivery_method: str
+    benefits_offer_made: bool

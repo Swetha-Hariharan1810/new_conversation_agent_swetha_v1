@@ -26,6 +26,7 @@ class AgentNode(str, Enum):
     VERIFICATION = "verification_agent"
     ESCALATION = "escalation_agent"
     CLOSURE = "closure_agent"
+    PROVIDER_SEARCH = "provider_search_agent"
 
 
 ALL_AGENT_NODES: list[str] = [n.value for n in AgentNode]

@@ -17,6 +17,7 @@ REGISTERED_AGENTS = {
     "verification_agent",
     "escalation_agent",
     "closure_agent",
+    "provider_search_agent",
 }
 
 FORBIDDEN_AGENTS = {"intake_agent"}
