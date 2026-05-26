@@ -65,3 +65,39 @@ async def update_member_contact(
     except Exception:
         logger.exception("update_member_contact failed")
         return False
+
+
+@tool
+async def update_zip_code(member_id: str, zip_code: str) -> bool:
+    """Update ZIP code for a verified member."""
+    from agent.storage.queries.members import update_member_contact as _update
+
+    try:
+        return await _update(member_id, zip_code=zip_code)
+    except Exception:
+        logger.exception("update_zip_code failed")
+        return False
+
+
+@tool
+async def dispatch_provider_list(
+    member_id: str,
+    provider_type: str,
+    zip_code: str,
+    delivery_method: str,
+    delivery_address: str,
+) -> bool:
+    """Dispatch an in-network provider list to the member via fax or email."""
+    from agent.storage.queries.providers import send_provider_list
+
+    try:
+        return await send_provider_list(
+            member_id=member_id,
+            provider_type=provider_type,
+            zip_code=zip_code,
+            delivery_method=delivery_method,
+            delivery_address=delivery_address,
+        )
+    except Exception:
+        logger.exception("dispatch_provider_list failed")
+        return False

@@ -7,8 +7,10 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
 from agent.agents.closure.agent import closure_agent
+from agent.agents.delivery_management.agent import delivery_management_agent
 from agent.agents.escalation.agent import escalation_agent
 from agent.agents.intake.agent import intake_agent
+from agent.agents.provider_search.agent import provider_search_agent
 from agent.agents.verification.agent import verification_agent
 from agent.logger import get_logger
 from agent.orchestration.orchestration import (
@@ -97,11 +99,15 @@ def build_graph():
     g.add_node(AgentNode.VERIFICATION.value, verification_agent)
     g.add_node(AgentNode.ESCALATION.value, escalation_agent)
     g.add_node(AgentNode.CLOSURE.value, closure_agent)
+    g.add_node(AgentNode.PROVIDER_SEARCH.value, provider_search_agent)
+    g.add_node(AgentNode.DELIVERY_MANAGEMENT.value, delivery_management_agent)
     g.add_conditional_edges(AgentNode.INTAKE.value, intake_routing)
     for node in [
         AgentNode.VERIFICATION.value,
         AgentNode.ESCALATION.value,
         AgentNode.CLOSURE.value,
+        AgentNode.PROVIDER_SEARCH.value,
+        AgentNode.DELIVERY_MANAGEMENT.value,
     ]:
         g.add_conditional_edges(node, conditional_routing)
     g.add_conditional_edges("orchestrator", orchestrator_routing)

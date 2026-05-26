@@ -43,9 +43,10 @@ You NEVER answer member questions, collect information, or call APIs.
 | Agent | When to invoke |
 |---|---|
 | `verification_agent` | Identity not yet verified — always the first domain step |
-| `provider_search_agent` | Verified + intent = provider_services + provider list not yet sent |
+| `provider_search_agent` | Verified + intent = provider_services — collect provider type and ZIP, then hand off to delivery management |
+| `delivery_management_agent` | Collect delivery preference (fax/email), confirm contact details, dispatch provider list, and make proactive benefits offer |
 | `claim_adjustment_agent` | Verified + intent = claim_services + claim flow not yet complete |
-| `benefits_agent` | Member accepted the benefits offer from provider search, OR member directly asks about benefits/coverage |
+| `benefits_agent` | Member accepted the proactive benefits offer from delivery management, OR member directly asks about benefits/coverage |
 | `care_wellness_agent` | Benefits explained + member accepted Care Coach offer, OR member raises wellness/rewards question |
 | `follow_up_agent` | Domain agent completed + member has a follow-up, clarification, or says "one more thing" about already-covered topics |
 | `escalation_agent` | Member requested human, max retries exceeded, agent blocked, or tool failure prevents resolution |
@@ -94,12 +95,14 @@ Route based on `call_intent`:
 
 ---
 
-### Priority 5 — Provider search complete → follow-up offer
-`active_agent = provider_search_agent` AND `provider_list_sent = true`
+### Priority 5 — Delivery management complete → follow-up routing
+`active_agent = delivery_management_agent` AND `signal_status = complete`
 
-Member response to benefits offer:
-- Member accepted → `benefits_agent`
-- Member declined → check intent queue; if empty → `closure_agent`
+> Note: `provider_search_agent` routes directly to `delivery_management_agent` via a deterministic graph edge (no orchestrator involvement). The orchestrator only sees `delivery_management_agent` completing.
+
+- `proactive_offer_available = true` → `benefits_agent`
+- `proactive_offer_available = false` AND intent queue not empty → route to appropriate domain agent for next queued intent
+- Otherwise → `closure_agent`
 
 ---
 
@@ -173,7 +176,7 @@ Set `message_override` to gracefully transition: "Is there anything else I can h
 
 | `call_intent` / queued intent | Domain agent |
 |---|---|
-| `provider_services` | `provider_search_agent` |
+| `provider_services` | `provider_search_agent` → `delivery_management_agent` (graph-routed) |
 | `claim_services` | `claim_adjustment_agent` |
 | `benefits_inquiry` | `benefits_agent` |
 | `care_wellness` | `care_wellness_agent` |

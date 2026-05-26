@@ -135,3 +135,72 @@ def get_ambiguous(result: dict, slot: str) -> int:
     """Return ambiguous_counts[slot] from result, or 0."""
     counts = result.get("ambiguous_counts") or {}
     return counts.get(slot, 0)
+
+
+# ---------------------------------------------------------------------------
+# Provider search / delivery management state factories
+# ---------------------------------------------------------------------------
+
+
+def make_provider_search_state(**overrides) -> dict:
+    """State after verification, ready for provider_search_agent."""
+    defaults: dict = {
+        "call_intent": "provider_services",
+        "member_status_verify": True,
+        "provider_type": "",
+        "zip_code_used": "",
+        "zip_code": "12139",
+        "fax": "6175554101",
+        "email": "emily@example.com",
+    }
+    defaults.update(overrides)
+    member_status_verify = defaults.pop("member_status_verify", True)
+    state = make_verified_state(**defaults)
+    state["member_status_verify"] = member_status_verify
+    return state
+
+
+def make_delivery_ready_state(**overrides) -> dict:
+    """State after provider type and ZIP collected, ready for delivery_management_agent."""
+    defaults: dict = {
+        "call_intent": "provider_services",
+        "member_status_verify": True,
+        "provider_type": "Primary Care Physician",
+        "zip_code_used": "12139",
+        "zip_code": "12139",
+        "fax": "6175554101",
+        "email": "emily@example.com",
+        "delivery_method": "",
+        "provider_list_sent": False,
+        "benefits_offer_made": False,
+        "delivery_timestamp": "",
+    }
+    defaults.update(overrides)
+    member_status_verify = defaults.pop("member_status_verify", True)
+    state = make_verified_state(**defaults)
+    state["member_status_verify"] = member_status_verify
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Agent-specific assertion helpers
+# ---------------------------------------------------------------------------
+
+
+def is_provider_search_ask(result: dict) -> bool:
+    """Result is waiting for caller input inside provider_search_agent."""
+    return result.get("is_interrupt") is True and result.get("next_node") == "provider_search_agent"
+
+
+def is_delivery_ask(result: dict) -> bool:
+    """Result is waiting for caller input inside delivery_management_agent."""
+    return result.get("is_interrupt") is True and result.get("next_node") == "delivery_management_agent"
+
+
+def is_delivery_complete(result: dict) -> bool:
+    """Result signals delivery management complete (provider list sent, back to orchestrator)."""
+    return (
+        result.get("provider_list_sent") is True
+        and result.get("is_interrupt") is False
+        and result.get("next_node") == "orchestrator"
+    )
