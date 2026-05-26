@@ -1,0 +1,486 @@
+"""
+test_provider_search_agent_mock.py — Mock test suite for ProviderSearchAgent.
+
+No external credentials required. Covers happy paths, guard triggers,
+ZIP confirmation flow, ZIP update flow, and retry exhaustion.
+
+Run all:    pytest src/agent/tests/test_provider_search_agent_mock.py -v
+By marker:  pytest src/agent/tests/test_provider_search_agent_mock.py -v -m happy
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from agent.agents.provider_search.agent import ProviderSearchAgent
+from agent.llm.schema import EventType, GuardType, WorkerResult
+from agent.tests.fixtures import make_verified_state
+
+# ---------------------------------------------------------------------------
+# State helpers
+# ---------------------------------------------------------------------------
+
+ZIP_ON_FILE = "12139"
+PROVIDER = "Primary Care Physician"
+
+
+def make_ps_state(**overrides) -> dict:
+    """Verified state ready for provider search."""
+    defaults: dict = {
+        "call_intent": "provider_services",
+        "provider_type": "",
+        "zip_code_used": "",
+        "zip_code": ZIP_ON_FILE,
+    }
+    defaults.update(overrides)
+    # member_status_verify may be overridden (e.g. to False); extract it before calling
+    # make_verified_state so it doesn't collide with the hardcoded True in that helper.
+    member_status_verify = defaults.pop("member_status_verify", True)
+    state = make_verified_state(**defaults)
+    state["member_status_verify"] = member_status_verify
+    return state
+
+
+def _msg(role: str, text: str) -> dict:
+    return {"role": role, "content": text}
+
+
+# ---------------------------------------------------------------------------
+# WorkerResult factories
+# ---------------------------------------------------------------------------
+
+EMPTY_ANSWERED = WorkerResult(event_type=EventType.ANSWERED)
+
+
+def answered_provider(pt: str = "Primary Care Physician") -> WorkerResult:
+    return WorkerResult(
+        extracted={"provider_type": pt},
+        event_type=EventType.ANSWERED,
+        guard=GuardType.NONE,
+        guard_confidence=0.0,
+    )
+
+
+def answered_zip_yes() -> WorkerResult:
+    return WorkerResult(
+        extracted={"zip_confirmed": "yes"},
+        event_type=EventType.ANSWERED,
+        guard=GuardType.NONE,
+        guard_confidence=0.0,
+    )
+
+
+def answered_zip_no() -> WorkerResult:
+    return WorkerResult(
+        extracted={"zip_confirmed": "no"},
+        event_type=EventType.ANSWERED,
+        guard=GuardType.NONE,
+        guard_confidence=0.0,
+    )
+
+
+def answered_new_zip(zip_code: str = "90210") -> WorkerResult:
+    return WorkerResult(
+        extracted={"zip_code": zip_code},
+        event_type=EventType.ANSWERED,
+        guard=GuardType.NONE,
+        guard_confidence=0.0,
+    )
+
+
+def make_guard(guard: GuardType) -> WorkerResult:
+    return WorkerResult(extracted=None, event_type=EventType.NONE, guard=guard, guard_confidence=0.95)
+
+
+# ---------------------------------------------------------------------------
+# Runner + assertion helpers
+# ---------------------------------------------------------------------------
+
+
+async def _run(state: dict) -> dict:
+    return await ProviderSearchAgent.from_state(state).execute(state)
+
+
+def is_ask(result: dict) -> bool:
+    return result.get("is_interrupt") is True and result.get("next_node") == "provider_search_agent"
+
+
+def is_escalation(result: dict) -> bool:
+    return result.get("next_node") == "escalation_agent" and result.get("is_interrupt") is False
+
+
+def is_done(result: dict) -> bool:
+    """Result signals search complete → delivery_management_agent."""
+    return (
+        result.get("next_node") == "delivery_management_agent"
+        and result.get("is_interrupt") is False
+    )
+
+
+def get_awaiting(result: dict) -> str:
+    return result.get("awaiting_slot", "")
+
+
+def get_response(result: dict) -> str:
+    msg = result.get("messages", {})
+    if isinstance(msg, dict):
+        return msg.get("content", "")
+    if isinstance(msg, list) and msg:
+        last = msg[-1]
+        return last.get("content", "") if isinstance(last, dict) else str(last)
+    return ""
+
+
+def advance(state: dict, result: dict, user_text: str | None = None) -> dict:
+    new_state = {**state}
+    for key, val in result.items():
+        if key == "messages":
+            continue
+        new_state[key] = val
+    messages = list(state.get("messages") or [])
+    if isinstance(result.get("messages"), dict):
+        messages.append(result["messages"])
+    if user_text is not None:
+        messages.append({"role": "user", "content": user_text})
+    new_state["messages"] = messages
+    return new_state
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_extraction(monkeypatch) -> AsyncMock:
+    fake_llm = MagicMock()
+    monkeypatch.setattr("agent.agents.provider_search.agent.get_extraction_llm", lambda: fake_llm)
+    mock = AsyncMock(return_value=EMPTY_ANSWERED)
+    monkeypatch.setattr("agent.agents.provider_search.agent.extract_provider_search_decision", mock)
+    return mock
+
+
+@pytest.fixture
+def mock_zip_update(monkeypatch) -> AsyncMock:
+    mock = AsyncMock(return_value=None)
+    monkeypatch.setattr("agent.agents.provider_search.agent.update_zip_in_salesforce", mock)
+    return mock
+
+
+@pytest.fixture
+def mock_recovery(monkeypatch) -> AsyncMock:
+    async def _fn(*, slot_name, attempt, guard, last_messages, **kwargs):
+        return f"[RECOVERY:{slot_name}:attempt{attempt}:guard{guard}]"
+
+    mock = AsyncMock(side_effect=_fn)
+    monkeypatch.setattr("agent.llm.response_generator.generate_recovery_message", mock)
+    return mock
+
+
+@pytest.fixture(autouse=True)
+def _base_mocks(mock_extraction, mock_zip_update, mock_recovery):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# SECTION 1 — Happy path (marker: happy)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_happy_not_verified_escalates(mock_extraction) -> None:
+    state = make_ps_state(member_status_verify=False)
+    result = await _run(state)
+    assert is_escalation(result)
+    mock_extraction.assert_not_called()
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_happy_first_turn_asks_provider_type(mock_extraction) -> None:
+    mock_extraction.return_value = EMPTY_ANSWERED
+    state = make_ps_state(messages=[_msg("user", "hi")])
+    result = await _run(state)
+    assert is_ask(result), "First turn must ask for provider type"
+    assert get_awaiting(result) == "provider_type"
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_happy_provider_then_zip_confirm_yes(mock_extraction, mock_zip_update) -> None:
+    """Full happy path: provider_type → zip confirm yes → done."""
+    # Turn 1: ask provider type
+    mock_extraction.return_value = EMPTY_ANSWERED
+    state = make_ps_state(messages=[_msg("user", "I need a primary care doctor")])
+    result1 = await _run(state)
+    assert is_ask(result1)
+    assert get_awaiting(result1) == "provider_type"
+
+    # Turn 2: provide provider type
+    mock_extraction.return_value = answered_provider()
+    state2 = advance(state, result1, "primary care physician")
+    result2 = await _run(state2)
+    assert is_ask(result2), "After provider_type, should ask to confirm ZIP"
+    assert get_awaiting(result2) == "zip_confirmed"
+    assert ZIP_ON_FILE in get_response(result2)
+
+    # Turn 3: confirm ZIP
+    mock_extraction.return_value = answered_zip_yes()
+    state3 = advance(state2, result2, "yes")
+    result3 = await _run(state3)
+    assert is_done(result3), "After zip confirmed=yes, should complete"
+    assert result3.get("provider_type") == PROVIDER
+    assert result3.get("zip_code_used") == ZIP_ON_FILE
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_happy_zip_confirm_no_then_provide_new_zip(mock_extraction, mock_zip_update) -> None:
+    """Happy path: zip confirm no → provide new zip → done."""
+    state = make_ps_state(
+        provider_type=PROVIDER,
+        awaiting_slot="zip_confirmed",
+        messages=[_msg("assistant", f"Your ZIP is {ZIP_ON_FILE}, correct?"), _msg("user", "no")],
+    )
+    # Turn 1: decline ZIP
+    mock_extraction.return_value = answered_zip_no()
+    result1 = await _run(state)
+    assert is_ask(result1)
+    assert get_awaiting(result1) == "zip_code"
+
+    # Turn 2: provide new ZIP
+    mock_extraction.return_value = answered_new_zip("90210")
+    state2 = advance(state, result1, "nine oh two one oh")
+    result2 = await _run(state2)
+    assert is_done(result2)
+    assert result2.get("zip_code_used") == "90210"
+    mock_zip_update.assert_called_once()
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_happy_zip_inline_with_no(mock_extraction, mock_zip_update) -> None:
+    """Member says 'no, it's 90210' — inline ZIP provided with the no."""
+    state = make_ps_state(
+        provider_type=PROVIDER,
+        awaiting_slot="zip_confirmed",
+        messages=[_msg("assistant", f"ZIP is {ZIP_ON_FILE}?"), _msg("user", "no it's 90210")],
+    )
+    mock_extraction.return_value = WorkerResult(
+        extracted={"zip_code": "90210"},
+        event_type=EventType.ANSWERED,
+        guard=GuardType.NONE,
+        guard_confidence=0.0,
+    )
+    result = await _run(state)
+    assert is_done(result)
+    assert result.get("zip_code_used") == "90210"
+    mock_zip_update.assert_called_once()
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_happy_early_exit_both_slots_collected(mock_extraction) -> None:
+    """Re-entry with both slots already set — emit done immediately, no LLM call."""
+    state = make_ps_state(
+        provider_type=PROVIDER,
+        zip_code_used=ZIP_ON_FILE,
+    )
+    result = await _run(state)
+    assert is_done(result)
+    mock_extraction.assert_not_called()
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_happy_no_zip_on_file_goes_to_collect(mock_extraction) -> None:
+    """When zip_code is blank after provider_type, ask for new ZIP directly."""
+    state = make_ps_state(
+        provider_type=PROVIDER,
+        zip_code="",
+        awaiting_slot="",
+        messages=[_msg("user", "primary care")],
+    )
+    mock_extraction.return_value = EMPTY_ANSWERED
+    result = await _run(state)
+    assert is_ask(result)
+    assert get_awaiting(result) == "zip_code"
+
+
+# ---------------------------------------------------------------------------
+# SECTION 2 — Guard triggers (marker: guards)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guards
+@pytest.mark.asyncio
+async def test_guard_transfer_request(mock_extraction) -> None:
+    mock_extraction.return_value = make_guard(GuardType.TRANSFER_REQUEST)
+    state = make_ps_state(messages=[_msg("user", "I want to speak to someone")])
+    assert is_escalation(await _run(state))
+
+
+@pytest.mark.guards
+@pytest.mark.asyncio
+async def test_guard_abuse(mock_extraction) -> None:
+    mock_extraction.return_value = make_guard(GuardType.ABUSE)
+    state = make_ps_state(messages=[_msg("user", "you're terrible")])
+    assert is_escalation(await _run(state))
+
+
+@pytest.mark.guards
+@pytest.mark.asyncio
+async def test_guard_self_harm(mock_extraction) -> None:
+    mock_extraction.return_value = make_guard(GuardType.SELF_HARM)
+    state = make_ps_state(messages=[_msg("user", "I want to end it all")])
+    assert is_escalation(await _run(state))
+
+
+@pytest.mark.guards
+@pytest.mark.asyncio
+async def test_guard_interruption_asks_again(mock_extraction) -> None:
+    mock_extraction.return_value = make_guard(GuardType.INTERRUPTION)
+    state = make_ps_state(messages=[_msg("user", "can we do something else")])
+    result = await _run(state)
+    assert is_ask(result)
+
+
+# ---------------------------------------------------------------------------
+# SECTION 3 — ZIP confirmation retry exhaustion (marker: zip_retry)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.zip_retry
+@pytest.mark.asyncio
+async def test_zip_confirmed_first_failure_retries(mock_extraction) -> None:
+    mock_extraction.return_value = EMPTY_ANSWERED
+    state = make_ps_state(
+        provider_type=PROVIDER,
+        awaiting_slot="zip_confirmed",
+        messages=[_msg("assistant", f"ZIP is {ZIP_ON_FILE}?"), _msg("user", "uh")],
+    )
+    result = await _run(state)
+    assert is_ask(result)
+    assert get_awaiting(result) == "zip_confirmed"
+    assert not is_escalation(result)
+
+
+@pytest.mark.zip_retry
+@pytest.mark.asyncio
+async def test_zip_confirmed_second_failure_escalates(mock_extraction) -> None:
+    mock_extraction.return_value = EMPTY_ANSWERED
+    state = make_ps_state(
+        provider_type=PROVIDER,
+        awaiting_slot="zip_confirmed",
+        slot_attempts={"zip_confirmed": {"attempt_count": 1, "confirmed": False, "last_value": None}},
+        messages=[_msg("assistant", f"ZIP is {ZIP_ON_FILE}?"), _msg("user", "uh")],
+    )
+    result = await _run(state)
+    assert is_escalation(result)
+
+
+@pytest.mark.zip_retry
+@pytest.mark.asyncio
+async def test_provider_type_retry_exhaustion_escalates(mock_extraction) -> None:
+    mock_extraction.return_value = EMPTY_ANSWERED
+    state = make_ps_state(
+        awaiting_slot="provider_type",
+        slot_attempts={"provider_type": {"attempt_count": 2, "confirmed": False, "last_value": None}},
+        messages=[_msg("assistant", "What type of provider?"), _msg("user", "???")],
+    )
+    result = await _run(state)
+    assert is_escalation(result)
+
+
+# ---------------------------------------------------------------------------
+# SECTION 4 — ZIP update Salesforce failure (marker: sf_fail)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.sf_fail
+@pytest.mark.asyncio
+async def test_zip_update_sf_failure_escalates(mock_extraction, monkeypatch) -> None:
+    """If update_zip_in_salesforce returns an escalation dict, agent must return it."""
+    fake_escalation = {
+        "next_node": "escalation_agent",
+        "is_interrupt": False,
+        "messages": {"role": "assistant", "content": "Could not update ZIP"},
+        "slot_attempts": {},
+        "metadata_events": [],
+        "app_run_id": "",
+        "awaiting_slot": "",
+        "last_agent_signal": {},
+        "active_agent": "provider_search_agent",
+    }
+    monkeypatch.setattr(
+        "agent.agents.provider_search.agent.update_zip_in_salesforce",
+        AsyncMock(return_value=fake_escalation),
+    )
+    mock_extraction.return_value = answered_zip_no()
+    state = make_ps_state(
+        provider_type=PROVIDER,
+        awaiting_slot="zip_confirmed",
+        messages=[_msg("assistant", f"ZIP is {ZIP_ON_FILE}?"), _msg("user", "no")],
+    )
+    result1 = await _run(state)
+    assert is_ask(result1) and get_awaiting(result1) == "zip_code"
+
+    # Now provide new zip — SF update fails
+    mock_extraction.return_value = answered_new_zip("90210")
+    state2 = advance(state, result1, "90210")
+    result2 = await _run(state2)
+    assert is_escalation(result2)
+
+
+# ---------------------------------------------------------------------------
+# SECTION 5 — Response content (marker: response_check)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.response_check
+@pytest.mark.asyncio
+async def test_zip_confirm_message_contains_zip(mock_extraction) -> None:
+    """ZIP confirmation question must contain the ZIP on file."""
+    mock_extraction.return_value = answered_provider()
+    state = make_ps_state(
+        awaiting_slot="provider_type",
+        messages=[_msg("assistant", "What type of provider?"), _msg("user", "primary care")],
+    )
+    result = await _run(state)
+    assert is_ask(result)
+    assert ZIP_ON_FILE in get_response(result), "ZIP confirmation must mention the ZIP on file"
+
+
+@pytest.mark.response_check
+@pytest.mark.asyncio
+async def test_done_message_not_empty(mock_extraction, mock_zip_update) -> None:
+    """Completion bridge message must be non-empty."""
+    state = make_ps_state(
+        provider_type=PROVIDER,
+        awaiting_slot="zip_confirmed",
+        messages=[_msg("assistant", f"ZIP is {ZIP_ON_FILE}?"), _msg("user", "yes")],
+    )
+    mock_extraction.return_value = answered_zip_yes()
+    result = await _run(state)
+    assert is_done(result)
+    assert len(get_response(result)) > 0, "Completion bridge message must not be empty"
+
+
+@pytest.mark.response_check
+@pytest.mark.asyncio
+async def test_done_result_has_all_context_fields(mock_extraction) -> None:
+    """_signal_done must set provider_type, zip_code, zip_code_used."""
+    state = make_ps_state(
+        provider_type=PROVIDER,
+        awaiting_slot="zip_confirmed",
+        messages=[_msg("assistant", f"ZIP is {ZIP_ON_FILE}?"), _msg("user", "yes")],
+    )
+    mock_extraction.return_value = answered_zip_yes()
+    result = await _run(state)
+    assert is_done(result)
+    assert result.get("provider_type") == PROVIDER
+    assert result.get("zip_code") == ZIP_ON_FILE
+    assert result.get("zip_code_used") == ZIP_ON_FILE
