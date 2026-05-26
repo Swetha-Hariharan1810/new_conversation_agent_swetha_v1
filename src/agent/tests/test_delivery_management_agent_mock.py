@@ -639,3 +639,119 @@ async def test_completion_sets_all_context_fields(mock_extraction) -> None:
     assert result.get("benefits_offer_made") is True
     assert result.get("proactive_offer_available") is True
     assert "delivery_timestamp" in result
+
+
+# ---------------------------------------------------------------------------
+# SECTION 7 — Unhappy: invalid fax retries (marker: unhappy)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unhappy
+@pytest.mark.asyncio
+async def test_unhappy_invalid_fax_retries(mock_extraction) -> None:
+    """Member provides invalid fax digits (too short) → agent asks for a proper fax."""
+    mock_extraction.return_value = WorkerResult(
+        extracted={"fax": "41555"},  # only 5 digits — invalid
+        event_type=EventType.ANSWERED,
+        guard=GuardType.NONE,
+        guard_confidence=0.0,
+    )
+    state = make_dm_state(
+        delivery_method="fax",
+        awaiting_slot="fax_confirmed",
+        messages=[_msg("assistant", f"Fax is {FAX_ON_FILE}?"), _msg("user", "no, four one five five five")],
+    )
+    result = await _run(state)
+    assert is_ask(result)
+    assert get_awaiting(result) == "fax"
+    assert not is_escalation(result)
+
+
+# ---------------------------------------------------------------------------
+# SECTION 8 — Guard: interruption re-asks (marker: guards)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guards
+@pytest.mark.asyncio
+async def test_guard_interruption_reasks(mock_extraction) -> None:
+    """INTERRUPTION guard → re-ask current slot, do not escalate."""
+    mock_extraction.return_value = make_guard(GuardType.INTERRUPTION)
+    state = make_dm_state(messages=[_msg("user", "wait, can we do something else?")])
+    result = await _run(state)
+    assert is_ask(result)
+    assert not is_escalation(result)
+
+
+# ---------------------------------------------------------------------------
+# SECTION 9 — Corrections: fax mid-collection (marker: corrections)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.corrections
+@pytest.mark.asyncio
+async def test_correct_fax_mid_collection(mock_extraction, mock_dispatch, mock_fax_update) -> None:
+    """Member provides wrong fax, then corrects to a valid 10-digit number."""
+    # Turn 1: decline fax on file
+    mock_extraction.return_value = answered_contact_no()
+    state = make_dm_state(
+        delivery_method="fax",
+        awaiting_slot="fax_confirmed",
+        messages=[_msg("assistant", f"Fax is {FAX_ON_FILE}?"), _msg("user", "no")],
+    )
+    result1 = await _run(state)
+    assert is_ask(result1)
+    assert get_awaiting(result1) == "fax"
+
+    # Turn 2: provide correct 10-digit fax
+    mock_extraction.return_value = answered_new_fax("4155553211")
+    state2 = advance(state, result1, "four one five five five five three two one one")
+    result2 = await _run(state2)
+    assert is_ask(result2)
+    assert get_awaiting(result2) == "benefits_response"
+    assert result2.get("fax") == "4155553211"
+    mock_fax_update.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# SECTION 10 — Regression (marker: regression)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+@pytest.mark.asyncio
+async def test_delivery_timestamp_set_on_dispatch(mock_extraction, mock_dispatch) -> None:
+    """After dispatch, result must contain a non-empty delivery_timestamp string."""
+    mock_extraction.return_value = answered_contact_yes()
+    state = make_dm_state(
+        delivery_method="fax",
+        awaiting_slot="fax_confirmed",
+        messages=[_msg("assistant", f"Fax is {FAX_ON_FILE}?"), _msg("user", "yes")],
+    )
+    result = await _run(state)
+    assert is_ask(result)
+    assert get_awaiting(result) == "benefits_response"
+    ts = result.get("delivery_timestamp", "")
+    assert isinstance(ts, str) and len(ts) > 0, (
+        f"delivery_timestamp must be a non-empty string, got {ts!r}"
+    )
+
+
+@pytest.mark.regression
+@pytest.mark.asyncio
+async def test_fax_in_state_after_update(mock_extraction, mock_dispatch, mock_fax_update) -> None:
+    """After fax update, new fax number must be persisted in the result."""
+    mock_extraction.return_value = answered_new_fax("4155553211")
+    state = make_dm_state(
+        delivery_method="fax",
+        awaiting_slot="fax",
+        fax="",
+        messages=[_msg("assistant", "Please provide the new fax number."), _msg("user", "4155553211")],
+    )
+    result = await _run(state)
+    assert is_ask(result)
+    assert get_awaiting(result) == "benefits_response"
+    assert result.get("fax") == "4155553211", (
+        f"New fax must be stored in result, got {result.get('fax')!r}"
+    )
+    mock_fax_update.assert_called_once()

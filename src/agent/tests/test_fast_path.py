@@ -105,3 +105,59 @@ def test_no_fast_path_when_already_in_domain_agent() -> None:
     # branch does NOT fire; no closure_requested so closure branch doesn't
     # fire either → fast path returns None (LLM orchestrator decides).
     assert get_fast_path_route(state) is None
+
+
+# ---------------------------------------------------------------------------
+# End-to-end routing simulation (marker: regression)
+# ---------------------------------------------------------------------------
+
+
+def test_full_provider_flow_routing() -> None:
+    """
+    Simulate next_node chains through intake → verification → provider_search
+    → delivery_management using state manipulation only (no LLM calls).
+
+    Asserts that each transition produces the expected next_node at each step:
+      1. After verification completes → fast_path routes to provider_search_agent
+      2. While provider_search is running → fast_path returns None
+         (graph routes provider_search → delivery_management via next_node override)
+      3. While delivery_management is running → fast_path returns None
+         (orchestrator LLM handles delivery_management complete → benefits_agent)
+    """
+    # Step 1: verification just completed for provider_services intent
+    state_post_verify = _state(
+        member_status_verify=True,
+        active_agent="verification_agent",
+        call_intent="provider_services",
+        last_agent_signal={"status": "complete", "closure_requested": False},
+    )
+    assert get_fast_path_route(state_post_verify) == "provider_search_agent", (
+        "After verification, provider_services must route to provider_search_agent"
+    )
+
+    # Step 2: provider_search_agent running (complete, next_node already set to
+    # delivery_management_agent by _signal_done's context_updates override)
+    # The graph's conditional_routing reads next_node directly — fast_path is None.
+    state_ps_complete = _state(
+        member_status_verify=True,
+        active_agent="provider_search_agent",
+        call_intent="provider_services",
+        last_agent_signal={"status": "complete", "closure_requested": False},
+    )
+    assert get_fast_path_route(state_ps_complete) is None, (
+        "provider_search complete is graph-routed to delivery_management_agent; "
+        "fast_path must not intercept"
+    )
+
+    # Step 3: delivery_management_agent completed — orchestrator LLM decides
+    # (proactive_offer_available=True → benefits_agent via Priority 5 orchestrator rule)
+    state_dm_complete = _state(
+        member_status_verify=True,
+        active_agent="delivery_management_agent",
+        call_intent="provider_services",
+        last_agent_signal={"status": "complete", "closure_requested": False},
+        proactive_offer_available=True,
+    )
+    assert get_fast_path_route(state_dm_complete) is None, (
+        "delivery_management complete must fall through to LLM orchestrator (Priority 5)"
+    )

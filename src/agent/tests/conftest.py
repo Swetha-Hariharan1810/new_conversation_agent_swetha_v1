@@ -35,6 +35,11 @@ def pytest_configure(config: pytest.Config) -> None:
         ("bonus_extraction", "bonus slot pre-extraction tests"),
         ("regression", "bug regression tests"),
         ("latency_correction", "latency tests for correction and clarification turns"),
+        ("zip_retry", "ZIP confirmation retry tests"),
+        ("sf_fail", "Salesforce failure escalation tests"),
+        ("retry", "agent retry exhaustion tests"),
+        ("dispatch_fail", "provider list dispatch failure tests"),
+        ("live", "live integration tests requiring credentials"),
     ]:
         config.addinivalue_line("markers", f"{mark}: {desc}")
 

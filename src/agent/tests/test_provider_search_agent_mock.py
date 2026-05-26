@@ -484,3 +484,159 @@ async def test_done_result_has_all_context_fields(mock_extraction) -> None:
     assert result.get("provider_type") == PROVIDER
     assert result.get("zip_code") == ZIP_ON_FILE
     assert result.get("zip_code_used") == ZIP_ON_FILE
+
+
+# ---------------------------------------------------------------------------
+# SECTION 6 — Spoken provider type normalization (marker: happy)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_happy_spoken_provider_type(mock_extraction) -> None:
+    """'primary care physician' normalises to 'Primary Care Physician'."""
+    mock_extraction.return_value = WorkerResult(
+        extracted={"provider_type": "primary care physician"},
+        event_type=EventType.ANSWERED,
+        guard=GuardType.NONE,
+        guard_confidence=0.0,
+    )
+    state = make_ps_state(
+        awaiting_slot="provider_type",
+        messages=[_msg("assistant", "What type of provider?"), _msg("user", "primary care physician")],
+    )
+    result = await _run(state)
+    assert result.get("provider_type") == "Primary Care Physician"
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_happy_already_has_provider_type(mock_extraction) -> None:
+    """provider_type already in state → skips collection, goes to ZIP confirmation."""
+    mock_extraction.return_value = EMPTY_ANSWERED
+    state = make_ps_state(
+        provider_type="Primary Care Physician",
+        zip_code_used="",
+        awaiting_slot="",
+        messages=[_msg("user", "hi")],
+    )
+    result = await _run(state)
+    assert is_ask(result), "Should ask for ZIP confirmation"
+    assert get_awaiting(result) == "zip_confirmed"
+
+
+# ---------------------------------------------------------------------------
+# SECTION 7 — Unhappy paths (marker: unhappy)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unhappy
+@pytest.mark.asyncio
+async def test_unhappy_refuses_provider_type(mock_extraction) -> None:
+    """Member gives invalid/empty input for provider type → retry ask."""
+    mock_extraction.return_value = EMPTY_ANSWERED
+    state = make_ps_state(
+        awaiting_slot="provider_type",
+        messages=[_msg("assistant", "What type of provider?"), _msg("user", "I don't know")],
+    )
+    result = await _run(state)
+    assert is_ask(result)
+    assert get_awaiting(result) == "provider_type"
+    assert not is_escalation(result)
+
+
+@pytest.mark.unhappy
+@pytest.mark.asyncio
+async def test_unhappy_refuses_zip(mock_extraction) -> None:
+    """Member gives no yes/no to ZIP confirm → retry ask."""
+    mock_extraction.return_value = EMPTY_ANSWERED
+    state = make_ps_state(
+        provider_type="Primary Care Physician",
+        awaiting_slot="zip_confirmed",
+        messages=[_msg("assistant", "Is your ZIP 12139?"), _msg("user", "uh what?")],
+    )
+    result = await _run(state)
+    assert is_ask(result)
+    assert get_awaiting(result) == "zip_confirmed"
+    assert not is_escalation(result)
+
+
+@pytest.mark.unhappy
+@pytest.mark.asyncio
+async def test_unhappy_max_retries_provider_type_escalates(mock_extraction) -> None:
+    """slot_attempts.provider_type.attempt_count=1 → one more failure → escalate."""
+    mock_extraction.return_value = EMPTY_ANSWERED
+    state = make_ps_state(
+        awaiting_slot="provider_type",
+        slot_attempts={"provider_type": {"attempt_count": 1, "confirmed": False, "last_value": None}},
+        messages=[_msg("assistant", "What type of provider?"), _msg("user", "???")],
+    )
+    result = await _run(state)
+    assert is_escalation(result)
+
+
+# ---------------------------------------------------------------------------
+# SECTION 8 — Guard: offtopic redirects (marker: guards)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guards
+@pytest.mark.asyncio
+async def test_guard_offtopic_redirects(mock_extraction) -> None:
+    """OFFTOPIC_AGENT guard re-asks the current slot, does not escalate."""
+    mock_extraction.return_value = make_guard(GuardType.OFFTOPIC_AGENT)
+    state = make_ps_state(messages=[_msg("user", "tell me about my benefits")])
+    result = await _run(state)
+    assert is_ask(result)
+    assert not is_escalation(result)
+
+
+# ---------------------------------------------------------------------------
+# SECTION 9 — Corrections (marker: corrections)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.corrections
+@pytest.mark.asyncio
+async def test_correct_provider_type(mock_extraction) -> None:
+    """Member says different provider type before ZIP confirmed — provider_type updated."""
+    mock_extraction.return_value = WorkerResult(
+        extracted={"provider_type": "pediatrician"},
+        event_type=EventType.ANSWERED,
+        guard=GuardType.NONE,
+        guard_confidence=0.0,
+    )
+    state = make_ps_state(
+        provider_type="",
+        awaiting_slot="provider_type",
+        messages=[
+            _msg("assistant", "What type of provider?"),
+            _msg("user", "actually I need a pediatrician not a PCP"),
+        ],
+    )
+    result = await _run(state)
+    assert not is_escalation(result)
+    assert result.get("provider_type") == "Pediatrician"
+
+
+# ---------------------------------------------------------------------------
+# SECTION 10 — Regression: routing (marker: regression)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+@pytest.mark.asyncio
+async def test_routing_after_zip_confirm_is_delivery_management(mock_extraction) -> None:
+    """next_node must be 'delivery_management_agent', not 'orchestrator'."""
+    mock_extraction.return_value = answered_zip_yes()
+    state = make_ps_state(
+        provider_type="Primary Care Physician",
+        awaiting_slot="zip_confirmed",
+        messages=[_msg("assistant", "ZIP is 12139?"), _msg("user", "yes")],
+    )
+    result = await _run(state)
+    assert is_done(result), "After zip confirmed, must signal done"
+    assert result.get("next_node") == "delivery_management_agent", (
+        f"next_node must be 'delivery_management_agent', got {result.get('next_node')!r}"
+    )
+    assert result.get("next_node") != "orchestrator"
