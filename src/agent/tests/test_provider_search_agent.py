@@ -69,7 +69,7 @@ def is_escalation(result: dict) -> bool:
 def is_done(result: dict) -> bool:
     return (
         result.get("next_node") == "delivery_management_agent"
-        and result.get("is_interrupt") is False
+        and result.get("is_interrupt") is True
     )
 
 

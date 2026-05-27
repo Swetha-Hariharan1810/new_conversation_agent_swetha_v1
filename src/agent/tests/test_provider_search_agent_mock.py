@@ -112,10 +112,14 @@ def is_escalation(result: dict) -> bool:
 
 
 def is_done(result: dict) -> bool:
-    """Result signals search complete → delivery_management_agent."""
+    """
+    Result signals provider search complete → delivery_management_agent.
+    _signal_done now uses ask_member (is_interrupt=True) so the graph pauses
+    for the user's fax/email answer before delivery_management_agent runs.
+    """
     return (
         result.get("next_node") == "delivery_management_agent"
-        and result.get("is_interrupt") is False
+        and result.get("is_interrupt") is True
     )
 
 
@@ -201,11 +205,12 @@ async def test_happy_not_verified_escalates(mock_extraction) -> None:
 @pytest.mark.happy
 @pytest.mark.asyncio
 async def test_happy_first_turn_asks_provider_type(mock_extraction) -> None:
-    mock_extraction.return_value = EMPTY_ANSWERED
     state = make_ps_state(messages=[_msg("user", "hi")])
     result = await _run(state)
     assert is_ask(result), "First turn must ask for provider type"
     assert get_awaiting(result) == "provider_type"
+    # First-entry fast path skips extraction entirely
+    mock_extraction.assert_not_called()
 
 
 @pytest.mark.happy
@@ -472,7 +477,6 @@ async def test_done_message_not_empty(mock_extraction, mock_zip_update) -> None:
 @pytest.mark.response_check
 @pytest.mark.asyncio
 async def test_done_result_has_all_context_fields(mock_extraction) -> None:
-    """_signal_done must set provider_type, zip_code, zip_code_used."""
     state = make_ps_state(
         provider_type=PROVIDER,
         awaiting_slot="zip_confirmed",
@@ -484,6 +488,7 @@ async def test_done_result_has_all_context_fields(mock_extraction) -> None:
     assert result.get("provider_type") == PROVIDER
     assert result.get("zip_code") == ZIP_ON_FILE
     assert result.get("zip_code_used") == ZIP_ON_FILE
+    assert result.get("awaiting_slot") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +632,6 @@ async def test_correct_provider_type(mock_extraction) -> None:
 @pytest.mark.regression
 @pytest.mark.asyncio
 async def test_routing_after_zip_confirm_is_delivery_management(mock_extraction) -> None:
-    """next_node must be 'delivery_management_agent', not 'orchestrator'."""
     mock_extraction.return_value = answered_zip_yes()
     state = make_ps_state(
         provider_type="Primary Care Physician",
@@ -635,8 +639,8 @@ async def test_routing_after_zip_confirm_is_delivery_management(mock_extraction)
         messages=[_msg("assistant", "ZIP is 12139?"), _msg("user", "yes")],
     )
     result = await _run(state)
-    assert is_done(result), "After zip confirmed, must signal done"
-    assert result.get("next_node") == "delivery_management_agent", (
-        f"next_node must be 'delivery_management_agent', got {result.get('next_node')!r}"
-    )
+    assert is_done(result)
+    assert result.get("next_node") == "delivery_management_agent"
+    assert result.get("is_interrupt") is True   # pauses for fax/email answer
+    assert result.get("awaiting_slot") == ""    # delivery_management starts fresh
     assert result.get("next_node") != "orchestrator"

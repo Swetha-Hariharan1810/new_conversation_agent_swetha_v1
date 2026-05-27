@@ -15,6 +15,7 @@ from agent.agents.provider_search.constants import (
     LOG_ZIP_UPDATED,
     MSG_NOT_VERIFIED,
     MSG_ZIP_EXHAUST,
+    PROVIDER_SEARCH_BRIDGE_MSGS,
     ZIP_CONFIRM_TEMPLATES,
     ZIP_UPDATE_PROMPT,
 )
@@ -59,7 +60,13 @@ class ProviderSearchAgent(BaseAgent):
         last_user = _last_user_msg(messages)
         last_agent = _last_assistant_msg(messages)
         zip_on_file = (state.get("zip_code") or "").strip()
-        current_awaiting = state.get("awaiting_slot", "")
+        # Capture the raw awaiting_slot BEFORE any mutation.
+        # Empty raw_awaiting means this is the very first turn inside provider_search
+        # (fresh entry from verification). The last user message belongs to verification
+        # (e.g. "I'm the plan holder") and must NOT reach the extraction LLM — doing so
+        # maps "plan holder" → provider_type, silently skipping the question.
+        raw_awaiting = state.get("awaiting_slot", "")
+        current_awaiting = raw_awaiting
         if not current_awaiting:
             if not provider_type:
                 current_awaiting = "provider_type"
@@ -68,6 +75,31 @@ class ProviderSearchAgent(BaseAgent):
             else:
                 current_awaiting = "zip_code"
         state = {**state, "awaiting_slot": current_awaiting}
+
+        # ── FIRST-ENTRY FAST PATH ─────────────────────────────────────────────────
+        # raw_awaiting is empty → fresh entry from verification; skip all LLM work.
+        # Every branch below returns immediately — the LLM extraction and pipeline
+        # sections further down only run when raw_awaiting is non-empty.
+        if not raw_awaiting:
+            if not provider_type:
+                # Normal case: ask for provider type with no LLM call.
+                interrupt = self.ask_member(state, pick(PROVIDER_SEARCH_BRIDGE_MSGS))
+                interrupt["awaiting_slot"] = "provider_type"
+                return interrupt
+            # Edge case: provider_type pre-populated but zip_code_used missing.
+            # Ask for ZIP directly without extraction.
+            if zip_on_file:
+                r = self.ask_member(
+                    state,
+                    random.choice(ZIP_CONFIRM_TEMPLATES).format(zip_code=zip_on_file),
+                )
+                r["awaiting_slot"] = "zip_confirmed"
+                r["provider_type"] = provider_type
+                return r
+            r = self.ask_member(state, ZIP_UPDATE_PROMPT)
+            r["awaiting_slot"] = "zip_code"
+            r["provider_type"] = provider_type
+            return r
 
         # 4. LLM extraction
         confirmed_slots: dict = {}
@@ -174,18 +206,27 @@ class ProviderSearchAgent(BaseAgent):
         return collect_result
 
     def _signal_done(self, state: State, provider_type: str, zip_code_used: str) -> dict:
-        msg = random.choice(DELIVERY_BRIDGE_TEMPLATES).format(provider_type=provider_type)
-        return self.signal_complete(
-            state,
-            message=msg,
-            resolved_intents=["provider_search_core"],
-            context_updates={
-                "provider_type": provider_type,
-                "zip_code": zip_code_used,
-                "zip_code_used": zip_code_used,
-                "next_node": "delivery_management_agent",
-            },
-        )
+        """
+        Provider search complete — ask how the member wants the list delivered.
+
+        Uses ask_member (is_interrupt=True) so the graph pauses for the user's
+        fax/email answer. human_node reads next_node="delivery_management_agent"
+        from state and routes there after the user responds. delivery_management_agent
+        then receives the answer as last_user and extracts the delivery method in
+        one LLM call — no double-ask.
+
+        The old signal_complete(is_interrupt=False) caused conditional_routing to
+        jump directly to delivery_management_agent with no user pause, so that
+        agent had to ask fax/email all over again.
+        """
+        msg = pick(DELIVERY_BRIDGE_TEMPLATES)
+        result = self.ask_member(state, msg)
+        result["next_node"] = "delivery_management_agent"  # human_node reads this
+        result["awaiting_slot"] = ""          # delivery_management_agent starts fresh
+        result["provider_type"] = provider_type
+        result["zip_code"] = zip_code_used
+        result["zip_code_used"] = zip_code_used
+        return result
 
 
 async def provider_search_agent(state: State) -> dict:

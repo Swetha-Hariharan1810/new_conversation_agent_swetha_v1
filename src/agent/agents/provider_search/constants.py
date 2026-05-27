@@ -37,15 +37,28 @@ ZIP_CONFIRM_TEMPLATES = [
 
 ZIP_UPDATE_PROMPT = "No problem — what is your current 5-digit ZIP code?"
 
-# ── Delivery bridge templates (spoken after ZIP confirmed, before delivery sub-agent) ──
+# ── Provider search bridge: first question asked on fresh entry from verification ──
+# Plain strings — no interpolation. Used by the first-entry fast path in
+# agent.py so no LLM call is needed on the initial turn.
+PROVIDER_SEARCH_BRIDGE_MSGS = [
+    "What type of provider are you looking for?",
+    "What kind of doctor or specialist do you need?",
+    "What type of care can I help you find today?",
+    "Are you looking for a primary care physician, a specialist, or another type of provider?",
+]
 
+# ── Delivery bridge (interrupt — pauses graph for user's fax/email answer) ───
+# Plain strings — no {provider_type} interpolation.
+# _signal_done uses ask_member (is_interrupt=True) so the graph pauses here
+# and delivery_management_agent receives the user's answer as last_user,
+# extracting the delivery method in one LLM call with no double-ask.
 DELIVERY_BRIDGE_TEMPLATES = [
-    "Great, I have a list of in-network {provider_type}s ready for you. "
-    "Would you like that sent by fax or email?",
-    "I have your in-network provider list ready — "
-    "would you prefer to receive it by fax or email?",
-    "I can send you a list of in-network {provider_type}s right away. "
-    "Shall I send it to your fax or email?",
+    "Alright — I have a list of in-network providers ready for you. "
+    "Would you like that sent via fax or email?",
+    "Great — I have your in-network provider list ready. "
+    "Would you prefer to receive it by fax or email?",
+    "I have a list of in-network providers in your area ready to send. "
+    "Shall I deliver it by fax or email?",
     "Your in-network provider list is ready. "
     "Would you like it sent by fax or email?",
 ]

@@ -135,6 +135,11 @@ _INITIAL_TEMPLATES: dict[SlotType, list[str]] = {
         "Got it — could I get the updated email address?",
         "Sure — what email address should we use?",
     ],
+    SlotType.DELIVERY_METHOD: [
+        "Would you prefer to receive that by fax or email?",
+        "How would you like us to send that — by fax or email?",
+        "Should I send that via fax or email?",
+    ],
 }
 
 # ---------------------------------------------------------------------------
