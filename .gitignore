@@ -44,3 +44,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Benchmark results
+scripts/latency_workload/results/
+scripts/conversational_workload/results/

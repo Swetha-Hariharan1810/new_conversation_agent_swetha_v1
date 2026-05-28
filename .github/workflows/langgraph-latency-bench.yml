@@ -1,0 +1,118 @@
+---
+name: LangGraph Latency Bench
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+      - stage
+      - test
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  bench:
+    name: LangGraph Latency (PCP per-step)
+    runs-on: ubuntu-latest
+
+    env:
+      THRESHOLD_SEC: "2.5"
+      ITERATIONS: "5"
+      BENCH_OUTPUT_DIR: "scripts/latency_workload/results"
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: UV setup and activate
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run latency benchmark
+        id: bench
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          BENCH_OUTPUT_DIR: scripts/latency_workload/results
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          OPENAI_API_VERSION: ${{ secrets.OPENAI_API_VERSION }}
+          WORKER_DEPLOYMENT: ${{ secrets.WORKER_DEPLOYMENT }}
+          SF_CLIENT_ID: ${{ secrets.SF_CLIENT_ID }}
+          SF_CLIENT_SECRET: ${{ secrets.SF_CLIENT_SECRET }}
+          SF_REFRESH_TOKEN: ${{ secrets.SF_REFRESH_TOKEN }}
+          SF_TOKEN_URL: ${{ secrets.SF_TOKEN_URL }}
+          SF_API_VERSION: ${{ secrets.SF_API_VERSION }}
+          SF_INSTANCE_URL: ${{ secrets.SF_INSTANCE_URL }}
+          LANGSMITH_TRACING: "false"
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_PROJECT: new_conversation_agent_swetha_v1
+        run: >
+          python -m scripts.latency_workload.main
+          --iterations $ITERATIONS
+          --threshold-sec $THRESHOLD_SEC
+          --scenarios-path scripts/latency_workload/scenarios
+
+      - name: Upload JSON metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: langgraph-latency-metrics
+          path: scripts/latency_workload/results/bench-metrics.json
+
+      - name: Comment results on PR
+        uses: actions/github-script@v7
+        env:
+          AVG: ${{ steps.bench.outputs.avg }}
+          P50: ${{ steps.bench.outputs.p50 }}
+          P95: ${{ steps.bench.outputs.p95 }}
+          STD: ${{ steps.bench.outputs.std_dev }}
+          STEP_COUNT: ${{ steps.bench.outputs.step_count }}
+          JSON_PATH: ${{ steps.bench.outputs.json_path }}
+          ITERATIONS: ${{ env.ITERATIONS }}
+          THRESHOLD_SEC: ${{ env.THRESHOLD_SEC }}
+        with:
+          script: |
+            const fs = require('fs');
+
+            const avg  = parseFloat(process.env.AVG  || '0');
+            const p50  = parseFloat(process.env.P50  || '0');
+            const p95  = parseFloat(process.env.P95  || '0');
+            const std  = parseFloat(process.env.STD  || '0');
+            const stepsCount = parseInt(process.env.STEP_COUNT || '0', 10);
+
+            const jsonPath =
+              process.env.JSON_PATH ||
+              'scripts/latency_workload/results/bench-metrics.json';
+
+            let json = '';
+            try { json = fs.readFileSync(jsonPath, 'utf8'); } catch (e) {}
+
+            const body =
+              `### LangGraph Latency Bench (PCP per-step)\n\n` +
+              `Iterations: ${process.env.ITERATIONS} | ` +
+              `Threshold: ${process.env.THRESHOLD_SEC}s | ` +
+              `Steps: ${stepsCount}\n\n` +
+              `| Metric | Value (s) |\n|---|---:|\n` +
+              `| p50 | ${p50.toFixed(3)} |\n` +
+              `| p95 | ${p95.toFixed(3)} |\n` +
+              `| avg | ${avg.toFixed(3)} |\n` +
+              `| std-dev | ${std.toFixed(3)} |\n\n` +
+              `<details><summary>JSON metrics</summary>\n\n` +
+              `<pre>${json}</pre>\n\n</details>`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

@@ -94,7 +94,7 @@ def human_node(state: State) -> Command:
 
 
 # ── Graph builder ─────────────────────────────────────────────────────────────
-def build_graph():
+def build_graph(checkpointer=None):
     g = StateGraph(State)
     g.add_node("orchestrator", orchestrator)
     g.add_node("human_node", human_node)
@@ -121,7 +121,7 @@ def build_graph():
         g.add_conditional_edges(node, conditional_routing)
     g.add_conditional_edges("orchestrator", orchestrator_routing)
     g.set_entry_point(AgentNode.INTAKE.value)
-    return g.compile()
+    return g.compile(checkpointer=checkpointer)
 
 
 graph = build_graph()
