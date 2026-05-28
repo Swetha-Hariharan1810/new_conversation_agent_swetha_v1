@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.agents.follow_up.agent import FollowUpAgent
+from agent.llm.schema import EventType, GuardType, WorkerResult
 from agent.agents.follow_up.constants import BARE_AFFIRMATIONS, CLOSURE_KEYWORDS
 from agent.agents.follow_up.llm import _build_session_snapshot
 from agent.tests.fixtures import make_verified_state
@@ -146,8 +147,30 @@ def mock_llm(monkeypatch) -> AsyncMock:
     return mock
 
 
+@pytest.fixture
+def mock_extraction(monkeypatch) -> AsyncMock:
+    """
+    Patch extract_follow_up_decision to return a clean no-guard result.
+    Tests that need specific guard or intent values override this inline.
+
+    Also patches get_extraction_llm so Python does not attempt to instantiate
+    a real LLM client when evaluating the argument — the mock ignores it anyway.
+    Empty WorkerResult (no intent set) lets existing keyword-fallback tests pass.
+    """
+    monkeypatch.setattr(
+        "agent.agents.follow_up.agent.get_extraction_llm",
+        lambda: None,
+    )
+    mock = AsyncMock(return_value=WorkerResult())
+    monkeypatch.setattr(
+        "agent.agents.follow_up.agent.extract_follow_up_decision",
+        mock,
+    )
+    return mock
+
+
 @pytest.fixture(autouse=True)
-def _base_mock(mock_llm):
+def _base_mock(mock_llm, mock_extraction):
     pass
 
 
@@ -671,3 +694,194 @@ async def test_closure_keywords_complete_coverage(mock_llm, keyword) -> None:
         f"got next_node={result.get('next_node')!r}, is_interrupt={result.get('is_interrupt')}"
     )
     mock_llm.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# SECTION — Guards (marker: guards)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.guards
+@pytest.mark.asyncio
+async def test_guard_transfer_request_escalates(mock_llm, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent.agents.follow_up.agent.extract_follow_up_decision",
+        AsyncMock(return_value=WorkerResult(
+            guard=GuardType.TRANSFER_REQUEST,
+            guard_confidence=0.95,
+        )),
+    )
+    state = make_fu_state(
+        messages=[
+            _msg("assistant", "Is there anything else?"),
+            _msg("user", "transfer me to a representative"),
+        ]
+    )
+    result = await _run(state)
+    assert result.get("next_node") == "escalation_agent"
+    assert result.get("is_interrupt") is False
+    mock_llm.assert_not_called()
+
+
+@pytest.mark.guards
+@pytest.mark.asyncio
+async def test_guard_abuse_escalates(mock_llm, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent.agents.follow_up.agent.extract_follow_up_decision",
+        AsyncMock(return_value=WorkerResult(
+            guard=GuardType.ABUSE,
+            guard_confidence=0.95,
+        )),
+    )
+    state = make_fu_state(
+        messages=[_msg("assistant", "Anything else?"), _msg("user", "this is useless")]
+    )
+    result = await _run(state)
+    assert result.get("next_node") == "escalation_agent"
+    mock_llm.assert_not_called()
+
+
+@pytest.mark.guards
+@pytest.mark.asyncio
+async def test_guard_self_harm_escalates(mock_llm, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent.agents.follow_up.agent.extract_follow_up_decision",
+        AsyncMock(return_value=WorkerResult(
+            guard=GuardType.SELF_HARM,
+            guard_confidence=0.95,
+        )),
+    )
+    state = make_fu_state(
+        messages=[_msg("assistant", "Anything else?"), _msg("user", "I want to end it")]
+    )
+    result = await _run(state)
+    assert result.get("next_node") == "escalation_agent"
+    mock_llm.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# SECTION — Intent routing via LLM (marker: happy)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_llm_intent_done_routes_to_closure(mock_llm, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent.agents.follow_up.agent.extract_follow_up_decision",
+        AsyncMock(return_value=WorkerResult(
+            extracted={"follow_up_intent": "done"},
+            guard=GuardType.NONE,
+            guard_confidence=0.0,
+        )),
+    )
+    state = make_fu_state(
+        messages=[
+            _msg("assistant", "Is there anything else?"),
+            _msg("user", "I think that covers everything thanks"),
+        ]
+    )
+    result = await _run(state)
+    assert is_closure(result)
+    mock_llm.assert_not_called()
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_llm_intent_unsure_returns_nudge(mock_llm, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent.agents.follow_up.agent.extract_follow_up_decision",
+        AsyncMock(return_value=WorkerResult(
+            extracted={"follow_up_intent": "unsure"},
+            guard=GuardType.NONE,
+            guard_confidence=0.0,
+        )),
+    )
+    state = make_fu_state(
+        messages=[_msg("assistant", "Is there anything else?"), _msg("user", "yes")]
+    )
+    result = await _run(state)
+    assert is_ask(result)
+    response = get_response(result)
+    assert any(w in response.lower() for w in ["summary", "recap", "specific", "details"])
+    mock_llm.assert_not_called()
+
+
+@pytest.mark.happy
+@pytest.mark.asyncio
+async def test_llm_intent_question_reaches_generation(mock_llm, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent.agents.follow_up.agent.extract_follow_up_decision",
+        AsyncMock(return_value=WorkerResult(
+            extracted={"follow_up_intent": "question"},
+            guard=GuardType.NONE,
+            guard_confidence=0.0,
+        )),
+    )
+    state = make_fu_state(
+        messages=[
+            _msg("assistant", "Is there anything else?"),
+            _msg("user", "what is my deductible"),
+        ]
+    )
+    result = await _run(state)
+    assert is_ask(result)
+    mock_llm.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# SECTION — Keyword fallback when extraction fails (marker: regression)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+@pytest.mark.asyncio
+async def test_extraction_failure_closure_keyword_fallback(mock_llm, monkeypatch) -> None:
+    """Empty WorkerResult → keyword fallback catches closure."""
+    monkeypatch.setattr(
+        "agent.agents.follow_up.agent.extract_follow_up_decision",
+        AsyncMock(return_value=WorkerResult()),
+    )
+    state = make_fu_state(
+        messages=[_msg("assistant", "Is there anything else?"), _msg("user", "no thanks")]
+    )
+    result = await _run(state)
+    assert is_closure(result)
+    mock_llm.assert_not_called()
+
+
+@pytest.mark.regression
+@pytest.mark.asyncio
+async def test_extraction_failure_affirmation_keyword_fallback(mock_llm, monkeypatch) -> None:
+    """Empty WorkerResult → keyword fallback catches bare affirmation."""
+    monkeypatch.setattr(
+        "agent.agents.follow_up.agent.extract_follow_up_decision",
+        AsyncMock(return_value=WorkerResult()),
+    )
+    state = make_fu_state(
+        messages=[_msg("assistant", "Is there anything else?"), _msg("user", "yes")]
+    )
+    result = await _run(state)
+    assert is_ask(result)
+    response = get_response(result)
+    assert any(w in response.lower() for w in ["summary", "recap", "specific", "details"])
+    mock_llm.assert_not_called()
+
+
+@pytest.mark.regression
+@pytest.mark.asyncio
+async def test_extraction_failure_question_reaches_generation(mock_llm, monkeypatch) -> None:
+    """Empty WorkerResult + not a closure keyword → falls through to LLM 2."""
+    monkeypatch.setattr(
+        "agent.agents.follow_up.agent.extract_follow_up_decision",
+        AsyncMock(return_value=WorkerResult()),
+    )
+    state = make_fu_state(
+        messages=[
+            _msg("assistant", "Is there anything else?"),
+            _msg("user", "what is my out of pocket maximum"),
+        ]
+    )
+    result = await _run(state)
+    assert is_ask(result)
+    mock_llm.assert_called_once()
