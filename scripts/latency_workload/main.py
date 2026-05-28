@@ -22,7 +22,8 @@ from typing import Dict, List
 from agent.logger import get_logger
 from scripts.latency_workload.data_loader import load_scenarios
 from scripts.latency_workload.metrics import compute_metrics
-from scripts.latency_workload.reporter import print_markdown_table, report_to_github, save_json
+from scripts.latency_workload.git_output import report_to_github
+from scripts.latency_workload.reporter import print_markdown_table, save_json
 from scripts.latency_workload.runner import run_one_conversation
 
 logger = get_logger(__name__)
