@@ -1,13 +1,20 @@
 """
-llm.py — Single LLM call for FollowUpAgent answer generation.
+llm.py — LLM calls for FollowUpAgent.
 
-The entire session state is serialised into a plain-text context block and
-passed to the generation LLM together with the member's question.
-One call. No extraction. No classification.
+extract_follow_up_decision — guard classification and intent routing via
+    structured extraction (WorkerResult). No slots are collected; awaiting_slot=""
+    signals to the extraction LLM that nothing is being collected. Guard fields
+    and follow_up_intent in WorkerResult.extracted still populate normally.
+
+generate_follow_up_answer — answer generation from the session snapshot.
+    The entire session state is serialised into a plain-text context block and
+    passed to the generation LLM together with the member's question.
 """
 
 from __future__ import annotations
 
+from agent.llm.extractor import build_worker_input
+from agent.llm.schema import WorkerResult
 from agent.logger import get_logger
 from agent.state import State
 
@@ -154,3 +161,32 @@ async def generate_follow_up_answer(state: State, question: str) -> str:
     except Exception:
         logger.exception("generate_follow_up_answer: LLM call failed")
         return ""
+
+
+async def extract_follow_up_decision(
+    llm,
+    system_prompt: str,
+    *,
+    last_agent_message: str,
+    last_user_message: str,
+    recent_messages: list | None = None,
+) -> WorkerResult:
+    """
+    Run one LLM call for guard classification and intent routing.
+
+    Falls back to an empty WorkerResult on any exception.
+    The caller (agent.py) handles the empty case via keyword fallback.
+    """
+    messages = build_worker_input(
+        system_prompt,
+        awaiting_slot="",
+        last_agent_message=last_agent_message,
+        last_user_message=last_user_message,
+        recent_messages=recent_messages,
+    )
+    try:
+        result: WorkerResult = await llm.with_structured_output(WorkerResult).ainvoke(messages)
+        return result
+    except Exception:
+        logger.exception("extract_follow_up_decision: LLM extraction failed")
+        return WorkerResult()
