@@ -33,6 +33,7 @@ class TurnEvaluation(BaseModel):
     user_response: str
     ground_truth: str
     slot: str
+    scenario: str = ""
     scores: Dict
 
 

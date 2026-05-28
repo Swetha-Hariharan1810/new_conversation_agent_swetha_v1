@@ -18,14 +18,14 @@ permissions:
 
 jobs:
   bench:
-    name: Conversation Evaluation (PCP scenarios)
+    name: Conversation Evaluation (PCP — all scenarios)
     runs-on: ubuntu-latest
 
     env:
       ITERATIONS: "1"
       RESULTS_DIR: "scripts/conversational_workload/results"
       REPORT_FILE: "conversation_eval_report.json"
-      SCORE_THRESHOLD: "0.7"
+      SCORE_THRESHOLD: "0.75"
 
     steps:
       - name: Checkout PR branch
@@ -74,10 +74,11 @@ jobs:
           python - <<'EOF'
           import json, os, sys
 
-          threshold = float(os.getenv("SCORE_THRESHOLD", "0.7"))
-          results_dir = os.getenv("RESULTS_DIR", "scripts/conversational_workload/results")
-          report_file = os.getenv("REPORT_FILE", "conversation_eval_report.json")
-          path = os.path.join(results_dir, report_file)
+          threshold = float(os.getenv("SCORE_THRESHOLD", "0.75"))
+          path = os.path.join(
+              os.getenv("RESULTS_DIR", "scripts/conversational_workload/results"),
+              os.getenv("REPORT_FILE", "conversation_eval_report.json"),
+          )
 
           with open(path) as f:
               summary = json.load(f)
@@ -89,15 +90,22 @@ jobs:
           ]
 
           if failures:
-              print(f"FAILED scenarios (threshold={threshold}):")
-              for scenario, score in failures:
-                  print(f"  {scenario}: {score:.2f}")
+              print(f"FAILED scenarios (below threshold={threshold}):")
+              for name, score in failures:
+                  print(f"  {name}: {score:.2f} < {threshold}")
               sys.exit(1)
 
           print(f"All {len(summary)} scenarios passed (threshold={threshold})")
           EOF
 
-      - name: Comment per-scenario scores on PR
+      - name: Upload evaluation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: conversation-eval-results
+          path: scripts/conversational_workload/results/
+          if-no-files-found: ignore
+
+      - name: Comment results on PR
         if: always()
         uses: actions/github-script@v7
         env:
@@ -108,21 +116,21 @@ jobs:
           script: |
             const fs = require('fs');
             const path = `${process.env.RESULTS_DIR}/${process.env.REPORT_FILE}`;
-            const threshold = parseFloat(process.env.SCORE_THRESHOLD || '0.7');
+            const threshold = parseFloat(process.env.SCORE_THRESHOLD || '0.75');
 
             let summary = {};
             try { summary = JSON.parse(fs.readFileSync(path, 'utf8')); } catch (e) {}
 
-            const rows = Object.entries(summary).map(([scenario, data]) => {
+            const rows = Object.entries(summary).map(([name, data]) => {
               const score = (data.average_final_score || 0).toFixed(2);
-              const pass = (data.average_final_score || 0) >= threshold ? '✅' : '❌';
-              return `| ${scenario} | ${score} | ${pass} |`;
+              const icon = (data.average_final_score || 0) >= threshold ? '✅' : '❌';
+              return `| ${name} | ${score} | ${icon} |`;
             }).join('\n');
 
             const body =
-              `### Conversation Evaluation Bench (PCP scenarios)\n\n` +
+              `### Conversation Evaluation Bench (PCP)\n\n` +
               `Threshold: **${threshold}** | Runs per scenario: ${process.env.ITERATIONS || 1}\n\n` +
-              `| Scenario | Avg Score | Pass |\n|---|---:|---:|\n` +
+              `| Scenario | Avg Score | Status |\n|---|---|---|\n` +
               rows;
 
             await github.rest.issues.createComment({
@@ -131,10 +139,3 @@ jobs:
               issue_number: context.issue.number,
               body,
             });
-
-      - name: Upload evaluation results
-        uses: actions/upload-artifact@v4
-        with:
-          name: conversation-eval-results
-          path: scripts/conversational_workload/results/
-          if-no-files-found: ignore

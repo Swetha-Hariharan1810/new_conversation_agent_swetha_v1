@@ -28,10 +28,6 @@ from scripts.conversational_workload.utils import extract_last_ai_message, new_c
 MAX_TURNS = 30
 
 
-def _build_entity(entity_data: dict) -> PCPInquiryEntity:
-    return PCPInquiryEntity(**entity_data)
-
-
 def run_evaluation(
     entity_data: dict,
     flow: str = "pcp",
@@ -41,15 +37,14 @@ def run_evaluation(
     Run a single scenario evaluation.
 
     Args:
-        entity_data:   Member fixture data (names, member_id, dob, zip, fax, etc.).
-        flow:          Flow identifier — currently only "pcp" is supported.
-        scenario_tag:  Scenario key controlling which static transcript is used for
-                       ground-truth matching (e.g. "pcp_clarification_zip").
+        entity_data:  Member fixture data (names, member_id, dob, zip, fax, etc.).
+        flow:         Flow identifier — currently only "pcp" is supported.
+        scenario_tag: Scenario key for ground-truth matching and simulator overrides.
 
     Returns:
         ConversationReport with per-turn scores and a final aggregate score.
     """
-    entity = _build_entity(entity_data)
+    entity = PCPInquiryEntity(**entity_data)
 
     from agent.app_graph import build_graph
 
@@ -66,6 +61,7 @@ def run_evaluation(
 
     conversation_id = new_conversation_id()
     turns: list[TurnEvaluation] = []
+    turn_counters: dict = {}
 
     for _ in range(MAX_TURNS):
         if state.get("next_node") == END:
@@ -78,8 +74,16 @@ def run_evaluation(
                 continue
 
             slot = classify_ai_slot(ai_msg, flow)
-            user_text = simulate_user_response(ai_msg, entity, flow)
-            ground_truth = build_dynamic_ground_truth(ai_msg, entity, flow, scenario_tag)
+            user_text = simulate_user_response(
+                ai_msg, entity, flow,
+                scenario_tag=scenario_tag,
+                turn_counters=turn_counters,
+            )
+            ground_truth = build_dynamic_ground_truth(
+                ai_msg, entity, flow,
+                scenario_tag=scenario_tag,
+                turn_counters=turn_counters,
+            )
             judge_result = judge_turn(user_text, ground_truth)
 
             turns.append(
@@ -88,15 +92,25 @@ def run_evaluation(
                     user_response=user_text,
                     ground_truth=ground_truth,
                     slot=slot,
+                    scenario=scenario_tag,
                     scores=judge_result.model_dump(),
                 )
             )
 
             state = graph.invoke(Command(resume=user_text), config=config)
+
+            # Increment after recording so both simulator and ground-truth builder
+            # see the same visit count for this turn.
+            key = (scenario_tag, slot)
+            turn_counters[key] = turn_counters.get(key, 0) + 1
         else:
             state = graph.invoke(Command(resume=""), config=config)
 
-    final_score = round(sum(t.scores["overall"] for t in turns) / len(turns), 2) if turns else 0.0
+    final_score = (
+        round(sum(t.scores["overall"] for t in turns) / len(turns), 2)
+        if turns
+        else 0.0
+    )
 
     report = ConversationReport(
         conversation_id=conversation_id,
