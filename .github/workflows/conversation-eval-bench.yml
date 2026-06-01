@@ -1,0 +1,181 @@
+# yamllint disable rule:line-length
+# yamllint disable rule:truthy
+---
+name: Conversation Evaluation Bench
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+      - stage
+      - test
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  bench:
+    name: Conversation Evaluation (PCP — all scenarios)
+    runs-on: ubuntu-latest
+
+    env:
+      ITERATIONS: "1"
+      RESULTS_DIR: "scripts/conversational_workload/results"
+      REPORT_FILE: "conversation_eval_report.json"
+      SCORE_THRESHOLD: "0.75"
+      EXACT_MATCH_WARN_THRESHOLD: "0.70"
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Clean Python cache
+        run: |
+          find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          find . -name "*.pyc" -delete 2>/dev/null || true
+
+      - name: UV setup and activate
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run conversation evaluation
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          PYTHONDONTWRITEBYTECODE: "1"
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          OPENAI_API_VERSION: ${{ secrets.OPENAI_API_VERSION }}
+          WORKER_DEPLOYMENT: ${{ secrets.WORKER_DEPLOYMENT }}
+          SF_CLIENT_ID: ${{ secrets.SF_CLIENT_ID }}
+          SF_CLIENT_SECRET: ${{ secrets.SF_CLIENT_SECRET }}
+          SF_REFRESH_TOKEN: ${{ secrets.SF_REFRESH_TOKEN }}
+          SF_TOKEN_URL: ${{ secrets.SF_TOKEN_URL }}
+          SF_API_VERSION: ${{ secrets.SF_API_VERSION }}
+          SF_INSTANCE_URL: ${{ secrets.SF_INSTANCE_URL }}
+          LANGSMITH_TRACING: "false"
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_PROJECT: conversation-agent-member-sda
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_LOCATION: ${{ secrets.GCP_LOCATION }}
+          GEMINI_THINKING_LEVEL: ${{ secrets.GEMINI_THINKING_LEVEL }}
+          GEMINI_THINKING_BUDGET: ${{ secrets.GEMINI_THINKING_BUDGET }}
+          GCP_SA_BASE64: ${{ secrets.GCP_SA_BASE64 }}
+        run: |
+          mkdir -p "$RESULTS_DIR"
+          python scripts/conversational_workload/run_eval.py
+
+      - name: Validate scores
+        run: |
+          python - <<'EOF'
+          import json, os, sys
+
+          threshold = float(os.getenv("SCORE_THRESHOLD", "0.75"))
+          exact_warn = float(os.getenv("EXACT_MATCH_WARN_THRESHOLD", "0.70"))
+          path = os.path.join(
+              os.getenv("RESULTS_DIR", "scripts/conversational_workload/results"),
+              os.getenv("REPORT_FILE", "conversation_eval_report.json"),
+          )
+
+          with open(path) as f:
+              summary = json.load(f)
+
+          failures = []
+          warnings = []
+
+          for scenario, data in summary.items():
+              avg_score = data.get("average_final_score", 0)
+              exact_rate = data.get("average_exact_match_rate", 1.0)
+
+              if avg_score < threshold:
+                  failures.append((scenario, avg_score))
+
+              if exact_rate < exact_warn:
+                  warnings.append(
+                      f"  {scenario}: exact_match_rate={exact_rate:.0%} < {exact_warn:.0%} "
+                      f"(simulator/ground-truth may be out of sync)"
+                  )
+
+          if warnings:
+              print("DIAGNOSTIC WARNINGS (not a failure):")
+              for w in warnings:
+                  print(w)
+
+          if failures:
+              print(f"\nFAILED scenarios (below threshold={threshold}):")
+              for name, score in failures:
+                  print(f"  {name}: {score:.2f} < {threshold}")
+              sys.exit(1)
+
+          print(f"All {len(summary)} scenarios passed (threshold={threshold})")
+          EOF
+
+      - name: Upload evaluation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: conversation-eval-results
+          path: scripts/conversational_workload/results/
+          if-no-files-found: ignore
+
+      - name: Comment results on PR
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          RESULTS_DIR: ${{ env.RESULTS_DIR }}
+          REPORT_FILE: ${{ env.REPORT_FILE }}
+          SCORE_THRESHOLD: ${{ env.SCORE_THRESHOLD }}
+          EXACT_MATCH_WARN_THRESHOLD: ${{ env.EXACT_MATCH_WARN_THRESHOLD }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = `${process.env.RESULTS_DIR}/${process.env.REPORT_FILE}`;
+            const threshold = parseFloat(process.env.SCORE_THRESHOLD || '0.75');
+            const exactWarn = parseFloat(process.env.EXACT_MATCH_WARN_THRESHOLD || '0.70');
+
+            let summary = {};
+            try { summary = JSON.parse(fs.readFileSync(path, 'utf8')); } catch (e) {}
+
+            const rows = Object.entries(summary).map(([name, data]) => {
+              const score = (data.average_final_score || 0).toFixed(2);
+              const llmCalls = data.total_llm_judge_calls || 0;
+              const passRate = ((data.average_pass_rate || 0) * 100).toFixed(0);
+              const scoreIcon = (data.average_final_score || 0) >= threshold ? '✅' : '❌';
+              return `| ${name} | ${score} ${scoreIcon} | ${llmCalls} | ${passRate}% |`;
+            }).join('\n');
+
+            const hasExactWarning = Object.values(summary).some(
+              d => (d.average_exact_match_rate || 0) < exactWarn
+            );
+            const warningNote = hasExactWarning
+              ? `\n> **Diagnostic**: One or more scenarios have low exact-match rates, ` +
+                `which may indicate the simulator and ground-truth builder are out of sync. ` +
+                `Scores may not reliably reflect agent quality.\n`
+              : '';
+
+            const body =
+              `### Conversation Evaluation Bench (PCP)\n\n` +
+              `Threshold: **${threshold}** | Runs per scenario: ${process.env.ITERATIONS || 1}\n` +
+              warningNote + `\n` +
+              `| Scenario | Avg Score | LLM Judge Calls | Pass Rate |\n` +
+              `|---|---|---|---|\n` +
+              rows + `\n\n` +
+              `**LLM Judge Calls**: only triggered when simulator and ground truth genuinely differ.`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

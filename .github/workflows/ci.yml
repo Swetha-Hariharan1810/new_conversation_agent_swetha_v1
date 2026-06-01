@@ -1,0 +1,56 @@
+name: Pre-commit check, Langgraph Build, Tenable Check
+
+on:
+  pull_request:
+    branches: [
+      "develop",
+      "main",
+      "stage",
+      "test"
+    ]
+
+jobs:
+  pre-commit-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: UV setup and activate
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run Pre-commit
+        run: pre-commit run --all-files
+
+  build-and-verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+
+      - name: Install langgraph-cli
+        run: pip install langgraph-cli
+
+      - name: Build LangGraph Docker image
+        run: langgraph build -t ${{ github.repository }}:latest
+
+      - name: Scan container image with Tenable Cloud Security
+        uses: tenable/cloud-security-actions/container-image/scan@v1
+        with:
+          api-token: ${{ secrets.TENABLE_API_TOKEN }}
+          api-url: https://in.app.ermetic.com
+          name: ${{ github.repository }}:latest
