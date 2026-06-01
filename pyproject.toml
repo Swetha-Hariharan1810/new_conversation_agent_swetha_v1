@@ -25,6 +25,7 @@ dependencies = [
     "google-genai>=1.75.0",
     "httpx>=0.27.0",
     "langsmith>=0.7.38",
+    "aiofiles>=25.1.0",
 ]
 
 [build-system]
@@ -136,4 +137,6 @@ markers = [
     "latency: latency benchmark tests",
     "stress: concurrent stress tests",
     "regression: bug regression tests",
+    "followup: follow-up agent tests",
+    "slow: tests with many parametrized LLM calls",
 ]
