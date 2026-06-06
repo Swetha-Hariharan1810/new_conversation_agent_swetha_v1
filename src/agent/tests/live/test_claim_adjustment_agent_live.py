@@ -5177,12 +5177,15 @@ async def test_D_n2_scenario_b_email_sms(run_conversation, assert_and_record):
 # ---------------------------------------------------------------------------
 # Shared prefix for Group E — lands in follow_up after email notification setup
 # ---------------------------------------------------------------------------
-# Scenario B (records_required=False): verification → reference → notification
-# (email confirmed) → follow_up is reached next turn.
+# NOTE: REF_B has records_required=True → must pass through records_coordination
+# via personal guide before reaching notification_setup_agent.
 _E_PREFIX = VERIFICATION_PREFIX_CLAIMS_B + [
     REF_B,
-    "email",  # notification_method
-    "yes",  # email on file confirmed
+    "Feel free to call my doctor's office directly",  # upload_method=personal_guide → records_coordination
+    "yes",                                             # personal_guide_consent=yes → guide triggered
+    # → notification_setup_agent now active
+    "email",  # notification_method (N1)
+    "yes",    # email on file confirmed → follow_up_agent reached
 ]
 
 # Scenario A prefix that goes through upload + guide so personal_guide flag is set
