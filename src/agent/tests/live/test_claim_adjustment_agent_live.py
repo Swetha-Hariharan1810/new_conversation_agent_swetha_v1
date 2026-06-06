@@ -2832,7 +2832,15 @@ async def test_B2_invalid_1_bad_email_then_valid(run_conversation, assert_and_re
 # Records not required (Scenario B): verification → reference → records skipped
 # → notification_setup is the next agent.
 # ---------------------------------------------------------------------------
-_C_PREFIX = VERIFICATION_PREFIX_CLAIMS_B + [REF_B]
+# NOTE: REF_B (42695817) has records_required=True in the SF sandbox.
+# _C_PREFIX must pass through records_coordination (personal guide path)
+# before landing in notification_setup_agent.
+_C_PREFIX = VERIFICATION_PREFIX_CLAIMS_B + [
+    REF_B,
+    "Feel free to call my doctor's office directly",  # upload_method=personal_guide
+    "yes",                                             # personal_guide_consent=yes → guide triggered
+    # → notification_setup_agent now active
+]
 
 # Scenario A prefix that went through records and is now in notification_setup
 # (upload link sent path — agent already asked notification method via bridge)
