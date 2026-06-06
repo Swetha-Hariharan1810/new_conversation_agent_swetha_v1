@@ -900,9 +900,12 @@ async def test_B3_upload_yes_email_confirmed_guide_yes(run_conversation, assert_
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Yeah go ahead and send me that",  # upload link offer accepted
-            "yes",  # email on file confirmed
-            "That works for me, please go ahead",  # personal_guide_consent = yes
+            "Yeah go ahead and send me that",        # upload_method=member_upload
+            "yes",                                    # upload_consent=yes
+            "That works for me, please go ahead",    # email_confirmed=yes → link sent + guide offered
+            "yes please",                             # personal_guide_consent=yes → guide triggered
+            "text me",                               # notification_method=sms
+            "yes, that number works",                # phone confirmed
         ],
         test_name="test_B3_upload_yes_email_confirmed_guide_yes",
         scenario=(
@@ -933,10 +936,13 @@ async def test_B4_upload_yes_email_declined_new_email_guide_yes(run_conversation
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Yeah go ahead and send me that",  # upload link offer accepted
-            "no",  # email on file declined
-            "michael.brown.new@gmail.com",  # new email provided
-            "Sure, please reach out to them",  # personal_guide_consent
+            "Yeah go ahead and send me that",        # upload_method=member_upload
+            "yes",                                    # upload_consent=yes
+            "no",                                     # email_confirmed=no → ask for new email
+            "michael.brown.new@gmail.com",           # new email → link sent + guide offered
+            "Sure, please reach out to them",        # personal_guide_consent=yes → guide triggered
+            "send a text",                           # notification_method=sms
+            "yes that's correct",                    # phone confirmed
         ],
         test_name="test_B4_upload_yes_email_declined_new_email_guide_yes",
         scenario=(
@@ -2119,7 +2125,10 @@ async def test_B_uc_exhaust_1_three_ambiguous_then_guide(run_conversation, asser
 # path that enters records_coordination; accepting the upload link offer
 # causes the next agent turn to read back the email on file.
 # ---------------------------------------------------------------------------
-_B2_EMAIL_PREFIX = _PREFIX_A_WITH_REF + ["Yeah, go ahead and send me that link"]
+_B2_EMAIL_PREFIX = _PREFIX_A_WITH_REF + [
+    "Yeah, go ahead and send me that link",  # upload_method=member_upload → upload offer
+    "yes",                                    # upload_consent=yes → NOW at email_confirmed
+]
 NEW_EMAIL_B2 = "michael.brown.new@gmail.com"
 
 
