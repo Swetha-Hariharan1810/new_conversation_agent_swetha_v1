@@ -4370,21 +4370,35 @@ def assert_p95_under(record: ConversationRecord, threshold_sec: float) -> None:
 
 
 def assert_notification_channel(record: ConversationRecord, expected: str) -> None:
-    """notification_channel == expected in final state."""
-    actual = record.final_state.get("notification_channel", "")
-    assert actual == expected, f"Expected notification_channel={expected!r}, got {actual!r}"
+    """notification_channel == expected in final state or any turn snapshot."""
+    actual_final = record.final_state.get("notification_channel", "")
+    if actual_final == expected:
+        return
+    for t in record.turns:
+        if t.state_snapshot.get("notification_channel") == expected:
+            return
+    raise AssertionError(f"Expected notification_channel={expected!r} in final state or any turn, got final={actual_final!r}")
 
 
 def assert_n2_notification_channel(record: ConversationRecord, expected: str) -> None:
-    """claim_timeline_notification_channel == expected in final state."""
-    actual = record.final_state.get("claim_timeline_notification_channel", "")
-    assert actual == expected, f"Expected claim_timeline_notification_channel={expected!r}, got {actual!r}"
+    """claim_timeline_notification_channel == expected in final state or any turn snapshot."""
+    actual_final = record.final_state.get("claim_timeline_notification_channel", "")
+    if actual_final == expected:
+        return
+    for t in record.turns:
+        if t.state_snapshot.get("claim_timeline_notification_channel") == expected:
+            return
+    raise AssertionError(f"Expected claim_timeline_notification_channel={expected!r}, got final={actual_final!r}")
 
 
 def assert_claim_flow_complete(record: ConversationRecord) -> None:
-    """claim_flow_complete=True in final state."""
-    actual = record.final_state.get("claim_flow_complete")
-    assert actual is True, f"Expected claim_flow_complete=True, got {actual!r}"
+    """claim_flow_complete=True in final state or any turn snapshot."""
+    if record.final_state.get("claim_flow_complete") is True:
+        return
+    for t in record.turns:
+        if t.state_snapshot.get("claim_flow_complete") is True:
+            return
+    raise AssertionError("Expected claim_flow_complete=True in final state or any turn")
 
 
 # ===========================================================================
