@@ -1269,7 +1269,7 @@ async def test_B_m_3_providers_office_will_send(run_conversation, assert_and_rec
 async def test_B_m_4_will_upload_myself(run_conversation, assert_and_record):
     """
     B_m_4: "I will upload them myself" → upload_method='member_upload' →
-    upload link offered and accepted → upload_link_sent.
+    upload link offered → email confirmed ("yes that's the right one") → upload_link_sent.
 
     First-person commitment with explicit 'myself' reinforcement.  Verifies
     that a member who volunteers to upload without first being asked is
@@ -1279,7 +1279,7 @@ async def test_B_m_4_will_upload_myself(run_conversation, assert_and_record):
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "I will upload them myself",  # member_upload
-            "yes",  # email on file confirmed
+            "yes that's the right one",  # email on file confirmed
             "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_m_4_will_upload_myself",
@@ -1303,8 +1303,8 @@ async def test_B_m_4_will_upload_myself(run_conversation, assert_and_record):
 async def test_B_m_5_can_i_just_upload_it(run_conversation, assert_and_record):
     """
     B_m_5: "can I just upload it?" → upload_method='member_upload' →
-    upload link offered and accepted → upload_link_sent → Personal Guide
-    consent yes → guide triggered → notification_setup.
+    upload link offered → email confirmed ("go ahead and use that one") →
+    upload_link_sent → Personal Guide consent yes → guide triggered → notification_setup.
 
     Question form with 'just' as a softener.  Verifies that a polite upload
     request is classified as member_upload and the full happy path completes
@@ -1314,7 +1314,7 @@ async def test_B_m_5_can_i_just_upload_it(run_conversation, assert_and_record):
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "can I just upload it?",  # member_upload (question form)
-            "yes",  # email on file confirmed
+            "go ahead and use that one",  # email on file confirmed
             "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_m_5_can_i_just_upload_it",
@@ -1386,7 +1386,7 @@ async def test_B_m_7_conversational_rather_upload_myself(run_conversation, asser
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "I'd rather upload it myself if that's an option",  # member_upload
-            "yes",  # email confirmed
+            "that works, use that email",  # email confirmed
             "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_m_7_conversational_rather_upload_myself",
