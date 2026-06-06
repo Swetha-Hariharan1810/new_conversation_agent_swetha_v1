@@ -1461,6 +1461,8 @@ async def test_B_pg_1_yes_please_proceed(run_conversation, assert_and_record):
         + [
             "Please just go ahead and contact them directly",  # personal_guide intent
             "yes please proceed",  # personal_guide_consent
+            "send me texts",              # notification_method=sms
+            "yes that number is correct", # phone confirmed
         ],
         test_name="test_B_pg_1_yes_please_proceed",
         scenario=(
@@ -1493,6 +1495,8 @@ async def test_B_pg_2_sure_go_ahead(run_conversation, assert_and_record):
         + [
             "Can your team call my doctor's office?",  # personal_guide intent
             "sure go ahead",  # personal_guide_consent=yes
+            "text is fine",               # notification_method=sms
+            "yep",                        # phone confirmed
         ],
         test_name="test_B_pg_2_sure_go_ahead",
         scenario=("personal_guide intent → 'sure go ahead' → personal_guide_consent=yes → guide triggered"),
@@ -1523,6 +1527,8 @@ async def test_B_pg_3_please_arrange_that(run_conversation, assert_and_record):
         + [
             "Reach out to the provider on my behalf",  # personal_guide intent
             "please arrange that",  # personal_guide_consent=yes
+            "email is fine",              # notification_method=email
+            "yes that's the right one",   # email confirmed
         ],
         test_name="test_B_pg_3_please_arrange_that",
         scenario=(
@@ -1556,6 +1562,8 @@ async def test_B_pg_4_conversational_yes_reach_out(run_conversation, assert_and_
         + [
             "Go ahead and give my doctor a call",  # personal_guide intent
             "Yes that would be great, please have them reach out to my doctor",
+            "you can text me on my phone",  # notification_method=sms
+            "yes that's still the number",  # phone confirmed
         ],
         test_name="test_B_pg_4_conversational_yes_reach_out",
         scenario=(
@@ -1591,6 +1599,8 @@ async def test_B_pg_5_conversational_yes_doctor_better_with_calls(run_conversati
         + [
             "You're welcome to contact my physician directly",  # personal_guide intent
             "Yes please, I'd appreciate that — my doctor's office is better with phone calls anyway",
+            "email works better for me",  # notification_method=email
+            "yes that's my address",      # email confirmed
         ],
         test_name="test_B_pg_5_conversational_yes_doctor_better_with_calls",
         scenario=(
@@ -1717,6 +1727,8 @@ async def test_B_pg_exact_1_perfect_please_do_that(run_conversation, assert_and_
         + [
             "Feel free to call my doctor's office directly",
             "That works for me, please go ahead",
+            "send me a text",             # notification_method=sms
+            "yes that's correct",         # phone confirmed
         ],
         test_name="test_B_pg_exact_1_perfect_please_do_that",
         scenario="personal_guide_consent natural phrase 'That works for me, please go ahead' → triggered",
@@ -1740,6 +1752,8 @@ async def test_B_pg_exact_2_yes_please_do_that(run_conversation, assert_and_reco
         + [
             "Feel free to call my doctor's office directly",
             "Yes please do that",
+            "text me",                    # notification_method=sms
+            "yes",                        # phone confirmed
         ],
         test_name="test_B_pg_exact_2_yes_please_do_that",
         scenario="personal_guide_consent 'Yes please do that' → triggered",
@@ -1764,6 +1778,8 @@ async def test_B_pg_exact_3_absolutely_please_reach_out(run_conversation, assert
         + [
             "Feel free to call my doctor's office directly",
             "absolutely, please reach out to them",
+            "text me updates",                     # notification_method=sms
+            "absolutely, that's the right number", # phone confirmed
         ],
         test_name="test_B_pg_exact_3_absolutely_please_reach_out",
         scenario="personal_guide_consent 'absolutely, please reach out to them' → triggered",
