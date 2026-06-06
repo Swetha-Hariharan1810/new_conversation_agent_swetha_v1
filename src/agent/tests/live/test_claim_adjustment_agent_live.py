@@ -1424,7 +1424,7 @@ async def test_B_pg_1_yes_please_proceed(run_conversation, assert_and_record):
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",  # personal_guide intent
+            "Please just go ahead and contact them directly",  # personal_guide intent
             "yes please proceed",  # personal_guide_consent
         ],
         test_name="test_B_pg_1_yes_please_proceed",
@@ -1456,7 +1456,7 @@ async def test_B_pg_2_sure_go_ahead(run_conversation, assert_and_record):
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",
+            "Can your team call my doctor's office?",  # personal_guide intent
             "sure go ahead",  # personal_guide_consent=yes
         ],
         test_name="test_B_pg_2_sure_go_ahead",
@@ -1486,7 +1486,7 @@ async def test_B_pg_3_please_arrange_that(run_conversation, assert_and_record):
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",
+            "Reach out to the provider on my behalf",  # personal_guide intent
             "please arrange that",  # personal_guide_consent=yes
         ],
         test_name="test_B_pg_3_please_arrange_that",
@@ -1519,7 +1519,7 @@ async def test_B_pg_4_conversational_yes_reach_out(run_conversation, assert_and_
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",
+            "Go ahead and give my doctor a call",  # personal_guide intent
             "Yes that would be great, please have them reach out to my doctor",
         ],
         test_name="test_B_pg_4_conversational_yes_reach_out",
@@ -1554,7 +1554,7 @@ async def test_B_pg_5_conversational_yes_doctor_better_with_calls(run_conversati
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",
+            "You're welcome to contact my physician directly",  # personal_guide intent
             "Yes please, I'd appreciate that — my doctor's office is better with phone calls anyway",
         ],
         test_name="test_B_pg_5_conversational_yes_doctor_better_with_calls",
@@ -1585,7 +1585,7 @@ async def test_B_pg_6_no_wont_be_necessary_handle_myself(run_conversation, asser
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",
+            "Have someone from your team contact my doctor",  # personal_guide intent
             "no that won't be necessary, I'll handle it myself",  # consent=no
         ],
         test_name="test_B_pg_6_no_wont_be_necessary_handle_myself",
@@ -1617,7 +1617,7 @@ async def test_B_pg_7_conversational_rather_deal_directly(run_conversation, asse
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",
+            "I was thinking you could contact my doctor's office",  # personal_guide intent
             "No I think I'd rather deal with it directly, no thanks",  # consent=no
         ],
         test_name="test_B_pg_7_conversational_rather_deal_directly",
@@ -1635,22 +1635,21 @@ async def test_B_pg_7_conversational_rather_deal_directly(run_conversation, asse
 @pytest.mark.live
 async def test_B_pg_8_not_right_now_soft_deferral(run_conversation, assert_and_record):
     """
-    B_pg_8: "not right now" → personal_guide_consent='no' → escalation.
+    B_pg_8: "maybe some other time" → personal_guide_consent='no' → escalation.
 
-    Soft temporal deferral; the extraction prompt explicitly maps "not right
-    now" to consent='no' (not ambiguous).  Verifies that a deferral that
-    could be mistaken for ambiguity is correctly classified as a decline and
-    escalation fires.
+    Soft temporal deferral; a member who defers to a future time is declining
+    consent now.  Verifies that a deferral that could be mistaken for ambiguity
+    is correctly classified as a decline and escalation fires.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",
-            "not right now",  # extraction prompt: maps to consent=no
+            "I'd prefer you contact my doctor on my behalf",  # personal_guide intent
+            "maybe some other time",  # soft temporal deferral → consent=no
         ],
         test_name="test_B_pg_8_not_right_now_soft_deferral",
         scenario=(
-            "'not right now' → personal_guide_consent=no (per extraction prompt, not ambiguous) → escalation"
+            "'maybe some other time' → personal_guide_consent=no (temporal deferral = decline) → escalation"
         ),
     )
     assert_and_record(
@@ -1744,21 +1743,21 @@ async def test_B_pg_exact_3_absolutely_please_reach_out(run_conversation, assert
 @pytest.mark.slow
 async def test_B_pg_ambiguous_no_1_hmm_then_no(run_conversation, assert_and_record):
     """
-    B_pg_ambiguous_no_1: "hmm" (ambiguous) → agent re-asks → "no" → escalation.
-    personal_guide was NOT triggered.
+    B_pg_ambiguous_no_1: personal_guide intent → "hmm" (ambiguous) → agent re-asks →
+    "No, I don't think so" → escalation. personal_guide was NOT triggered.
 
     Verifies that ambiguous first response triggers retry, and subsequent
-    "no" results in escalation (member_declined_personal_guide).
+    explicit decline results in escalation (member_declined_personal_guide).
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",
-            "hmm",
-            "no",
+            "I guess you could try reaching the doctor",  # personal_guide intent
+            "hmm",  # ambiguous
+            "No, I don't think so",  # explicit decline after re-ask
         ],
         test_name="test_B_pg_ambiguous_no_1_hmm_then_no",
-        scenario="personal_guide_consent 'hmm' (ambiguous) → re-ask → 'no' → escalation",
+        scenario="personal_guide_consent 'hmm' (ambiguous) → re-ask → 'No, I don't think so' → escalation",
     )
     assert_and_record(
         record,
@@ -1777,9 +1776,9 @@ async def test_B_pg_ambiguous_no_2_maybe_then_explicit_no(run_conversation, asse
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",
-            "maybe",
-            "no I don't want to do that",
+            "Maybe you can contact the doctor's office if that helps",  # personal_guide intent
+            "maybe",  # ambiguous
+            "no I don't want to do that",  # explicit decline after re-ask
         ],
         test_name="test_B_pg_ambiguous_no_2_maybe_then_explicit_no",
         scenario="personal_guide_consent 'maybe' → re-ask → explicit no → escalation",
@@ -1802,8 +1801,8 @@ async def test_B_pg_no_reason_1_ill_handle_it(run_conversation, assert_and_recor
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",
-            "I'll handle it on my own",
+            "You can try calling my doctor if you need records",  # personal_guide intent
+            "I'll handle it on my own",  # consent=no (implicit decline with reason)
         ],
         test_name="test_B_pg_no_reason_1_ill_handle_it",
         scenario="personal_guide_consent decline with reason 'I'll handle it on my own' → escalation",
@@ -1829,8 +1828,8 @@ async def test_B_pg_no_reason_2_doctor_will_send(run_conversation, assert_and_re
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",
-            "that's not needed, my doctor's office will send it directly",
+            "My doctor's office should be able to help you get the records",  # personal_guide intent
+            "that's not needed, my doctor's office will send it directly",  # consent=no with reason
         ],
         test_name="test_B_pg_no_reason_2_doctor_will_send",
         scenario="personal_guide_consent declined with 'doctor will send it' reasoning → escalation",
