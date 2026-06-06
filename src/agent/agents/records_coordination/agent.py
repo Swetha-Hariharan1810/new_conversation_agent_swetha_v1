@@ -180,6 +180,7 @@ class RecordsCoordinationAgent(BaseAgent):
             contact_conf_raw = extracted.get("email_confirmed", extracted.get("contact_confirmed", ""))
             email_on_file = (state.get("email") or "").strip()
 
+            # Inline replacement: member declined AND provided new email in same utterance
             if new_email_raw:
                 normalized = normalize_email(str(new_email_raw))
                 if normalized and validate_email(normalized).valid:
@@ -189,31 +190,38 @@ class RecordsCoordinationAgent(BaseAgent):
                 return ask_result
 
             contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
+
+            # Explicit yes → proceed
             if contact_conf == "yes":
                 return await self._send_link_and_proceed(state, email_on_file)
+
+            # Explicit no → ask for new email
             if contact_conf == "no":
                 ask_result = self.ask_member(state, pick(MSG_EMAIL_UPDATE_PROMPT))
                 ask_result["awaiting_slot"] = "email"
                 return ask_result
 
+            # Ambiguous / no extraction → re-read the email, ask again (do NOT ask for new email)
             self.slot_fail("email_confirmed")
             if self.get_slot("email_confirmed").is_exhausted():
-                return self.signal_escalate(
-                    state,
-                    "I wasn't able to confirm your email. Let me connect you with a representative.",
-                    reason="email_confirmed_exhausted_in_records",
-                )
-            from agent.llm.response_generator import generate_recovery_message
+                # Only after exhaustion do we ask for a new email
+                ask_result = self.ask_member(state, pick(MSG_EMAIL_UPDATE_PROMPT))
+                ask_result["awaiting_slot"] = "email"
+                return ask_result
 
+            # Re-read the email on file and ask again using CLARIFY (gentle tone)
+            from agent.llm.response_generator import generate_recovery_message
             display_email = email_on_file.replace("@", " at ")
             ctx = ConversationContext.from_state(state)
             retry_msg = await generate_recovery_message(
                 slot_name="email_confirmed",
                 attempt=self.get_slot("email_confirmed").attempt_count,
-                guard="RETRY",
+                guard="CLARIFY",
                 last_messages=messages[-4:],
-                slot_label_override=f"whether the email address"
-                f" {display_email} is correct for sending the upload link (yes or no)",
+                slot_label_override=(
+                    f"whether the email address {display_email} is correct "
+                    f"for sending the upload link (yes or no)"
+                ),
                 caller_name=ctx.caller_first_name,
                 confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
                 user_utterance=_last_user_msg(messages),
