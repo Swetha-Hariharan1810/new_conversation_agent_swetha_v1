@@ -1922,8 +1922,12 @@ async def test_B_uc_1_yes_please_send_the_link(run_conversation, assert_and_reco
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Sounds good, please send it over",  # upload_consent=yes
-            "that's the right email",  # email on file confirmed
+            "Sounds good, please send it over",     # upload_method=member_upload → upload offer
+            "yes",                                   # upload_consent=yes → email shown
+            "that's the right email",               # email_confirmed=yes → link sent + guide offered
+            "go ahead and have them reach out",     # personal_guide_consent=yes
+            "send me a text",                       # notification_method=sms
+            "yes, that's my number",                # phone confirmed
         ],
         test_name="test_B_uc_1_yes_please_send_the_link",
         scenario=(
@@ -1953,8 +1957,12 @@ async def test_B_uc_2_sure_that_would_help(run_conversation, assert_and_record):
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "sure that would help",  # upload_consent=yes
-            "yep that's correct",  # email on file confirmed
+            "sure that would help",                 # upload_method=member_upload
+            "sure",                                  # upload_consent=yes
+            "yep that's correct",                   # email_confirmed=yes
+            "yes please do that",                   # personal_guide_consent=yes
+            "texts work",                           # notification_method=sms
+            "yep",                                  # phone confirmed
         ],
         test_name="test_B_uc_2_sure_that_would_help",
         scenario=("'sure that would help' → upload_consent=yes → email confirmed → upload_link_sent=True"),
@@ -1983,8 +1991,12 @@ async def test_B_uc_3_conversational_sounds_easier_than_fax(run_conversation, as
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Oh yes please, that sounds much easier than having to fax anything",
-            "that's the one, go ahead",  # email on file confirmed
+            "Oh yes please, that sounds much easier than having to fax anything",  # upload_method=member_upload
+            "yes please",                                                            # upload_consent=yes
+            "that's the one, go ahead",                                             # email_confirmed=yes
+            "yes please do that too",                                               # personal_guide_consent=yes
+            "oh, texts would be great",                                             # notification_method=sms
+            "yes that's still my number",                                           # phone confirmed
         ],
         test_name="test_B_uc_3_conversational_sounds_easier_than_fax",
         scenario=(
@@ -2015,8 +2027,11 @@ async def test_B_uc_4_no_dont_need_link_but_guide_yes(run_conversation, assert_a
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "no I don't need the link",  # upload_consent=no
-            "Sure, please reach out to them",  # personal_guide_consent
+            "no I don't need the link",            # upload_method=member_upload → upload offer
+            "no",                                   # upload_consent=no → guide offered directly
+            "Sure, please reach out to them",      # personal_guide_consent=yes
+            "text me",                             # notification_method=sms
+            "yes",                                 # phone confirmed
         ],
         test_name="test_B_uc_4_no_dont_need_link_but_guide_yes",
         scenario=(
@@ -2050,7 +2065,10 @@ async def test_B_uc_5_conversational_no_link_but_yes_reach_doctor(run_conversati
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "No thanks for the link, but yes please have someone reach out to my doctor",
+            "No thanks for the link, but yes please have someone reach out to my doctor",  # upload_method + guide intent
+            "yes please",                           # personal_guide_consent=yes (if agent still asks)
+            "send me a text",                      # notification_method=sms
+            "yes that's right",                    # phone confirmed
         ],
         test_name="test_B_uc_5_conversational_no_link_but_yes_reach_doctor",
         scenario=(
@@ -2084,8 +2102,11 @@ async def test_B_uc_softno_1_id_rather_not(run_conversation, assert_and_record):
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "I'd rather not",  # upload_consent=no
-            "Sure, please reach out to them",  # personal_guide_consent=yes
+            "I'd rather not",                      # upload_method → soft decline → upload offer (or guide)
+            "I'd rather not",                      # upload_consent=no → guide offered
+            "yes please do that",                  # personal_guide_consent=yes
+            "texts are fine I suppose",            # notification_method=sms
+            "yes that's correct",                  # phone confirmed
         ],
         test_name="test_B_uc_softno_1_id_rather_not",
         scenario="upload_consent soft 'I'd rather not' → guide offered → yes → personal_guide_triggered",
@@ -2110,8 +2131,11 @@ async def test_B_uc_softno_2_doctor_send_with_guide_yes(run_conversation, assert
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "no that's ok I'll have my doctor send it",  # upload_consent=no
-            "Sure, please reach out to them",  # personal_guide_consent=yes
+            "no that's ok I'll have my doctor send it",  # upload_method=doctor_direct → upload offer
+            "no thanks",                                  # upload_consent=no → guide offered
+            "yes please reach out to them",              # personal_guide_consent=yes
+            "you can text me",                           # notification_method=sms
+            "yes that's my number",                      # phone confirmed
         ],
         test_name="test_B_uc_softno_2_doctor_send_with_guide_yes",
         scenario="upload_consent decline with reason → guide offered → yes → personal_guide_triggered",
@@ -2139,10 +2163,13 @@ async def test_B_uc_exhaust_1_three_ambiguous_then_guide(run_conversation, asser
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "hmm",  # upload_consent ambiguous 1
-            "I'm not sure",  # upload_consent ambiguous 2
-            "maybe",  # upload_consent ambiguous 3 → exhaustion → guide offered
-            "Sure, please reach out to them",  # personal_guide_consent=yes
+            "yes please",          # upload_method=member_upload → upload offer (upload_consent asked)
+            "hmm",                 # upload_consent ambiguous #1 (count=1)
+            "I'm not sure",        # upload_consent ambiguous #2 (count=2)
+            "maybe",               # upload_consent ambiguous #3 → EXHAUSTED → guide offered
+            "yes, please do that", # personal_guide_consent=yes
+            "send a text",         # notification_method=sms
+            "yes that works",      # phone confirmed
         ],
         test_name="test_B_uc_exhaust_1_three_ambiguous_then_guide",
         scenario="upload_consent exhaustion (3× ambiguous) → guide fallthrough → yes → triggered",
