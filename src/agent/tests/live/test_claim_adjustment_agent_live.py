@@ -1850,23 +1850,22 @@ async def test_B_pg_no_reason_2_doctor_will_send(run_conversation, assert_and_re
 @pytest.mark.live
 async def test_B_uc_1_yes_please_send_the_link(run_conversation, assert_and_record):
     """
-    B_uc_1: "yes please send the link" → upload_consent='yes' →
+    B_uc_1: "Sounds good, please send it over" → upload_consent='yes' →
     email on file confirmed → upload_link_sent=True.
 
-    Explicit affirmative with an imperative restating the action ('send the
-    link').  The extraction prompt maps "sure send the link" to member_upload;
-    this variant uses 'please' and confirms consent directly.  Verifies
-    upload_link_sent=True after the email confirmation step.
+    Explicit affirmative with an imperative restating the action ('send it
+    over').  Verifies upload_consent='yes' is extracted from a natural spoken
+    form and upload_link_sent=True after the email confirmation step.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "yes please send the link",  # upload_consent=yes
-            "yes",  # email on file confirmed
+            "Sounds good, please send it over",  # upload_consent=yes
+            "that's the right email",  # email on file confirmed
         ],
         test_name="test_B_uc_1_yes_please_send_the_link",
         scenario=(
-            "'yes please send the link' → upload_consent=yes → email confirmed → upload_link_sent=True"
+            "'Sounds good, please send it over' → upload_consent=yes → email confirmed → upload_link_sent=True"
         ),
     )
     assert_and_record(
@@ -1893,7 +1892,7 @@ async def test_B_uc_2_sure_that_would_help(run_conversation, assert_and_record):
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "sure that would help",  # upload_consent=yes
-            "yes",  # email on file confirmed
+            "yep that's correct",  # email on file confirmed
         ],
         test_name="test_B_uc_2_sure_that_would_help",
         scenario=("'sure that would help' → upload_consent=yes → email confirmed → upload_link_sent=True"),
@@ -1923,7 +1922,7 @@ async def test_B_uc_3_conversational_sounds_easier_than_fax(run_conversation, as
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "Oh yes please, that sounds much easier than having to fax anything",
-            "yes",  # email on file confirmed
+            "that's the one, go ahead",  # email on file confirmed
         ],
         test_name="test_B_uc_3_conversational_sounds_easier_than_fax",
         scenario=(
@@ -1960,7 +1959,7 @@ async def test_B_uc_4_no_dont_need_link_but_guide_yes(run_conversation, assert_a
         test_name="test_B_uc_4_no_dont_need_link_but_guide_yes",
         scenario=(
             "'no I don't need the link' → upload_consent=no → "
-            "Personal Guide offered → 'yes' → guide triggered → notification_setup"
+            "Personal Guide offered → consent yes → guide triggered → notification_setup"
         ),
     )
     assert_and_record(
@@ -2098,10 +2097,10 @@ async def test_B_uc_exhaust_1_three_ambiguous_then_guide(run_conversation, asser
 # ---------------------------------------------------------------------------
 # Shared prefix for Group B2 — lands at email_confirmed inside
 # RecordsCoordinationAgent.  Scenario A (records_required=True) is the only
-# path that enters records_coordination; "yes please" accepts the upload link
-# offer so the next agent turn reads back the email on file.
+# path that enters records_coordination; accepting the upload link offer
+# causes the next agent turn to read back the email on file.
 # ---------------------------------------------------------------------------
-_B2_EMAIL_PREFIX = _PREFIX_A_WITH_REF + ["Yeah go ahead and send me that"]
+_B2_EMAIL_PREFIX = _PREFIX_A_WITH_REF + ["Yeah, go ahead and send me that link"]
 NEW_EMAIL_B2 = "michael.brown.new@gmail.com"
 
 
