@@ -4548,14 +4548,16 @@ async def test_D3_records_not_required_goes_to_notification(run_conversation, as
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through (records_required=True)
+            "yes",                                             # personal_guide_consent → guide triggered
             "email",  # notification_method
             "yes",  # email on file confirmed
             "no thanks",  # follow_up closure
         ],
         test_name="test_D3_records_not_required_goes_to_notification",
         scenario=(
-            "Scenario B: records_required=False → skip records_coordination → "
-            "notification_setup directly → follow_up → closure"
+            "Scenario B (REF_B): passes through records_coordination via personal guide → "
+            "notification_setup → follow_up → closure"
         ),
     )
     assert_and_record(
@@ -4583,6 +4585,8 @@ async def test_D4_followup_cannot_answer_then_timeline_answered(run_conversation
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",  # notification_method
             "yes",  # email on file confirmed
             "what is my deductible?",  # out-of-snapshot question
@@ -4652,6 +4656,8 @@ async def test_D6_update_request_in_followup_escalates(run_conversation, assert_
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",  # notification_method
             "yes",  # email confirmed
             "can you resend the upload link to a different email",  # UPDATE_REQUEST in follow_up
@@ -4986,13 +4992,15 @@ async def test_D_latency_1_scenario_b_no_records_email(run_conversation, assert_
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",  # notification_method
             "yes",  # email on file confirmed
             "no thanks",  # closure
         ],
         test_name="test_D_latency_1_scenario_b_no_records_email",
         scenario=(
-            f"Latency benchmark: Scenario B fast path (no records) → "
+            f"Latency benchmark: Scenario B with records pass-through → "
             f"email notification → closure — p50≤{_LATENCY_P50_SEC}s, p95≤{_LATENCY_P95_SEC}s"
         ),
     )
@@ -5121,6 +5129,8 @@ async def test_D_n2_scenario_b_sms_email(run_conversation, assert_and_record):
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "SMS",  # N1 method
             "yes",  # phone on file confirmed → notification_channel=sms
             "email",  # N2 method
@@ -5155,6 +5165,8 @@ async def test_D_n2_scenario_b_email_sms(run_conversation, assert_and_record):
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",  # N1 method
             "yes",  # email on file confirmed → notification_channel=email
             "SMS",  # N2 method
