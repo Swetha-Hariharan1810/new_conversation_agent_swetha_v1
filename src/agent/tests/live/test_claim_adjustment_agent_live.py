@@ -1060,8 +1060,8 @@ async def test_B8_decline_from_start(run_conversation, assert_and_record):
 @pytest.mark.live
 async def test_B9_upload_consent_ambiguous_falls_through_to_guide(run_conversation, assert_and_record):
     """
-    B9: Member says "yes please" to get upload link, then gives ambiguous upload
-    consent twice → slot exhausts → falls through to Personal Guide offer.
+    B9: Member says "Yeah go ahead and send me that" to accept the upload link, then gives
+    ambiguous upload consent twice → slot exhausts → falls through to Personal Guide offer.
     Verifies the upload_consent exhaustion → Personal Guide fallback transition.
     """
     record = await run_conversation(
