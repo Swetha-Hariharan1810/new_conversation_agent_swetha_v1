@@ -1205,6 +1205,8 @@ async def test_B_m_1_my_doctor_can_send_it(run_conversation, assert_and_record):
             "my doctor can send it",  # doctor_direct
             "I'll pass on that, thanks",  # decline upload link
             "Sure, please reach out to them",  # personal_guide_consent
+            "text works for me",              # notification_method=sms
+            "yes that's still my number",     # phone confirmed
         ],
         test_name="test_B_m_1_my_doctor_can_send_it",
         scenario=(
@@ -1237,6 +1239,8 @@ async def test_B_m_2_provider_fax_it_over(run_conversation, assert_and_record):
             "I'll have the provider fax it over",  # doctor_direct
             "I'll pass on that, thanks",  # decline upload link
             "Sure, please reach out to them",  # personal_guide_consent
+            "send me a text",                  # notification_method=sms
+            "yes, that's my number",           # phone confirmed
         ],
         test_name="test_B_m_2_provider_fax_it_over",
         scenario=(
@@ -1269,6 +1273,8 @@ async def test_B_m_3_providers_office_will_send(run_conversation, assert_and_rec
             "the provider's office will send it",  # doctor_direct
             "I'll pass on that, thanks",  # decline upload link
             "Sure, please reach out to them",  # personal_guide_consent
+            "email works for me",              # notification_method=email
+            "yes that's the right one",        # email confirmed
         ],
         test_name="test_B_m_3_providers_office_will_send",
         scenario=(
@@ -1302,6 +1308,8 @@ async def test_B_m_4_will_upload_myself(run_conversation, assert_and_record):
             "I will upload them myself",  # member_upload
             "yes that's the right one",  # email on file confirmed
             "Sure, please reach out to them",  # personal_guide_consent
+            "let's do texts",                  # notification_method=sms
+            "yep that's right",                # phone confirmed
         ],
         test_name="test_B_m_4_will_upload_myself",
         scenario=(
@@ -1337,6 +1345,8 @@ async def test_B_m_5_can_i_just_upload_it(run_conversation, assert_and_record):
             "can I just upload it?",  # member_upload (question form)
             "go ahead and use that one",  # email on file confirmed
             "Sure, please reach out to them",  # personal_guide_consent
+            "texts are fine",                  # notification_method=sms
+            "yes go ahead",                    # phone confirmed
         ],
         test_name="test_B_m_5_can_i_just_upload_it",
         scenario=(
@@ -1373,7 +1383,9 @@ async def test_B_m_6_conversational_easier_doctor_handle_it(run_conversation, as
             "Actually I think it would be easier to have my doctor handle it, "
             "can they send it over?",  # doctor_direct
             "I'll pass on that, thanks",  # decline upload link
-            "Sure, please reach out to them",  # personal_guide_consent
+            "Sure, please reach out to them",       # personal_guide_consent
+            "you can text me on that number",       # notification_method=sms
+            "yes that's still good",                # phone confirmed
         ],
         test_name="test_B_m_6_conversational_easier_doctor_handle_it",
         scenario=(
@@ -1409,6 +1421,8 @@ async def test_B_m_7_conversational_rather_upload_myself(run_conversation, asser
             "I'd rather upload it myself if that's an option",  # member_upload
             "that works, use that email",  # email confirmed
             "Sure, please reach out to them",  # personal_guide_consent
+            "email me please",                 # notification_method=email
+            "yes that's the right email",      # email confirmed
         ],
         test_name="test_B_m_7_conversational_rather_upload_myself",
         scenario=(
