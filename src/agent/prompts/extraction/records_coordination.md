@@ -37,26 +37,27 @@ FIELDS
     Whether the member confirms the email address just read aloud by the agent.
     Only extract when the agent just read back an email address to the member.
 
-    BIAS RULE: anything other than a clear affirmation → return "no", not "ambiguous".
-    Asking for a new address is always safer than re-asking the same confirmation.
-
     Clear affirmations → "yes":
       "yes", "correct", "that's right", "yep", "absolutely",
-      "yes that's correct", "yes that's my email"
+      "yes that's correct", "yes that's my email",
+      any imperative consent phrase showing intent to proceed:
+      "please do that", "go ahead", "send it", "do it", "sounds good",
+      "perfect", "please send it", "yes please"
 
-    Clear or implicit declines → "no":
+    Clear declines → "no":
       "no", "nope", "that's wrong", "that's not right",
-      "no its changed", "it's changed", "that's changed",
-      "that's my old email", "I don't use that anymore",
+      "that's changed", "that's my old email", "I don't use that anymore",
       "not anymore", "actually no", "use a different one"
+
+    Ambiguous or uncertain → leave extracted{} empty, event_type "ambiguous":
+      "I think so", "maybe", "not sure", "I'm not 100% sure",
+      "hmm", "hmm that might not be active", "let me think"
+
+    Do NOT apply a bias rule here. Uncertainty is ambiguous, not a decline.
 
     If the member declines AND provides a replacement email in the same
     utterance, extract only the new email value into the `email` field;
     omit email_confirmed entirely.
-
-    Uncertain or hedged responses that are not clear affirmations → "no":
-      "I think so", "maybe", "not sure", "I'm not 100% sure",
-      "hmm that might not be active"
 
   email  valid email string (must contain "@" and a domain)
     New email address replacing the one on file. Only extract when the
@@ -75,5 +76,5 @@ CONFIDENCE NOTES (see header [ANCHOR: CONFIDENCE])
 - personal_guide_consent: must be unambiguous. Any doubt → ambiguous.
 - upload_method: when member's first response is vague affirmation before
   upload link is offered ("okay will send it"), use doctor_direct as default.
-- email_confirmed / contact_confirmed: bias rule applies — non-clear-affirmation → "no".
-  Never return ambiguous for email_confirmed; always resolve to "yes" or "no".
+- email_confirmed / contact_confirmed: no bias rule. Uncertainty → ambiguous (leave extracted{} empty).
+  Only resolve to "yes" or "no" when the member's intent is clear.
