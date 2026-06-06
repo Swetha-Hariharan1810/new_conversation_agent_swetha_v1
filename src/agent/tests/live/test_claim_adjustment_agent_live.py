@@ -890,7 +890,7 @@ async def test_B2_doctor_direct_then_decline_all(run_conversation, assert_and_re
 @pytest.mark.live
 async def test_B3_upload_yes_email_confirmed_guide_yes(run_conversation, assert_and_record):
     """
-    B3: Member says "yes please" to upload link offer → email on file confirmed "yes"
+    B3: Member says "Yeah go ahead and send me that" to upload link offer → email on file confirmed
     → link sent → Personal Guide offered → "That works for me, please go ahead" → guide triggered
     → routed to notification_setup_agent.
     Verifies Branch A complete happy path including Personal Guide consent.
@@ -923,8 +923,8 @@ async def test_B3_upload_yes_email_confirmed_guide_yes(run_conversation, assert_
 @pytest.mark.live
 async def test_B4_upload_yes_email_declined_new_email_guide_yes(run_conversation, assert_and_record):
     """
-    B4: Member says "yes please" to upload link → email declined → new email provided
-    → link sent → Personal Guide offered → "yes" → guide triggered
+    B4: Member says "Yeah go ahead and send me that" to upload link → email declined → new email provided
+    → link sent → Personal Guide offered → "Sure, please reach out to them" → guide triggered
     → routed to notification_setup_agent.
     Verifies email update sub-flow inside records coordination.
     """
@@ -956,8 +956,8 @@ async def test_B4_upload_yes_email_declined_new_email_guide_yes(run_conversation
 @pytest.mark.live
 async def test_B5_upload_yes_email_ambiguous_exhaustion(run_conversation, assert_and_record):
     """
-    B5: Member says "yes please" to upload link, then gives ambiguous email
-    confirmation twice → email_confirmed slot exhausts → escalation.
+    B5: Member says "Yeah go ahead and send me that" to accept the upload link, then gives
+    ambiguous email confirmation twice → email_confirmed slot exhausts → escalation.
     Verifies that the email_confirmed exhaustion guard fires inside records coordination.
     """
     record = await run_conversation(
@@ -983,7 +983,7 @@ async def test_B5_upload_yes_email_ambiguous_exhaustion(run_conversation, assert
 async def test_B6_personal_guide_immediate_consent_yes(run_conversation, assert_and_record):
     """
     B6: Member says "Feel free to call my doctor's office directly" (personal_guide immediately)
-    → consent asked → "yes" → guide triggered → routed to notification_setup.
+    → consent asked → "Sure, please reach out to them" → guide triggered → routed to notification_setup.
     Verifies Branch C direct entry without upload link step.
     """
     record = await run_conversation(
