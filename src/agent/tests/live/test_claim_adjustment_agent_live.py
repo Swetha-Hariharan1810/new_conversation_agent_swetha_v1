@@ -971,12 +971,14 @@ async def test_B5_upload_yes_email_ambiguous_exhaustion(run_conversation, assert
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Yeah go ahead and send me that",  # upload link accepted
-            "maybe",  # ambiguous email confirmation attempt 1
-            "I think so",  # ambiguous email confirmation attempt 2
+            "Yeah go ahead and send me that",  # upload_method=member_upload → upload offer
+            "yes",                              # upload_consent=yes → email_confirmed offered
+            "maybe",                            # email_confirmed ambiguous #1 (count=1)
+            "I think so",                       # email_confirmed ambiguous #2 (count=2)
+            "not sure about that",              # email_confirmed ambiguous #3 → EXHAUSTED → escalation
         ],
         test_name="test_B5_upload_yes_email_ambiguous_exhaustion",
-        scenario=("Upload yes → email ambiguous × 2 → email_confirmed exhausted → escalation"),
+        scenario=("Upload yes → email ambiguous × 3 → email_confirmed exhausted → escalation"),
     )
     assert_and_record(
         record,
@@ -998,8 +1000,10 @@ async def test_B6_personal_guide_immediate_consent_yes(run_conversation, assert_
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",  # upload_method = personal_guide
-            "Sure, please reach out to them",  # personal_guide_consent
+            "Feel free to call my doctor's office directly",   # upload_method=personal_guide
+            "Sure, please reach out to them",                   # personal_guide_consent=yes
+            "you can text me updates",                          # notification_method=sms
+            "yes that's my number",                             # phone confirmed
         ],
         test_name="test_B6_personal_guide_immediate_consent_yes",
         scenario=(
@@ -1078,14 +1082,17 @@ async def test_B9_upload_consent_ambiguous_falls_through_to_guide(run_conversati
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Yeah go ahead and send me that",  # upload_method = member_upload
-            "maybe",  # ambiguous upload_consent attempt 1
-            "I'm not sure",  # ambiguous upload_consent attempt 2
-            "Sure, please reach out to them",  # personal_guide_consent after fallback
+            "Yeah go ahead and send me that",      # upload_method=member_upload → upload offer
+            "maybe",                                # upload_consent ambiguous #1 (count=1)
+            "I'm not sure",                         # upload_consent ambiguous #2 (count=2)
+            "I don't know",                         # upload_consent ambiguous #3 → EXHAUSTED → guide offered
+            "Sure, please reach out to them",      # personal_guide_consent=yes → guide triggered
+            "send me a text",                      # notification_method=sms
+            "yes that's fine",                     # phone confirmed
         ],
         test_name="test_B9_upload_consent_ambiguous_falls_through_to_guide",
         scenario=(
-            "Upload consent ambiguous × 2 → exhaustion falls through to "
+            "Upload consent ambiguous × 3 → exhaustion falls through to "
             "Personal Guide offer → consent yes → guide triggered"
         ),
     )
