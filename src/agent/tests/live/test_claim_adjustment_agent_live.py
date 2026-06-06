@@ -854,6 +854,7 @@ async def test_B1_decline_path_escalates(run_conversation, assert_and_record):
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -883,6 +884,7 @@ async def test_B2_doctor_direct_then_decline_all(run_conversation, assert_and_re
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -975,6 +977,7 @@ async def test_B5_upload_yes_email_ambiguous_exhaustion(run_conversation, assert
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1029,6 +1032,7 @@ async def test_B7_personal_guide_immediate_consent_no(run_conversation, assert_a
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1053,6 +1057,7 @@ async def test_B8_decline_from_start(run_conversation, assert_and_record):
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1110,6 +1115,7 @@ async def test_B10_personal_guide_consent_exhaustion(run_conversation, assert_an
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1134,6 +1140,7 @@ async def test_B11_transfer_request_during_records_coordination(run_conversation
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1158,6 +1165,7 @@ async def test_B12_abuse_guard_during_records_coordination(run_conversation, ass
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1598,6 +1606,7 @@ async def test_B_pg_6_no_wont_be_necessary_handle_myself(run_conversation, asser
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1628,6 +1637,7 @@ async def test_B_pg_7_conversational_rather_deal_directly(run_conversation, asse
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1657,6 +1667,7 @@ async def test_B_pg_8_not_right_now_soft_deferral(run_conversation, assert_and_r
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1763,6 +1774,8 @@ async def test_B_pg_ambiguous_no_1_hmm_then_no(run_conversation, assert_and_reco
         record,
         [
             (lambda: assert_escalated(record), "escalated"),
+            (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1787,6 +1800,8 @@ async def test_B_pg_ambiguous_no_2_maybe_then_explicit_no(run_conversation, asse
         record,
         [
             (lambda: assert_escalated(record), "escalated"),
+            (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1811,6 +1826,8 @@ async def test_B_pg_no_reason_1_ill_handle_it(run_conversation, assert_and_recor
         record,
         [
             (lambda: assert_escalated(record), "escalated"),
+            (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1838,6 +1855,8 @@ async def test_B_pg_no_reason_2_doctor_will_send(run_conversation, assert_and_re
         record,
         [
             (lambda: assert_escalated(record), "escalated"),
+            (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -2505,6 +2524,7 @@ async def test_B2_13_email_exhaustion_escalates(run_conversation, assert_and_rec
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
