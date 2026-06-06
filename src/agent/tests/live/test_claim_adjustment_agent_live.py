@@ -6066,6 +6066,8 @@ async def test_F1_transfer_request_during_notification_setup(run_conversation, a
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",
             "transfer me to a real person",
         ],
@@ -6096,6 +6098,8 @@ async def test_F2_abuse_during_notification_setup(run_conversation, assert_and_r
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",
             "you fucking useless machine",
         ],
