@@ -836,13 +836,13 @@ _PREFIX_B_WITH_REF = VERIFICATION_PREFIX_CLAIMS_B + [REF_B]
 @pytest.mark.live
 async def test_B1_decline_path_escalates(run_conversation, assert_and_record):
     """
-    B1: Scenario A exact — member says "no I don't want to proceed" when asked
+    B1: Scenario A exact — member says "I'd rather not deal with this right now" when asked
     about records. Verifies the decline branch triggers escalation.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "no I don't want to proceed",
+            "I'd rather not deal with this right now",
         ],
         test_name="test_B1_decline_path_escalates",
         scenario=(
@@ -854,6 +854,7 @@ async def test_B1_decline_path_escalates(run_conversation, assert_and_record):
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -861,17 +862,17 @@ async def test_B1_decline_path_escalates(run_conversation, assert_and_record):
 @pytest.mark.live
 async def test_B2_doctor_direct_then_decline_all(run_conversation, assert_and_record):
     """
-    B2: Member says "okay will send it" (doctor_direct) → upload link offered → "no thanks"
-    → Personal Guide offered → "no" → escalation.
+    B2: Member says "Sure, the office will get that over to you" (doctor_direct) → upload link offered → "I'll pass on that, thanks"
+    → Personal Guide offered → "No thanks, I'll handle it myself" → escalation.
     Verifies doctor_direct ack, upload link offer, Personal Guide fallback, and
     final decline → escalation path.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "okay will send it",  # doctor_direct
-            "no thanks",  # decline upload link
-            "no",  # decline Personal Guide
+            "Sure, the office will get that over to you",  # doctor_direct
+            "I'll pass on that, thanks",  # decline upload link
+            "No thanks, I'll handle it myself",  # decline Personal Guide
         ],
         test_name="test_B2_doctor_direct_then_decline_all",
         scenario=(
@@ -883,6 +884,7 @@ async def test_B2_doctor_direct_then_decline_all(run_conversation, assert_and_re
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -890,17 +892,17 @@ async def test_B2_doctor_direct_then_decline_all(run_conversation, assert_and_re
 @pytest.mark.live
 async def test_B3_upload_yes_email_confirmed_guide_yes(run_conversation, assert_and_record):
     """
-    B3: Member says "yes please" to upload link offer → email on file confirmed "yes"
-    → link sent → Personal Guide offered → "Perfect. Please do that" → guide triggered
+    B3: Member says "Yeah go ahead and send me that" to upload link offer → email on file confirmed
+    → link sent → Personal Guide offered → "That works for me, please go ahead" → guide triggered
     → routed to notification_setup_agent.
     Verifies Branch A complete happy path including Personal Guide consent.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "yes please",  # upload link offer accepted
+            "Yeah go ahead and send me that",  # upload link offer accepted
             "yes",  # email on file confirmed
-            "Perfect. Please do that",  # personal_guide_consent = yes
+            "That works for me, please go ahead",  # personal_guide_consent = yes
         ],
         test_name="test_B3_upload_yes_email_confirmed_guide_yes",
         scenario=(
@@ -923,18 +925,18 @@ async def test_B3_upload_yes_email_confirmed_guide_yes(run_conversation, assert_
 @pytest.mark.live
 async def test_B4_upload_yes_email_declined_new_email_guide_yes(run_conversation, assert_and_record):
     """
-    B4: Member says "yes please" to upload link → email declined → new email provided
-    → link sent → Personal Guide offered → "yes" → guide triggered
+    B4: Member says "Yeah go ahead and send me that" to upload link → email declined → new email provided
+    → link sent → Personal Guide offered → "Sure, please reach out to them" → guide triggered
     → routed to notification_setup_agent.
     Verifies email update sub-flow inside records coordination.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "yes please",  # upload link offer accepted
+            "Yeah go ahead and send me that",  # upload link offer accepted
             "no",  # email on file declined
             "michael.brown.new@gmail.com",  # new email provided
-            "yes",  # personal_guide_consent
+            "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B4_upload_yes_email_declined_new_email_guide_yes",
         scenario=(
@@ -956,14 +958,14 @@ async def test_B4_upload_yes_email_declined_new_email_guide_yes(run_conversation
 @pytest.mark.live
 async def test_B5_upload_yes_email_ambiguous_exhaustion(run_conversation, assert_and_record):
     """
-    B5: Member says "yes please" to upload link, then gives ambiguous email
-    confirmation twice → email_confirmed slot exhausts → escalation.
+    B5: Member says "Yeah go ahead and send me that" to accept the upload link, then gives
+    ambiguous email confirmation twice → email_confirmed slot exhausts → escalation.
     Verifies that the email_confirmed exhaustion guard fires inside records coordination.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "yes please",  # upload link accepted
+            "Yeah go ahead and send me that",  # upload link accepted
             "maybe",  # ambiguous email confirmation attempt 1
             "I think so",  # ambiguous email confirmation attempt 2
         ],
@@ -975,6 +977,7 @@ async def test_B5_upload_yes_email_ambiguous_exhaustion(run_conversation, assert
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -982,15 +985,15 @@ async def test_B5_upload_yes_email_ambiguous_exhaustion(run_conversation, assert
 @pytest.mark.live
 async def test_B6_personal_guide_immediate_consent_yes(run_conversation, assert_and_record):
     """
-    B6: Member says "you can contact my doctor" (personal_guide immediately)
-    → consent asked → "yes" → guide triggered → routed to notification_setup.
+    B6: Member says "Feel free to call my doctor's office directly" (personal_guide immediately)
+    → consent asked → "Sure, please reach out to them" → guide triggered → routed to notification_setup.
     Verifies Branch C direct entry without upload link step.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",  # upload_method = personal_guide
-            "yes",  # personal_guide_consent
+            "Feel free to call my doctor's office directly",  # upload_method = personal_guide
+            "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B6_personal_guide_immediate_consent_yes",
         scenario=(
@@ -1012,14 +1015,14 @@ async def test_B6_personal_guide_immediate_consent_yes(run_conversation, assert_
 @pytest.mark.live
 async def test_B7_personal_guide_immediate_consent_no(run_conversation, assert_and_record):
     """
-    B7: Member says "you can contact my doctor" → consent asked → "no" → escalation.
+    B7: Member says "Feel free to call my doctor's office directly" → consent asked → "No thanks, I'll handle it myself" → escalation.
     Verifies Branch C decline path (member withdraws Personal Guide consent).
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",  # upload_method = personal_guide
-            "no",  # personal_guide_consent declined
+            "Feel free to call my doctor's office directly",  # upload_method = personal_guide
+            "No thanks, I'll handle it myself",  # personal_guide_consent declined
         ],
         test_name="test_B7_personal_guide_immediate_consent_no",
         scenario=("Branch C: personal_guide intent → consent no → escalation"),
@@ -1029,6 +1032,7 @@ async def test_B7_personal_guide_immediate_consent_no(run_conversation, assert_a
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1053,6 +1057,7 @@ async def test_B8_decline_from_start(run_conversation, assert_and_record):
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1060,17 +1065,17 @@ async def test_B8_decline_from_start(run_conversation, assert_and_record):
 @pytest.mark.live
 async def test_B9_upload_consent_ambiguous_falls_through_to_guide(run_conversation, assert_and_record):
     """
-    B9: Member says "yes please" to get upload link, then gives ambiguous upload
-    consent twice → slot exhausts → falls through to Personal Guide offer.
+    B9: Member says "Yeah go ahead and send me that" to accept the upload link, then gives
+    ambiguous upload consent twice → slot exhausts → falls through to Personal Guide offer.
     Verifies the upload_consent exhaustion → Personal Guide fallback transition.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "yes please",  # upload_method = member_upload
+            "Yeah go ahead and send me that",  # upload_method = member_upload
             "maybe",  # ambiguous upload_consent attempt 1
             "I'm not sure",  # ambiguous upload_consent attempt 2
-            "yes",  # personal_guide_consent after fallback
+            "Sure, please reach out to them",  # personal_guide_consent after fallback
         ],
         test_name="test_B9_upload_consent_ambiguous_falls_through_to_guide",
         scenario=(
@@ -1097,7 +1102,7 @@ async def test_B10_personal_guide_consent_exhaustion(run_conversation, assert_an
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",  # upload_method = personal_guide
+            "Feel free to call my doctor's office directly",  # upload_method = personal_guide
             "maybe",  # ambiguous attempt 1
             "I think so",  # ambiguous attempt 2
             "not sure",  # ambiguous attempt 3
@@ -1110,6 +1115,7 @@ async def test_B10_personal_guide_consent_exhaustion(run_conversation, assert_an
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1117,14 +1123,14 @@ async def test_B10_personal_guide_consent_exhaustion(run_conversation, assert_an
 @pytest.mark.live
 async def test_B11_transfer_request_during_records_coordination(run_conversation, assert_and_record):
     """
-    B11: Member says "transfer me to someone" during records coordination.
+    B11: Member says "Can I speak with a live representative instead?" during records coordination.
     Verifies the TRANSFER_REQUEST guard fires inside RecordsCoordinationAgent
     and routes to escalation_agent.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "transfer me to someone please",
+            "Can I speak with a live representative instead?",
         ],
         test_name="test_B11_transfer_request_during_records_coordination",
         scenario=("TRANSFER_REQUEST guard during records coordination → escalation_agent"),
@@ -1134,6 +1140,7 @@ async def test_B11_transfer_request_during_records_coordination(run_conversation
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1158,6 +1165,7 @@ async def test_B12_abuse_guard_during_records_coordination(run_conversation, ass
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1182,8 +1190,8 @@ async def test_B_m_1_my_doctor_can_send_it(run_conversation, assert_and_record):
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "my doctor can send it",  # doctor_direct
-            "no thanks",  # decline upload link
-            "yes",  # personal_guide_consent
+            "I'll pass on that, thanks",  # decline upload link
+            "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_m_1_my_doctor_can_send_it",
         scenario=(
@@ -1214,8 +1222,8 @@ async def test_B_m_2_provider_fax_it_over(run_conversation, assert_and_record):
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "I'll have the provider fax it over",  # doctor_direct
-            "no thanks",  # decline upload link
-            "yes",  # personal_guide_consent
+            "I'll pass on that, thanks",  # decline upload link
+            "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_m_2_provider_fax_it_over",
         scenario=(
@@ -1246,8 +1254,8 @@ async def test_B_m_3_providers_office_will_send(run_conversation, assert_and_rec
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "the provider's office will send it",  # doctor_direct
-            "no thanks",  # decline upload link
-            "yes",  # personal_guide_consent
+            "I'll pass on that, thanks",  # decline upload link
+            "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_m_3_providers_office_will_send",
         scenario=(
@@ -1269,7 +1277,7 @@ async def test_B_m_3_providers_office_will_send(run_conversation, assert_and_rec
 async def test_B_m_4_will_upload_myself(run_conversation, assert_and_record):
     """
     B_m_4: "I will upload them myself" → upload_method='member_upload' →
-    upload link offered and accepted → upload_link_sent.
+    upload link offered → email confirmed ("yes that's the right one") → upload_link_sent.
 
     First-person commitment with explicit 'myself' reinforcement.  Verifies
     that a member who volunteers to upload without first being asked is
@@ -1279,8 +1287,8 @@ async def test_B_m_4_will_upload_myself(run_conversation, assert_and_record):
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "I will upload them myself",  # member_upload
-            "yes",  # email on file confirmed
-            "yes",  # personal_guide_consent
+            "yes that's the right one",  # email on file confirmed
+            "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_m_4_will_upload_myself",
         scenario=(
@@ -1303,8 +1311,8 @@ async def test_B_m_4_will_upload_myself(run_conversation, assert_and_record):
 async def test_B_m_5_can_i_just_upload_it(run_conversation, assert_and_record):
     """
     B_m_5: "can I just upload it?" → upload_method='member_upload' →
-    upload link offered and accepted → upload_link_sent → Personal Guide
-    consent yes → guide triggered → notification_setup.
+    upload link offered → email confirmed ("go ahead and use that one") →
+    upload_link_sent → Personal Guide consent yes → guide triggered → notification_setup.
 
     Question form with 'just' as a softener.  Verifies that a polite upload
     request is classified as member_upload and the full happy path completes
@@ -1314,8 +1322,8 @@ async def test_B_m_5_can_i_just_upload_it(run_conversation, assert_and_record):
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "can I just upload it?",  # member_upload (question form)
-            "yes",  # email on file confirmed
-            "yes",  # personal_guide_consent
+            "go ahead and use that one",  # email on file confirmed
+            "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_m_5_can_i_just_upload_it",
         scenario=(
@@ -1351,8 +1359,8 @@ async def test_B_m_6_conversational_easier_doctor_handle_it(run_conversation, as
         + [
             "Actually I think it would be easier to have my doctor handle it, "
             "can they send it over?",  # doctor_direct
-            "no thanks",  # decline upload link
-            "yes",  # personal_guide_consent
+            "I'll pass on that, thanks",  # decline upload link
+            "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_m_6_conversational_easier_doctor_handle_it",
         scenario=(
@@ -1386,8 +1394,8 @@ async def test_B_m_7_conversational_rather_upload_myself(run_conversation, asser
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "I'd rather upload it myself if that's an option",  # member_upload
-            "yes",  # email confirmed
-            "yes",  # personal_guide_consent
+            "that works, use that email",  # email confirmed
+            "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_m_7_conversational_rather_upload_myself",
         scenario=(
@@ -1424,7 +1432,7 @@ async def test_B_pg_1_yes_please_proceed(run_conversation, assert_and_record):
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",  # personal_guide intent
+            "Please just go ahead and contact them directly",  # personal_guide intent
             "yes please proceed",  # personal_guide_consent
         ],
         test_name="test_B_pg_1_yes_please_proceed",
@@ -1456,7 +1464,7 @@ async def test_B_pg_2_sure_go_ahead(run_conversation, assert_and_record):
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
+            "Can your team call my doctor's office?",  # personal_guide intent
             "sure go ahead",  # personal_guide_consent=yes
         ],
         test_name="test_B_pg_2_sure_go_ahead",
@@ -1486,7 +1494,7 @@ async def test_B_pg_3_please_arrange_that(run_conversation, assert_and_record):
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
+            "Reach out to the provider on my behalf",  # personal_guide intent
             "please arrange that",  # personal_guide_consent=yes
         ],
         test_name="test_B_pg_3_please_arrange_that",
@@ -1519,7 +1527,7 @@ async def test_B_pg_4_conversational_yes_reach_out(run_conversation, assert_and_
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
+            "Go ahead and give my doctor a call",  # personal_guide intent
             "Yes that would be great, please have them reach out to my doctor",
         ],
         test_name="test_B_pg_4_conversational_yes_reach_out",
@@ -1554,7 +1562,7 @@ async def test_B_pg_5_conversational_yes_doctor_better_with_calls(run_conversati
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
+            "You're welcome to contact my physician directly",  # personal_guide intent
             "Yes please, I'd appreciate that — my doctor's office is better with phone calls anyway",
         ],
         test_name="test_B_pg_5_conversational_yes_doctor_better_with_calls",
@@ -1585,7 +1593,7 @@ async def test_B_pg_6_no_wont_be_necessary_handle_myself(run_conversation, asser
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
+            "Have someone from your team contact my doctor",  # personal_guide intent
             "no that won't be necessary, I'll handle it myself",  # consent=no
         ],
         test_name="test_B_pg_6_no_wont_be_necessary_handle_myself",
@@ -1598,6 +1606,7 @@ async def test_B_pg_6_no_wont_be_necessary_handle_myself(run_conversation, asser
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1617,7 +1626,7 @@ async def test_B_pg_7_conversational_rather_deal_directly(run_conversation, asse
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
+            "I was thinking you could contact my doctor's office",  # personal_guide intent
             "No I think I'd rather deal with it directly, no thanks",  # consent=no
         ],
         test_name="test_B_pg_7_conversational_rather_deal_directly",
@@ -1628,6 +1637,7 @@ async def test_B_pg_7_conversational_rather_deal_directly(run_conversation, asse
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1635,22 +1645,21 @@ async def test_B_pg_7_conversational_rather_deal_directly(run_conversation, asse
 @pytest.mark.live
 async def test_B_pg_8_not_right_now_soft_deferral(run_conversation, assert_and_record):
     """
-    B_pg_8: "not right now" → personal_guide_consent='no' → escalation.
+    B_pg_8: "maybe some other time" → personal_guide_consent='no' → escalation.
 
-    Soft temporal deferral; the extraction prompt explicitly maps "not right
-    now" to consent='no' (not ambiguous).  Verifies that a deferral that
-    could be mistaken for ambiguity is correctly classified as a decline and
-    escalation fires.
+    Soft temporal deferral; a member who defers to a future time is declining
+    consent now.  Verifies that a deferral that could be mistaken for ambiguity
+    is correctly classified as a decline and escalation fires.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
-            "not right now",  # extraction prompt: maps to consent=no
+            "I'd prefer you contact my doctor on my behalf",  # personal_guide intent
+            "maybe some other time",  # soft temporal deferral → consent=no
         ],
         test_name="test_B_pg_8_not_right_now_soft_deferral",
         scenario=(
-            "'not right now' → personal_guide_consent=no (per extraction prompt, not ambiguous) → escalation"
+            "'maybe some other time' → personal_guide_consent=no (temporal deferral = decline) → escalation"
         ),
     )
     assert_and_record(
@@ -1658,6 +1667,7 @@ async def test_B_pg_8_not_right_now_soft_deferral(run_conversation, assert_and_r
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1670,7 +1680,7 @@ async def test_B_pg_8_not_right_now_soft_deferral(run_conversation, assert_and_r
 @pytest.mark.live
 async def test_B_pg_exact_1_perfect_please_do_that(run_conversation, assert_and_record):
     """
-    B_pg_exact_1: "Perfect. Please do that" — exact phrase from claim_adjustment_happy_path.txt.
+    B_pg_exact_1: "That works for me, please go ahead" — natural spoken-language phrase replacing the prior exact phrase.
     personal_guide_consent=yes → personal_guide_triggered=True.
 
     This MUST pass — it is the canonical phrase in the static transcript.
@@ -1678,11 +1688,11 @@ async def test_B_pg_exact_1_perfect_please_do_that(run_conversation, assert_and_
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
-            "Perfect. Please do that",
+            "Feel free to call my doctor's office directly",
+            "That works for me, please go ahead",
         ],
         test_name="test_B_pg_exact_1_perfect_please_do_that",
-        scenario="personal_guide_consent exact phrase 'Perfect. Please do that' → triggered",
+        scenario="personal_guide_consent natural phrase 'That works for me, please go ahead' → triggered",
     )
     assert_and_record(
         record,
@@ -1701,7 +1711,7 @@ async def test_B_pg_exact_2_yes_please_do_that(run_conversation, assert_and_reco
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
+            "Feel free to call my doctor's office directly",
             "Yes please do that",
         ],
         test_name="test_B_pg_exact_2_yes_please_do_that",
@@ -1725,7 +1735,7 @@ async def test_B_pg_exact_3_absolutely_please_reach_out(run_conversation, assert
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
+            "Feel free to call my doctor's office directly",
             "absolutely, please reach out to them",
         ],
         test_name="test_B_pg_exact_3_absolutely_please_reach_out",
@@ -1744,26 +1754,28 @@ async def test_B_pg_exact_3_absolutely_please_reach_out(run_conversation, assert
 @pytest.mark.slow
 async def test_B_pg_ambiguous_no_1_hmm_then_no(run_conversation, assert_and_record):
     """
-    B_pg_ambiguous_no_1: "hmm" (ambiguous) → agent re-asks → "no" → escalation.
-    personal_guide was NOT triggered.
+    B_pg_ambiguous_no_1: personal_guide intent → "hmm" (ambiguous) → agent re-asks →
+    "No, I don't think so" → escalation. personal_guide was NOT triggered.
 
     Verifies that ambiguous first response triggers retry, and subsequent
-    "no" results in escalation (member_declined_personal_guide).
+    explicit decline results in escalation (member_declined_personal_guide).
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
-            "hmm",
-            "no",
+            "I guess you could try reaching the doctor",  # personal_guide intent
+            "hmm",  # ambiguous
+            "No, I don't think so",  # explicit decline after re-ask
         ],
         test_name="test_B_pg_ambiguous_no_1_hmm_then_no",
-        scenario="personal_guide_consent 'hmm' (ambiguous) → re-ask → 'no' → escalation",
+        scenario="personal_guide_consent 'hmm' (ambiguous) → re-ask → 'No, I don't think so' → escalation",
     )
     assert_and_record(
         record,
         [
             (lambda: assert_escalated(record), "escalated"),
+            (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1777,9 +1789,9 @@ async def test_B_pg_ambiguous_no_2_maybe_then_explicit_no(run_conversation, asse
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
-            "maybe",
-            "no I don't want to do that",
+            "Maybe you can contact the doctor's office if that helps",  # personal_guide intent
+            "maybe",  # ambiguous
+            "no I don't want to do that",  # explicit decline after re-ask
         ],
         test_name="test_B_pg_ambiguous_no_2_maybe_then_explicit_no",
         scenario="personal_guide_consent 'maybe' → re-ask → explicit no → escalation",
@@ -1788,6 +1800,8 @@ async def test_B_pg_ambiguous_no_2_maybe_then_explicit_no(run_conversation, asse
         record,
         [
             (lambda: assert_escalated(record), "escalated"),
+            (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1802,8 +1816,8 @@ async def test_B_pg_no_reason_1_ill_handle_it(run_conversation, assert_and_recor
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
-            "I'll handle it on my own",
+            "You can try calling my doctor if you need records",  # personal_guide intent
+            "I'll handle it on my own",  # consent=no (implicit decline with reason)
         ],
         test_name="test_B_pg_no_reason_1_ill_handle_it",
         scenario="personal_guide_consent decline with reason 'I'll handle it on my own' → escalation",
@@ -1812,6 +1826,8 @@ async def test_B_pg_no_reason_1_ill_handle_it(run_conversation, assert_and_recor
         record,
         [
             (lambda: assert_escalated(record), "escalated"),
+            (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1829,8 +1845,8 @@ async def test_B_pg_no_reason_2_doctor_will_send(run_conversation, assert_and_re
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
-            "that's not needed, my doctor's office will send it directly",
+            "My doctor's office should be able to help you get the records",  # personal_guide intent
+            "that's not needed, my doctor's office will send it directly",  # consent=no with reason
         ],
         test_name="test_B_pg_no_reason_2_doctor_will_send",
         scenario="personal_guide_consent declined with 'doctor will send it' reasoning → escalation",
@@ -1839,6 +1855,8 @@ async def test_B_pg_no_reason_2_doctor_will_send(run_conversation, assert_and_re
         record,
         [
             (lambda: assert_escalated(record), "escalated"),
+            (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -1851,23 +1869,22 @@ async def test_B_pg_no_reason_2_doctor_will_send(run_conversation, assert_and_re
 @pytest.mark.live
 async def test_B_uc_1_yes_please_send_the_link(run_conversation, assert_and_record):
     """
-    B_uc_1: "yes please send the link" → upload_consent='yes' →
+    B_uc_1: "Sounds good, please send it over" → upload_consent='yes' →
     email on file confirmed → upload_link_sent=True.
 
-    Explicit affirmative with an imperative restating the action ('send the
-    link').  The extraction prompt maps "sure send the link" to member_upload;
-    this variant uses 'please' and confirms consent directly.  Verifies
-    upload_link_sent=True after the email confirmation step.
+    Explicit affirmative with an imperative restating the action ('send it
+    over').  Verifies upload_consent='yes' is extracted from a natural spoken
+    form and upload_link_sent=True after the email confirmation step.
     """
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "yes please send the link",  # upload_consent=yes
-            "yes",  # email on file confirmed
+            "Sounds good, please send it over",  # upload_consent=yes
+            "that's the right email",  # email on file confirmed
         ],
         test_name="test_B_uc_1_yes_please_send_the_link",
         scenario=(
-            "'yes please send the link' → upload_consent=yes → email confirmed → upload_link_sent=True"
+            "'Sounds good, please send it over' → upload_consent=yes → email confirmed → upload_link_sent=True"
         ),
     )
     assert_and_record(
@@ -1894,7 +1911,7 @@ async def test_B_uc_2_sure_that_would_help(run_conversation, assert_and_record):
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "sure that would help",  # upload_consent=yes
-            "yes",  # email on file confirmed
+            "yep that's correct",  # email on file confirmed
         ],
         test_name="test_B_uc_2_sure_that_would_help",
         scenario=("'sure that would help' → upload_consent=yes → email confirmed → upload_link_sent=True"),
@@ -1924,7 +1941,7 @@ async def test_B_uc_3_conversational_sounds_easier_than_fax(run_conversation, as
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "Oh yes please, that sounds much easier than having to fax anything",
-            "yes",  # email on file confirmed
+            "that's the one, go ahead",  # email on file confirmed
         ],
         test_name="test_B_uc_3_conversational_sounds_easier_than_fax",
         scenario=(
@@ -1956,12 +1973,12 @@ async def test_B_uc_4_no_dont_need_link_but_guide_yes(run_conversation, assert_a
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "no I don't need the link",  # upload_consent=no
-            "yes",  # personal_guide_consent
+            "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_uc_4_no_dont_need_link_but_guide_yes",
         scenario=(
             "'no I don't need the link' → upload_consent=no → "
-            "Personal Guide offered → 'yes' → guide triggered → notification_setup"
+            "Personal Guide offered → consent yes → guide triggered → notification_setup"
         ),
     )
     assert_and_record(
@@ -2025,7 +2042,7 @@ async def test_B_uc_softno_1_id_rather_not(run_conversation, assert_and_record):
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "I'd rather not",  # upload_consent=no
-            "yes",  # personal_guide_consent=yes
+            "Sure, please reach out to them",  # personal_guide_consent=yes
         ],
         test_name="test_B_uc_softno_1_id_rather_not",
         scenario="upload_consent soft 'I'd rather not' → guide offered → yes → personal_guide_triggered",
@@ -2051,7 +2068,7 @@ async def test_B_uc_softno_2_doctor_send_with_guide_yes(run_conversation, assert
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "no that's ok I'll have my doctor send it",  # upload_consent=no
-            "yes",  # personal_guide_consent=yes
+            "Sure, please reach out to them",  # personal_guide_consent=yes
         ],
         test_name="test_B_uc_softno_2_doctor_send_with_guide_yes",
         scenario="upload_consent decline with reason → guide offered → yes → personal_guide_triggered",
@@ -2082,7 +2099,7 @@ async def test_B_uc_exhaust_1_three_ambiguous_then_guide(run_conversation, asser
             "hmm",  # upload_consent ambiguous 1
             "I'm not sure",  # upload_consent ambiguous 2
             "maybe",  # upload_consent ambiguous 3 → exhaustion → guide offered
-            "yes",  # personal_guide_consent=yes
+            "Sure, please reach out to them",  # personal_guide_consent=yes
         ],
         test_name="test_B_uc_exhaust_1_three_ambiguous_then_guide",
         scenario="upload_consent exhaustion (3× ambiguous) → guide fallthrough → yes → triggered",
@@ -2099,10 +2116,10 @@ async def test_B_uc_exhaust_1_three_ambiguous_then_guide(run_conversation, asser
 # ---------------------------------------------------------------------------
 # Shared prefix for Group B2 — lands at email_confirmed inside
 # RecordsCoordinationAgent.  Scenario A (records_required=True) is the only
-# path that enters records_coordination; "yes please" accepts the upload link
-# offer so the next agent turn reads back the email on file.
+# path that enters records_coordination; accepting the upload link offer
+# causes the next agent turn to read back the email on file.
 # ---------------------------------------------------------------------------
-_B2_EMAIL_PREFIX = _PREFIX_A_WITH_REF + ["yes please"]
+_B2_EMAIL_PREFIX = _PREFIX_A_WITH_REF + ["Yeah, go ahead and send me that link"]
 NEW_EMAIL_B2 = "michael.brown.new@gmail.com"
 
 
@@ -2507,6 +2524,7 @@ async def test_B2_13_email_exhaustion_escalates(run_conversation, assert_and_rec
         [
             (lambda: assert_escalated(record), "escalated"),
             (lambda: assert_routed_to(record, "escalation_agent"), "routed_to_escalation"),
+            (lambda: assert_any_agent_message_contains(record, "representative"), "agent_mentions_representative"),
         ],
     )
 
@@ -4581,7 +4599,7 @@ async def test_D_combo_3_guide_only_n1_sms_n2_email_timeline(run_conversation, a
         user_inputs=VERIFICATION_PREFIX_CLAIMS
         + [
             REF_A,
-            "you can contact my doctor",  # personal_guide intent (no upload)
+            "Feel free to call my doctor's office directly",  # personal_guide intent (no upload)
             "yes",  # personal_guide_consent → guide triggered
             "SMS",  # N1
             "yes",  # N1: phone confirmed
@@ -4960,7 +4978,7 @@ _E_PREFIX = VERIFICATION_PREFIX_CLAIMS_B + [
 # Scenario A prefix that goes through upload + guide so personal_guide flag is set
 _E_PREFIX_WITH_GUIDE = VERIFICATION_PREFIX_CLAIMS + [
     REF_A,
-    "you can contact my doctor",  # personal_guide intent
+    "Feel free to call my doctor's office directly",  # personal_guide intent
     "yes",  # personal_guide_consent
     "SMS",  # notification_method
     "yes",  # phone on file confirmed
@@ -5347,7 +5365,7 @@ async def test_R3_1_ambiguous_once_then_yes(run_conversation, assert_and_record)
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
+            "Feel free to call my doctor's office directly",
             "I think so maybe?",
             "yes please proceed",
         ],
@@ -5380,7 +5398,7 @@ async def test_R3_2_ambiguous_twice_then_yes(run_conversation, assert_and_record
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
+            "Feel free to call my doctor's office directly",
             "hmm I'm not sure",
             "I guess maybe?",
             "yes go ahead",
@@ -5413,7 +5431,7 @@ async def test_R3_3_answered_wrong_then_yes(run_conversation, assert_and_record)
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "you can contact my doctor",
+            "Feel free to call my doctor's office directly",
             "what does that involve exactly?",
             "yes please",
         ],
