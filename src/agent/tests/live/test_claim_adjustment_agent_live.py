@@ -891,7 +891,7 @@ async def test_B2_doctor_direct_then_decline_all(run_conversation, assert_and_re
 async def test_B3_upload_yes_email_confirmed_guide_yes(run_conversation, assert_and_record):
     """
     B3: Member says "yes please" to upload link offer → email on file confirmed "yes"
-    → link sent → Personal Guide offered → "Perfect. Please do that" → guide triggered
+    → link sent → Personal Guide offered → "That works for me, please go ahead" → guide triggered
     → routed to notification_setup_agent.
     Verifies Branch A complete happy path including Personal Guide consent.
     """
@@ -982,7 +982,7 @@ async def test_B5_upload_yes_email_ambiguous_exhaustion(run_conversation, assert
 @pytest.mark.live
 async def test_B6_personal_guide_immediate_consent_yes(run_conversation, assert_and_record):
     """
-    B6: Member says "you can contact my doctor" (personal_guide immediately)
+    B6: Member says "Feel free to call my doctor's office directly" (personal_guide immediately)
     → consent asked → "yes" → guide triggered → routed to notification_setup.
     Verifies Branch C direct entry without upload link step.
     """
@@ -1012,7 +1012,7 @@ async def test_B6_personal_guide_immediate_consent_yes(run_conversation, assert_
 @pytest.mark.live
 async def test_B7_personal_guide_immediate_consent_no(run_conversation, assert_and_record):
     """
-    B7: Member says "you can contact my doctor" → consent asked → "no" → escalation.
+    B7: Member says "Feel free to call my doctor's office directly" → consent asked → "No thanks, I'll handle it myself" → escalation.
     Verifies Branch C decline path (member withdraws Personal Guide consent).
     """
     record = await run_conversation(
@@ -1070,7 +1070,7 @@ async def test_B9_upload_consent_ambiguous_falls_through_to_guide(run_conversati
             "Yeah go ahead and send me that",  # upload_method = member_upload
             "maybe",  # ambiguous upload_consent attempt 1
             "I'm not sure",  # ambiguous upload_consent attempt 2
-            "yes",  # personal_guide_consent after fallback
+            "Sure, please reach out to them",  # personal_guide_consent after fallback
         ],
         test_name="test_B9_upload_consent_ambiguous_falls_through_to_guide",
         scenario=(
@@ -1956,7 +1956,7 @@ async def test_B_uc_4_no_dont_need_link_but_guide_yes(run_conversation, assert_a
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "no I don't need the link",  # upload_consent=no
-            "yes",  # personal_guide_consent
+            "Sure, please reach out to them",  # personal_guide_consent
         ],
         test_name="test_B_uc_4_no_dont_need_link_but_guide_yes",
         scenario=(
@@ -2025,7 +2025,7 @@ async def test_B_uc_softno_1_id_rather_not(run_conversation, assert_and_record):
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "I'd rather not",  # upload_consent=no
-            "yes",  # personal_guide_consent=yes
+            "Sure, please reach out to them",  # personal_guide_consent=yes
         ],
         test_name="test_B_uc_softno_1_id_rather_not",
         scenario="upload_consent soft 'I'd rather not' → guide offered → yes → personal_guide_triggered",
@@ -2051,7 +2051,7 @@ async def test_B_uc_softno_2_doctor_send_with_guide_yes(run_conversation, assert
         user_inputs=_PREFIX_A_WITH_REF
         + [
             "no that's ok I'll have my doctor send it",  # upload_consent=no
-            "yes",  # personal_guide_consent=yes
+            "Sure, please reach out to them",  # personal_guide_consent=yes
         ],
         test_name="test_B_uc_softno_2_doctor_send_with_guide_yes",
         scenario="upload_consent decline with reason → guide offered → yes → personal_guide_triggered",
@@ -2082,7 +2082,7 @@ async def test_B_uc_exhaust_1_three_ambiguous_then_guide(run_conversation, asser
             "hmm",  # upload_consent ambiguous 1
             "I'm not sure",  # upload_consent ambiguous 2
             "maybe",  # upload_consent ambiguous 3 → exhaustion → guide offered
-            "yes",  # personal_guide_consent=yes
+            "Sure, please reach out to them",  # personal_guide_consent=yes
         ],
         test_name="test_B_uc_exhaust_1_three_ambiguous_then_guide",
         scenario="upload_consent exhaustion (3× ambiguous) → guide fallthrough → yes → triggered",
