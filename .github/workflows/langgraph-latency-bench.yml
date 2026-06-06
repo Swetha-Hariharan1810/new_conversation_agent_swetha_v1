@@ -1,0 +1,162 @@
+---
+name: LangGraph Latency Bench
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+      - stage
+      - test
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  bench:
+    name: LangGraph Latency (PCP per-node)
+    runs-on: ubuntu-latest
+
+    env:
+      # SLA threshold in seconds — applied to LLM-only latency avg,
+      # NOT to total wall-clock (which includes uncontrollable framework
+      # overhead). Set this to roughly 2x your observed warm-path p50.
+      THRESHOLD_SEC: "2.5"
+      # "llm_sec" (controllable LLM call time) or "total_sec" (full turn)
+      SLA_METRIC: "llm_sec"
+      ITERATIONS: "5"
+      BENCH_OUTPUT_DIR: "scripts/latency_workload/results"
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: UV setup and activate
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run latency benchmark
+        id: bench
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          BENCH_OUTPUT_DIR: ${{ env.BENCH_OUTPUT_DIR }}
+          THRESHOLD_SEC: ${{ env.THRESHOLD_SEC }}
+          SLA_METRIC: ${{ env.SLA_METRIC }}
+          ITERATIONS: ${{ env.ITERATIONS }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          OPENAI_API_VERSION: ${{ secrets.OPENAI_API_VERSION }}
+          WORKER_DEPLOYMENT: ${{ secrets.WORKER_DEPLOYMENT }}
+          SF_CLIENT_ID: ${{ secrets.SF_CLIENT_ID }}
+          SF_CLIENT_SECRET: ${{ secrets.SF_CLIENT_SECRET }}
+          SF_REFRESH_TOKEN: ${{ secrets.SF_REFRESH_TOKEN }}
+          SF_TOKEN_URL: ${{ secrets.SF_TOKEN_URL }}
+          SF_API_VERSION: ${{ secrets.SF_API_VERSION }}
+          SF_INSTANCE_URL: ${{ secrets.SF_INSTANCE_URL }}
+          LANGSMITH_TRACING: "false"
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_PROJECT: conversation-agent-member-sda
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_LOCATION: ${{ secrets.GCP_LOCATION }}
+          GEMINI_THINKING_LEVEL: ${{ secrets.GEMINI_THINKING_LEVEL }}
+          GEMINI_THINKING_BUDGET: ${{ secrets.GEMINI_THINKING_BUDGET }}
+          GCP_SA_BASE64: ${{ secrets.GCP_SA_BASE64 }}
+        run: >
+          python -m scripts.latency_workload.main
+          --iterations $ITERATIONS
+          --threshold-sec $THRESHOLD_SEC
+          --sla-metric $SLA_METRIC
+          --scenarios-path scripts/latency_workload/scenarios
+
+      - name: Upload JSON metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: langgraph-latency-metrics
+          path: scripts/latency_workload/results/bench-metrics.json
+
+      - name: Comment results on PR
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          BENCH_OUTPUT_DIR: ${{ env.BENCH_OUTPUT_DIR }}
+          THRESHOLD_SEC: ${{ env.THRESHOLD_SEC }}
+          SLA_METRIC: ${{ env.SLA_METRIC }}
+          ITERATIONS: ${{ env.ITERATIONS }}
+        with:
+          script: |
+            const fs = require('fs');
+            const threshold = parseFloat(process.env.THRESHOLD_SEC || '2.5');
+            const slaMetric = process.env.SLA_METRIC || 'llm_sec';
+            const jsonPath = `${process.env.BENCH_OUTPUT_DIR}/bench-metrics.json`;
+
+            let report = {};
+            try { report = JSON.parse(fs.readFileSync(jsonPath, 'utf8')); } catch (e) {}
+
+            const overall = report.overall || {};
+            const total = overall.total_sec || {};
+            const llm = overall.llm_sec || {};
+            const calls = overall.llm_calls_per_turn || {};
+            const viols = report.violations || {};
+            const meta = report.meta || {};
+
+            // Per-node table
+            const perNode = overall.per_node || {};
+            const nodeRows = Object.entries(perNode)
+              .sort(([,a],[,b]) => (b.avg || 0) - (a.avg || 0))
+              .map(([node, m]) =>
+                `| ${node} | ${(m.avg||0).toFixed(3)} | ${(m.p95||0).toFixed(3)} | ${m.count||0} |`
+              ).join('\n');
+
+            // Per-scenario table
+            const perScenario = report.per_scenario || {};
+            const scenarioRows = Object.entries(perScenario)
+              .map(([name, sr]) => {
+                const t = sr.total_sec || {};
+                const l = sr.llm_sec || {};
+                const c = sr.llm_calls_per_turn || {};
+                const series = slaMetric === 'total_sec' ? t : l;
+                const pass = (series.avg || 0) <= threshold ? '✅' : '❌';
+                return `| ${name} | ${(t.p50||0).toFixed(3)} | ${(l.p50||0).toFixed(3)} | ${(c.avg||0).toFixed(1)} | ${pass} |`;
+              }).join('\n');
+
+            const body =
+              `### LangGraph Latency Bench (PCP per-node)\n\n` +
+              `Iterations: ${process.env.ITERATIONS} | SLA metric: **${slaMetric}** | Threshold: **${threshold}s**\n\n` +
+              `#### Total Turn Latency (all graph nodes)\n` +
+              `| Metric | Value (s) |\n|---|---:|\n` +
+              `| p50 | ${(total.p50||0).toFixed(3)} |\n` +
+              `| p95 | ${(total.p95||0).toFixed(3)} |\n` +
+              `| avg | ${(total.avg||0).toFixed(3)} |\n` +
+              `| std_dev | ${(total.std_dev||0).toFixed(3)} |\n\n` +
+              `#### LLM-Only Latency\n` +
+              `| Metric | Value (s) |\n|---|---:|\n` +
+              `| p50 | ${(llm.p50||0).toFixed(3)} |\n` +
+              `| p95 | ${(llm.p95||0).toFixed(3)} |\n` +
+              `| avg | ${(llm.avg||0).toFixed(3)} |\n` +
+              `| std_dev | ${(llm.std_dev||0).toFixed(3)} |\n\n` +
+              `#### LLM Calls Per Turn: avg=${( calls.avg||0).toFixed(1)}, p95=${(calls.p95||0).toFixed(1)}\n\n` +
+              `#### Per-Node Breakdown\n` +
+              `| Node | avg (s) | p95 (s) | count |\n|---|---:|---:|---:|\n` +
+              nodeRows + `\n\n` +
+              `#### Per-Scenario\n` +
+              `| Scenario | total_p50 | llm_p50 | llm_calls_avg | Status |\n|---|---:|---:|---:|---:|\n` +
+              scenarioRows + `\n\n` +
+              `**SLA violations:** ${slaMetric === 'total_sec' ? (viols.total_sec_over_threshold||0) : (viols.llm_sec_over_threshold||0)} / ${meta.turn_count||0} turns exceeded ${threshold}s (${slaMetric})`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
