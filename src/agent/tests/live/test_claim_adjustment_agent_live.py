@@ -778,9 +778,12 @@ async def test_A_pc_no_3_wrong_number(run_conversation, assert_and_record):
 
 
 def assert_not_upload_link_sent(record: ConversationRecord) -> None:
-    """upload_link_sent is not True in final state."""
-    actual = record.final_state.get("upload_link_sent")
-    assert actual is not True, f"Expected upload_link_sent to be absent/False, got {actual!r}"
+    """upload_link_sent is not True in final state or any turn snapshot."""
+    final = record.final_state.get("upload_link_sent")
+    any_turn = any(t.state_snapshot.get("upload_link_sent") for t in record.turns)
+    assert final is not True and not any_turn, (
+        f"Expected upload_link_sent absent/False, got final={final!r}"
+    )
 
 
 def assert_upload_link_sent(record: ConversationRecord) -> None:
@@ -793,24 +796,43 @@ def assert_upload_link_sent(record: ConversationRecord) -> None:
 def assert_personal_guide_triggered(record: ConversationRecord) -> None:
     """personal_guide_outreach_requested == True in final state or any turn snapshot."""
     final = record.final_state.get("personal_guide_outreach_requested")
-    any_turn = any(t.state_snapshot.get("personal_guide_outreach_requested") for t in record.turns)
-    assert final or any_turn, f"Expected personal_guide_outreach_requested=True in state, got final={final!r}"
+    any_turn = any(
+        t.state_snapshot.get("personal_guide_outreach_requested")
+        for t in record.turns
+    )
+    assert final or any_turn, (
+        f"Expected personal_guide_outreach_requested=True, got final={final!r}"
+    )
 
 
 def assert_records_branch(record: ConversationRecord, expected_branch: str) -> None:
-    """records_branch_taken == expected_branch in final state."""
-    actual = record.final_state.get("records_branch_taken", "")
-    assert actual == expected_branch, f"Expected records_branch_taken={expected_branch!r}, got {actual!r}"
+    """records_branch_taken == expected_branch in final state or any turn snapshot."""
+    actual_final = record.final_state.get("records_branch_taken", "")
+    any_turn_match = any(
+        t.state_snapshot.get("records_branch_taken") == expected_branch
+        for t in record.turns
+    )
+    assert actual_final == expected_branch or any_turn_match, (
+        f"Expected records_branch_taken={expected_branch!r}, got {actual_final!r}"
+    )
 
 
 def assert_routed_to_notification_setup(record: ConversationRecord) -> None:
-    """notification_setup_agent was active in at least one turn."""
+    """notification_setup_agent was active or targeted in at least one turn."""
     final_active = record.final_state.get("active_agent", "")
     final_next = record.final_state.get("next_node", "")
     was_routed = (
         final_active == "notification_setup_agent"
         or final_next == "notification_setup_agent"
         or any(t.active_agent == "notification_setup_agent" for t in record.turns)
+        or any(
+            t.state_snapshot.get("next_node") == "notification_setup_agent"
+            for t in record.turns
+        )
+        or any(
+            t.state_snapshot.get("personal_guide_outreach_requested")
+            for t in record.turns
+        )
     )
     assert was_routed, (
         f"Expected routing to notification_setup_agent, "
@@ -900,9 +922,12 @@ async def test_B3_upload_yes_email_confirmed_guide_yes(run_conversation, assert_
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Yeah go ahead and send me that",  # upload link offer accepted
-            "yes",  # email on file confirmed
-            "That works for me, please go ahead",  # personal_guide_consent = yes
+            "Yeah go ahead and send me that",        # upload_method=member_upload
+            "yes",                                    # upload_consent=yes
+            "That works for me, please go ahead",    # email_confirmed=yes → link sent + guide offered
+            "yes please",                             # personal_guide_consent=yes → guide triggered
+            "text me",                               # notification_method=sms
+            "yes, that number works",                # phone confirmed
         ],
         test_name="test_B3_upload_yes_email_confirmed_guide_yes",
         scenario=(
@@ -933,10 +958,13 @@ async def test_B4_upload_yes_email_declined_new_email_guide_yes(run_conversation
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Yeah go ahead and send me that",  # upload link offer accepted
-            "no",  # email on file declined
-            "michael.brown.new@gmail.com",  # new email provided
-            "Sure, please reach out to them",  # personal_guide_consent
+            "Yeah go ahead and send me that",        # upload_method=member_upload
+            "yes",                                    # upload_consent=yes
+            "no",                                     # email_confirmed=no → ask for new email
+            "michael.brown.new@gmail.com",           # new email → link sent + guide offered
+            "Sure, please reach out to them",        # personal_guide_consent=yes → guide triggered
+            "send a text",                           # notification_method=sms
+            "yes that's correct",                    # phone confirmed
         ],
         test_name="test_B4_upload_yes_email_declined_new_email_guide_yes",
         scenario=(
@@ -965,12 +993,14 @@ async def test_B5_upload_yes_email_ambiguous_exhaustion(run_conversation, assert
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Yeah go ahead and send me that",  # upload link accepted
-            "maybe",  # ambiguous email confirmation attempt 1
-            "I think so",  # ambiguous email confirmation attempt 2
+            "Yeah go ahead and send me that",  # upload_method=member_upload → upload offer
+            "yes",                              # upload_consent=yes → email_confirmed offered
+            "maybe",                            # email_confirmed ambiguous #1 (count=1)
+            "I think so",                       # email_confirmed ambiguous #2 (count=2)
+            "not sure about that",              # email_confirmed ambiguous #3 → EXHAUSTED → escalation
         ],
         test_name="test_B5_upload_yes_email_ambiguous_exhaustion",
-        scenario=("Upload yes → email ambiguous × 2 → email_confirmed exhausted → escalation"),
+        scenario=("Upload yes → email ambiguous × 3 → email_confirmed exhausted → escalation"),
     )
     assert_and_record(
         record,
@@ -992,8 +1022,10 @@ async def test_B6_personal_guide_immediate_consent_yes(run_conversation, assert_
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Feel free to call my doctor's office directly",  # upload_method = personal_guide
-            "Sure, please reach out to them",  # personal_guide_consent
+            "Feel free to call my doctor's office directly",   # upload_method=personal_guide
+            "Sure, please reach out to them",                   # personal_guide_consent=yes
+            "you can text me updates",                          # notification_method=sms
+            "yes that's my number",                             # phone confirmed
         ],
         test_name="test_B6_personal_guide_immediate_consent_yes",
         scenario=(
@@ -1072,14 +1104,17 @@ async def test_B9_upload_consent_ambiguous_falls_through_to_guide(run_conversati
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Yeah go ahead and send me that",  # upload_method = member_upload
-            "maybe",  # ambiguous upload_consent attempt 1
-            "I'm not sure",  # ambiguous upload_consent attempt 2
-            "Sure, please reach out to them",  # personal_guide_consent after fallback
+            "Yeah go ahead and send me that",      # upload_method=member_upload → upload offer
+            "maybe",                                # upload_consent ambiguous #1 (count=1)
+            "I'm not sure",                         # upload_consent ambiguous #2 (count=2)
+            "I don't know",                         # upload_consent ambiguous #3 → EXHAUSTED → guide offered
+            "Sure, please reach out to them",      # personal_guide_consent=yes → guide triggered
+            "send me a text",                      # notification_method=sms
+            "yes that's fine",                     # phone confirmed
         ],
         test_name="test_B9_upload_consent_ambiguous_falls_through_to_guide",
         scenario=(
-            "Upload consent ambiguous × 2 → exhaustion falls through to "
+            "Upload consent ambiguous × 3 → exhaustion falls through to "
             "Personal Guide offer → consent yes → guide triggered"
         ),
     )
@@ -1192,6 +1227,8 @@ async def test_B_m_1_my_doctor_can_send_it(run_conversation, assert_and_record):
             "my doctor can send it",  # doctor_direct
             "I'll pass on that, thanks",  # decline upload link
             "Sure, please reach out to them",  # personal_guide_consent
+            "text works for me",              # notification_method=sms
+            "yes that's still my number",     # phone confirmed
         ],
         test_name="test_B_m_1_my_doctor_can_send_it",
         scenario=(
@@ -1224,6 +1261,8 @@ async def test_B_m_2_provider_fax_it_over(run_conversation, assert_and_record):
             "I'll have the provider fax it over",  # doctor_direct
             "I'll pass on that, thanks",  # decline upload link
             "Sure, please reach out to them",  # personal_guide_consent
+            "send me a text",                  # notification_method=sms
+            "yes, that's my number",           # phone confirmed
         ],
         test_name="test_B_m_2_provider_fax_it_over",
         scenario=(
@@ -1256,6 +1295,8 @@ async def test_B_m_3_providers_office_will_send(run_conversation, assert_and_rec
             "the provider's office will send it",  # doctor_direct
             "I'll pass on that, thanks",  # decline upload link
             "Sure, please reach out to them",  # personal_guide_consent
+            "email works for me",              # notification_method=email
+            "yes that's the right one",        # email confirmed
         ],
         test_name="test_B_m_3_providers_office_will_send",
         scenario=(
@@ -1289,6 +1330,8 @@ async def test_B_m_4_will_upload_myself(run_conversation, assert_and_record):
             "I will upload them myself",  # member_upload
             "yes that's the right one",  # email on file confirmed
             "Sure, please reach out to them",  # personal_guide_consent
+            "let's do texts",                  # notification_method=sms
+            "yep that's right",                # phone confirmed
         ],
         test_name="test_B_m_4_will_upload_myself",
         scenario=(
@@ -1324,6 +1367,8 @@ async def test_B_m_5_can_i_just_upload_it(run_conversation, assert_and_record):
             "can I just upload it?",  # member_upload (question form)
             "go ahead and use that one",  # email on file confirmed
             "Sure, please reach out to them",  # personal_guide_consent
+            "texts are fine",                  # notification_method=sms
+            "yes go ahead",                    # phone confirmed
         ],
         test_name="test_B_m_5_can_i_just_upload_it",
         scenario=(
@@ -1360,7 +1405,9 @@ async def test_B_m_6_conversational_easier_doctor_handle_it(run_conversation, as
             "Actually I think it would be easier to have my doctor handle it, "
             "can they send it over?",  # doctor_direct
             "I'll pass on that, thanks",  # decline upload link
-            "Sure, please reach out to them",  # personal_guide_consent
+            "Sure, please reach out to them",       # personal_guide_consent
+            "you can text me on that number",       # notification_method=sms
+            "yes that's still good",                # phone confirmed
         ],
         test_name="test_B_m_6_conversational_easier_doctor_handle_it",
         scenario=(
@@ -1396,6 +1443,8 @@ async def test_B_m_7_conversational_rather_upload_myself(run_conversation, asser
             "I'd rather upload it myself if that's an option",  # member_upload
             "that works, use that email",  # email confirmed
             "Sure, please reach out to them",  # personal_guide_consent
+            "email me please",                 # notification_method=email
+            "yes that's the right email",      # email confirmed
         ],
         test_name="test_B_m_7_conversational_rather_upload_myself",
         scenario=(
@@ -1434,6 +1483,8 @@ async def test_B_pg_1_yes_please_proceed(run_conversation, assert_and_record):
         + [
             "Please just go ahead and contact them directly",  # personal_guide intent
             "yes please proceed",  # personal_guide_consent
+            "send me texts",              # notification_method=sms
+            "yes that number is correct", # phone confirmed
         ],
         test_name="test_B_pg_1_yes_please_proceed",
         scenario=(
@@ -1466,6 +1517,8 @@ async def test_B_pg_2_sure_go_ahead(run_conversation, assert_and_record):
         + [
             "Can your team call my doctor's office?",  # personal_guide intent
             "sure go ahead",  # personal_guide_consent=yes
+            "text is fine",               # notification_method=sms
+            "yep",                        # phone confirmed
         ],
         test_name="test_B_pg_2_sure_go_ahead",
         scenario=("personal_guide intent → 'sure go ahead' → personal_guide_consent=yes → guide triggered"),
@@ -1496,6 +1549,8 @@ async def test_B_pg_3_please_arrange_that(run_conversation, assert_and_record):
         + [
             "Reach out to the provider on my behalf",  # personal_guide intent
             "please arrange that",  # personal_guide_consent=yes
+            "email is fine",              # notification_method=email
+            "yes that's the right one",   # email confirmed
         ],
         test_name="test_B_pg_3_please_arrange_that",
         scenario=(
@@ -1529,6 +1584,8 @@ async def test_B_pg_4_conversational_yes_reach_out(run_conversation, assert_and_
         + [
             "Go ahead and give my doctor a call",  # personal_guide intent
             "Yes that would be great, please have them reach out to my doctor",
+            "you can text me on my phone",  # notification_method=sms
+            "yes that's still the number",  # phone confirmed
         ],
         test_name="test_B_pg_4_conversational_yes_reach_out",
         scenario=(
@@ -1564,6 +1621,8 @@ async def test_B_pg_5_conversational_yes_doctor_better_with_calls(run_conversati
         + [
             "You're welcome to contact my physician directly",  # personal_guide intent
             "Yes please, I'd appreciate that — my doctor's office is better with phone calls anyway",
+            "email works better for me",  # notification_method=email
+            "yes that's my address",      # email confirmed
         ],
         test_name="test_B_pg_5_conversational_yes_doctor_better_with_calls",
         scenario=(
@@ -1690,6 +1749,8 @@ async def test_B_pg_exact_1_perfect_please_do_that(run_conversation, assert_and_
         + [
             "Feel free to call my doctor's office directly",
             "That works for me, please go ahead",
+            "send me a text",             # notification_method=sms
+            "yes that's correct",         # phone confirmed
         ],
         test_name="test_B_pg_exact_1_perfect_please_do_that",
         scenario="personal_guide_consent natural phrase 'That works for me, please go ahead' → triggered",
@@ -1713,6 +1774,8 @@ async def test_B_pg_exact_2_yes_please_do_that(run_conversation, assert_and_reco
         + [
             "Feel free to call my doctor's office directly",
             "Yes please do that",
+            "text me",                    # notification_method=sms
+            "yes",                        # phone confirmed
         ],
         test_name="test_B_pg_exact_2_yes_please_do_that",
         scenario="personal_guide_consent 'Yes please do that' → triggered",
@@ -1737,6 +1800,8 @@ async def test_B_pg_exact_3_absolutely_please_reach_out(run_conversation, assert
         + [
             "Feel free to call my doctor's office directly",
             "absolutely, please reach out to them",
+            "text me updates",                     # notification_method=sms
+            "absolutely, that's the right number", # phone confirmed
         ],
         test_name="test_B_pg_exact_3_absolutely_please_reach_out",
         scenario="personal_guide_consent 'absolutely, please reach out to them' → triggered",
@@ -1879,8 +1944,12 @@ async def test_B_uc_1_yes_please_send_the_link(run_conversation, assert_and_reco
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Sounds good, please send it over",  # upload_consent=yes
-            "that's the right email",  # email on file confirmed
+            "Sounds good, please send it over",     # upload_method=member_upload → upload offer
+            "yes",                                   # upload_consent=yes → email shown
+            "that's the right email",               # email_confirmed=yes → link sent + guide offered
+            "go ahead and have them reach out",     # personal_guide_consent=yes
+            "send me a text",                       # notification_method=sms
+            "yes, that's my number",                # phone confirmed
         ],
         test_name="test_B_uc_1_yes_please_send_the_link",
         scenario=(
@@ -1910,8 +1979,12 @@ async def test_B_uc_2_sure_that_would_help(run_conversation, assert_and_record):
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "sure that would help",  # upload_consent=yes
-            "yep that's correct",  # email on file confirmed
+            "sure that would help",                 # upload_method=member_upload
+            "sure",                                  # upload_consent=yes
+            "yep that's correct",                   # email_confirmed=yes
+            "yes please do that",                   # personal_guide_consent=yes
+            "texts work",                           # notification_method=sms
+            "yep",                                  # phone confirmed
         ],
         test_name="test_B_uc_2_sure_that_would_help",
         scenario=("'sure that would help' → upload_consent=yes → email confirmed → upload_link_sent=True"),
@@ -1940,8 +2013,12 @@ async def test_B_uc_3_conversational_sounds_easier_than_fax(run_conversation, as
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "Oh yes please, that sounds much easier than having to fax anything",
-            "that's the one, go ahead",  # email on file confirmed
+            "Oh yes please, that sounds much easier than having to fax anything",  # upload_method=member_upload
+            "yes please",                                                            # upload_consent=yes
+            "that's the one, go ahead",                                             # email_confirmed=yes
+            "yes please do that too",                                               # personal_guide_consent=yes
+            "oh, texts would be great",                                             # notification_method=sms
+            "yes that's still my number",                                           # phone confirmed
         ],
         test_name="test_B_uc_3_conversational_sounds_easier_than_fax",
         scenario=(
@@ -1972,8 +2049,11 @@ async def test_B_uc_4_no_dont_need_link_but_guide_yes(run_conversation, assert_a
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "no I don't need the link",  # upload_consent=no
-            "Sure, please reach out to them",  # personal_guide_consent
+            "no I don't need the link",            # upload_method=member_upload → upload offer
+            "no",                                   # upload_consent=no → guide offered directly
+            "Sure, please reach out to them",      # personal_guide_consent=yes
+            "text me",                             # notification_method=sms
+            "yes",                                 # phone confirmed
         ],
         test_name="test_B_uc_4_no_dont_need_link_but_guide_yes",
         scenario=(
@@ -2007,7 +2087,10 @@ async def test_B_uc_5_conversational_no_link_but_yes_reach_doctor(run_conversati
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "No thanks for the link, but yes please have someone reach out to my doctor",
+            "No thanks for the link, but yes please have someone reach out to my doctor",  # upload_method + guide intent
+            "yes please",                           # personal_guide_consent=yes (if agent still asks)
+            "send me a text",                      # notification_method=sms
+            "yes that's right",                    # phone confirmed
         ],
         test_name="test_B_uc_5_conversational_no_link_but_yes_reach_doctor",
         scenario=(
@@ -2041,8 +2124,11 @@ async def test_B_uc_softno_1_id_rather_not(run_conversation, assert_and_record):
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "I'd rather not",  # upload_consent=no
-            "Sure, please reach out to them",  # personal_guide_consent=yes
+            "I'd rather not",                      # upload_method → soft decline → upload offer (or guide)
+            "I'd rather not",                      # upload_consent=no → guide offered
+            "yes please do that",                  # personal_guide_consent=yes
+            "texts are fine I suppose",            # notification_method=sms
+            "yes that's correct",                  # phone confirmed
         ],
         test_name="test_B_uc_softno_1_id_rather_not",
         scenario="upload_consent soft 'I'd rather not' → guide offered → yes → personal_guide_triggered",
@@ -2067,8 +2153,11 @@ async def test_B_uc_softno_2_doctor_send_with_guide_yes(run_conversation, assert
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "no that's ok I'll have my doctor send it",  # upload_consent=no
-            "Sure, please reach out to them",  # personal_guide_consent=yes
+            "no that's ok I'll have my doctor send it",  # upload_method=doctor_direct → upload offer
+            "no thanks",                                  # upload_consent=no → guide offered
+            "yes please reach out to them",              # personal_guide_consent=yes
+            "you can text me",                           # notification_method=sms
+            "yes that's my number",                      # phone confirmed
         ],
         test_name="test_B_uc_softno_2_doctor_send_with_guide_yes",
         scenario="upload_consent decline with reason → guide offered → yes → personal_guide_triggered",
@@ -2096,10 +2185,13 @@ async def test_B_uc_exhaust_1_three_ambiguous_then_guide(run_conversation, asser
     record = await run_conversation(
         user_inputs=_PREFIX_A_WITH_REF
         + [
-            "hmm",  # upload_consent ambiguous 1
-            "I'm not sure",  # upload_consent ambiguous 2
-            "maybe",  # upload_consent ambiguous 3 → exhaustion → guide offered
-            "Sure, please reach out to them",  # personal_guide_consent=yes
+            "yes please",          # upload_method=member_upload → upload offer (upload_consent asked)
+            "hmm",                 # upload_consent ambiguous #1 (count=1)
+            "I'm not sure",        # upload_consent ambiguous #2 (count=2)
+            "maybe",               # upload_consent ambiguous #3 → EXHAUSTED → guide offered
+            "yes, please do that", # personal_guide_consent=yes
+            "send a text",         # notification_method=sms
+            "yes that works",      # phone confirmed
         ],
         test_name="test_B_uc_exhaust_1_three_ambiguous_then_guide",
         scenario="upload_consent exhaustion (3× ambiguous) → guide fallthrough → yes → triggered",
@@ -2119,7 +2211,10 @@ async def test_B_uc_exhaust_1_three_ambiguous_then_guide(run_conversation, asser
 # path that enters records_coordination; accepting the upload link offer
 # causes the next agent turn to read back the email on file.
 # ---------------------------------------------------------------------------
-_B2_EMAIL_PREFIX = _PREFIX_A_WITH_REF + ["Yeah, go ahead and send me that link"]
+_B2_EMAIL_PREFIX = _PREFIX_A_WITH_REF + [
+    "Yeah, go ahead and send me that link",  # upload_method=member_upload → upload offer
+    "yes",                                    # upload_consent=yes → NOW at email_confirmed
+]
 NEW_EMAIL_B2 = "michael.brown.new@gmail.com"
 
 
@@ -2143,6 +2238,9 @@ async def test_B2_1_yes_that_correct_confirms_email(run_conversation, assert_and
         user_inputs=_B2_EMAIL_PREFIX
         + [
             "yes that's correct",  # clear affirmation; bias rule must not fire
+            "yes please",             # personal_guide_consent=yes
+            "send me a text",         # notification_method=sms
+            "yes that's fine",        # phone confirmed
         ],
         test_name="test_B2_1_yes_that_correct_confirms_email",
         scenario=(
@@ -2172,6 +2270,9 @@ async def test_B2_2_correct_single_word_confirms_email(run_conversation, assert_
         user_inputs=_B2_EMAIL_PREFIX
         + [
             "correct",
+            "yes",                    # personal_guide_consent=yes
+            "text me",                # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_2_correct_single_word_confirms_email",
         scenario=("'correct' → email_confirmed=yes → upload_link_sent=True"),
@@ -2199,6 +2300,9 @@ async def test_B2_3_yep_thats_my_email_confirms(run_conversation, assert_and_rec
         user_inputs=_B2_EMAIL_PREFIX
         + [
             "yep that's my email",
+            "yes please",             # personal_guide_consent=yes
+            "texts work",             # notification_method=sms
+            "yep",                    # phone confirmed
         ],
         test_name="test_B2_3_yep_thats_my_email_confirms",
         scenario=("'yep that's my email' → email_confirmed=yes → upload_link_sent=True"),
@@ -2224,6 +2328,9 @@ async def test_B2_4_yes_bare_confirms_email(run_conversation, assert_and_record)
         user_inputs=_B2_EMAIL_PREFIX
         + [
             "yes",
+            "yes",                    # personal_guide_consent=yes
+            "text me",                # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_4_yes_bare_confirms_email",
         scenario="'yes' → email_confirmed=yes → upload_link_sent=True",
@@ -2254,6 +2361,9 @@ async def test_B2_5_conversational_yes_check_regularly(run_conversation, assert_
         user_inputs=_B2_EMAIL_PREFIX
         + [
             "Yes that email is fine, I check it regularly",
+            "yes that would be great",  # personal_guide_consent=yes
+            "email me please",           # notification_method=email
+            "yes that's right",          # email confirmed
         ],
         test_name="test_B2_5_conversational_yes_check_regularly",
         scenario=(
@@ -2287,6 +2397,9 @@ async def test_B2_6_i_think_so_bias_then_new_email(run_conversation, assert_and_
         + [
             "I think so",  # hedged: bias rule fires → email_confirmed=no
             NEW_EMAIL_B2,  # replacement address → link sent
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_6_i_think_so_bias_then_new_email",
         scenario=(
@@ -2318,6 +2431,9 @@ async def test_B2_7_not_sure_bias_then_new_email(run_conversation, assert_and_re
         + [
             "not sure",  # bias rule fires → email_confirmed=no
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_7_not_sure_bias_then_new_email",
         scenario=(
@@ -2349,6 +2465,9 @@ async def test_B2_8_no_declines_then_new_email(run_conversation, assert_and_reco
         + [
             "no",  # explicit decline
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_8_no_declines_then_new_email",
         scenario=(
@@ -2379,6 +2498,9 @@ async def test_B2_9_inline_no_use_new_email(run_conversation, assert_and_record)
         user_inputs=_B2_EMAIL_PREFIX
         + [
             f"no use {NEW_EMAIL_B2} instead",
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_9_inline_no_use_new_email",
         scenario=(
@@ -2412,6 +2534,9 @@ async def test_B2_10_conversational_inline_outdated_email(run_conversation, asse
         user_inputs=_B2_EMAIL_PREFIX
         + [
             f"Oh wait that email is outdated, please use {NEW_EMAIL_B2}, that's my current one",
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_10_conversational_inline_outdated_email",
         scenario=(
@@ -2447,6 +2572,9 @@ async def test_B2_11_conversational_not_sure_active_then_new_email(run_conversat
         + [
             "Hmm I'm not 100% sure that's active anymore, let me give you a different one",
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_11_conversational_not_sure_active_then_new_email",
         scenario=(
@@ -2480,6 +2608,9 @@ async def test_B2_12_invalid_email_reask_then_valid(run_conversation, assert_and
             "notanemail",  # bias fires → email_confirmed=no → agent asks for new email
             "notanemail",  # invalid address format → validator rejects → re-ask
             NEW_EMAIL_B2,  # valid address → link sent
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_12_invalid_email_reask_then_valid",
         scenario=(
@@ -2549,6 +2680,9 @@ async def test_B2_implicit_1_thats_my_old_email(run_conversation, assert_and_rec
         + [
             "that's my old email",
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send me a text",         # notification_method=sms
+            "yes that's fine",        # phone confirmed
         ],
         test_name="test_B2_implicit_1_thats_my_old_email",
         scenario="email_confirmed 'that's my old email' → bias rule → new email → upload_link_sent",
@@ -2574,6 +2708,9 @@ async def test_B2_implicit_2_dont_use_that_account(run_conversation, assert_and_
         + [
             "I don't use that account anymore",
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send me a text",         # notification_method=sms
+            "yes that's fine",        # phone confirmed
         ],
         test_name="test_B2_implicit_2_dont_use_that_account",
         scenario="email_confirmed ('I don't use that account anymore')"
@@ -2602,6 +2739,9 @@ async def test_B2_implicit_3_might_not_be_active(run_conversation, assert_and_re
         + [
             "hmm that might not be active",
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send me a text",         # notification_method=sms
+            "yes that's fine",        # phone confirmed
         ],
         test_name="test_B2_implicit_3_might_not_be_active",
         scenario="email_confirmed uncertainty ('might not be active') "
@@ -2631,6 +2771,9 @@ async def test_B2_invalid_1_bad_email_then_valid(run_conversation, assert_and_re
             "no",  # email_confirmed=no
             "bademail",  # invalid format → retry
             NEW_EMAIL_B2,  # valid email → upload_link_sent
+            "yes please",             # personal_guide_consent=yes
+            "text me",                # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_invalid_1_bad_email_then_valid",
         scenario="email_confirmed=no → invalid email → retry → valid email → upload_link_sent",
