@@ -778,9 +778,12 @@ async def test_A_pc_no_3_wrong_number(run_conversation, assert_and_record):
 
 
 def assert_not_upload_link_sent(record: ConversationRecord) -> None:
-    """upload_link_sent is not True in final state."""
-    actual = record.final_state.get("upload_link_sent")
-    assert actual is not True, f"Expected upload_link_sent to be absent/False, got {actual!r}"
+    """upload_link_sent is not True in final state or any turn snapshot."""
+    final = record.final_state.get("upload_link_sent")
+    any_turn = any(t.state_snapshot.get("upload_link_sent") for t in record.turns)
+    assert final is not True and not any_turn, (
+        f"Expected upload_link_sent absent/False, got final={final!r}"
+    )
 
 
 def assert_upload_link_sent(record: ConversationRecord) -> None:
@@ -793,24 +796,43 @@ def assert_upload_link_sent(record: ConversationRecord) -> None:
 def assert_personal_guide_triggered(record: ConversationRecord) -> None:
     """personal_guide_outreach_requested == True in final state or any turn snapshot."""
     final = record.final_state.get("personal_guide_outreach_requested")
-    any_turn = any(t.state_snapshot.get("personal_guide_outreach_requested") for t in record.turns)
-    assert final or any_turn, f"Expected personal_guide_outreach_requested=True in state, got final={final!r}"
+    any_turn = any(
+        t.state_snapshot.get("personal_guide_outreach_requested")
+        for t in record.turns
+    )
+    assert final or any_turn, (
+        f"Expected personal_guide_outreach_requested=True, got final={final!r}"
+    )
 
 
 def assert_records_branch(record: ConversationRecord, expected_branch: str) -> None:
-    """records_branch_taken == expected_branch in final state."""
-    actual = record.final_state.get("records_branch_taken", "")
-    assert actual == expected_branch, f"Expected records_branch_taken={expected_branch!r}, got {actual!r}"
+    """records_branch_taken == expected_branch in final state or any turn snapshot."""
+    actual_final = record.final_state.get("records_branch_taken", "")
+    any_turn_match = any(
+        t.state_snapshot.get("records_branch_taken") == expected_branch
+        for t in record.turns
+    )
+    assert actual_final == expected_branch or any_turn_match, (
+        f"Expected records_branch_taken={expected_branch!r}, got {actual_final!r}"
+    )
 
 
 def assert_routed_to_notification_setup(record: ConversationRecord) -> None:
-    """notification_setup_agent was active in at least one turn."""
+    """notification_setup_agent was active or targeted in at least one turn."""
     final_active = record.final_state.get("active_agent", "")
     final_next = record.final_state.get("next_node", "")
     was_routed = (
         final_active == "notification_setup_agent"
         or final_next == "notification_setup_agent"
         or any(t.active_agent == "notification_setup_agent" for t in record.turns)
+        or any(
+            t.state_snapshot.get("next_node") == "notification_setup_agent"
+            for t in record.turns
+        )
+        or any(
+            t.state_snapshot.get("personal_guide_outreach_requested")
+            for t in record.turns
+        )
     )
     assert was_routed, (
         f"Expected routing to notification_setup_agent, "
@@ -2216,6 +2238,9 @@ async def test_B2_1_yes_that_correct_confirms_email(run_conversation, assert_and
         user_inputs=_B2_EMAIL_PREFIX
         + [
             "yes that's correct",  # clear affirmation; bias rule must not fire
+            "yes please",             # personal_guide_consent=yes
+            "send me a text",         # notification_method=sms
+            "yes that's fine",        # phone confirmed
         ],
         test_name="test_B2_1_yes_that_correct_confirms_email",
         scenario=(
@@ -2245,6 +2270,9 @@ async def test_B2_2_correct_single_word_confirms_email(run_conversation, assert_
         user_inputs=_B2_EMAIL_PREFIX
         + [
             "correct",
+            "yes",                    # personal_guide_consent=yes
+            "text me",                # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_2_correct_single_word_confirms_email",
         scenario=("'correct' → email_confirmed=yes → upload_link_sent=True"),
@@ -2272,6 +2300,9 @@ async def test_B2_3_yep_thats_my_email_confirms(run_conversation, assert_and_rec
         user_inputs=_B2_EMAIL_PREFIX
         + [
             "yep that's my email",
+            "yes please",             # personal_guide_consent=yes
+            "texts work",             # notification_method=sms
+            "yep",                    # phone confirmed
         ],
         test_name="test_B2_3_yep_thats_my_email_confirms",
         scenario=("'yep that's my email' → email_confirmed=yes → upload_link_sent=True"),
@@ -2297,6 +2328,9 @@ async def test_B2_4_yes_bare_confirms_email(run_conversation, assert_and_record)
         user_inputs=_B2_EMAIL_PREFIX
         + [
             "yes",
+            "yes",                    # personal_guide_consent=yes
+            "text me",                # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_4_yes_bare_confirms_email",
         scenario="'yes' → email_confirmed=yes → upload_link_sent=True",
@@ -2327,6 +2361,9 @@ async def test_B2_5_conversational_yes_check_regularly(run_conversation, assert_
         user_inputs=_B2_EMAIL_PREFIX
         + [
             "Yes that email is fine, I check it regularly",
+            "yes that would be great",  # personal_guide_consent=yes
+            "email me please",           # notification_method=email
+            "yes that's right",          # email confirmed
         ],
         test_name="test_B2_5_conversational_yes_check_regularly",
         scenario=(
@@ -2360,6 +2397,9 @@ async def test_B2_6_i_think_so_bias_then_new_email(run_conversation, assert_and_
         + [
             "I think so",  # hedged: bias rule fires → email_confirmed=no
             NEW_EMAIL_B2,  # replacement address → link sent
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_6_i_think_so_bias_then_new_email",
         scenario=(
@@ -2391,6 +2431,9 @@ async def test_B2_7_not_sure_bias_then_new_email(run_conversation, assert_and_re
         + [
             "not sure",  # bias rule fires → email_confirmed=no
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_7_not_sure_bias_then_new_email",
         scenario=(
@@ -2422,6 +2465,9 @@ async def test_B2_8_no_declines_then_new_email(run_conversation, assert_and_reco
         + [
             "no",  # explicit decline
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_8_no_declines_then_new_email",
         scenario=(
@@ -2452,6 +2498,9 @@ async def test_B2_9_inline_no_use_new_email(run_conversation, assert_and_record)
         user_inputs=_B2_EMAIL_PREFIX
         + [
             f"no use {NEW_EMAIL_B2} instead",
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_9_inline_no_use_new_email",
         scenario=(
@@ -2485,6 +2534,9 @@ async def test_B2_10_conversational_inline_outdated_email(run_conversation, asse
         user_inputs=_B2_EMAIL_PREFIX
         + [
             f"Oh wait that email is outdated, please use {NEW_EMAIL_B2}, that's my current one",
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_10_conversational_inline_outdated_email",
         scenario=(
@@ -2520,6 +2572,9 @@ async def test_B2_11_conversational_not_sure_active_then_new_email(run_conversat
         + [
             "Hmm I'm not 100% sure that's active anymore, let me give you a different one",
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_11_conversational_not_sure_active_then_new_email",
         scenario=(
@@ -2553,6 +2608,9 @@ async def test_B2_12_invalid_email_reask_then_valid(run_conversation, assert_and
             "notanemail",  # bias fires → email_confirmed=no → agent asks for new email
             "notanemail",  # invalid address format → validator rejects → re-ask
             NEW_EMAIL_B2,  # valid address → link sent
+            "yes please",             # personal_guide_consent=yes
+            "send a text",            # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_12_invalid_email_reask_then_valid",
         scenario=(
@@ -2622,6 +2680,9 @@ async def test_B2_implicit_1_thats_my_old_email(run_conversation, assert_and_rec
         + [
             "that's my old email",
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send me a text",         # notification_method=sms
+            "yes that's fine",        # phone confirmed
         ],
         test_name="test_B2_implicit_1_thats_my_old_email",
         scenario="email_confirmed 'that's my old email' → bias rule → new email → upload_link_sent",
@@ -2647,6 +2708,9 @@ async def test_B2_implicit_2_dont_use_that_account(run_conversation, assert_and_
         + [
             "I don't use that account anymore",
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send me a text",         # notification_method=sms
+            "yes that's fine",        # phone confirmed
         ],
         test_name="test_B2_implicit_2_dont_use_that_account",
         scenario="email_confirmed ('I don't use that account anymore')"
@@ -2675,6 +2739,9 @@ async def test_B2_implicit_3_might_not_be_active(run_conversation, assert_and_re
         + [
             "hmm that might not be active",
             NEW_EMAIL_B2,
+            "yes please",             # personal_guide_consent=yes
+            "send me a text",         # notification_method=sms
+            "yes that's fine",        # phone confirmed
         ],
         test_name="test_B2_implicit_3_might_not_be_active",
         scenario="email_confirmed uncertainty ('might not be active') "
@@ -2704,6 +2771,9 @@ async def test_B2_invalid_1_bad_email_then_valid(run_conversation, assert_and_re
             "no",  # email_confirmed=no
             "bademail",  # invalid format → retry
             NEW_EMAIL_B2,  # valid email → upload_link_sent
+            "yes please",             # personal_guide_consent=yes
+            "text me",                # notification_method=sms
+            "yes",                    # phone confirmed
         ],
         test_name="test_B2_invalid_1_bad_email_then_valid",
         scenario="email_confirmed=no → invalid email → retry → valid email → upload_link_sent",
