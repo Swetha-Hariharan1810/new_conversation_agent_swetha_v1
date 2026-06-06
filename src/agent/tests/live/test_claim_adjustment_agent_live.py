@@ -2832,7 +2832,15 @@ async def test_B2_invalid_1_bad_email_then_valid(run_conversation, assert_and_re
 # Records not required (Scenario B): verification → reference → records skipped
 # → notification_setup is the next agent.
 # ---------------------------------------------------------------------------
-_C_PREFIX = VERIFICATION_PREFIX_CLAIMS_B + [REF_B]
+# NOTE: REF_B (42695817) has records_required=True in the SF sandbox.
+# _C_PREFIX must pass through records_coordination (personal guide path)
+# before landing in notification_setup_agent.
+_C_PREFIX = VERIFICATION_PREFIX_CLAIMS_B + [
+    REF_B,
+    "Feel free to call my doctor's office directly",  # upload_method=personal_guide
+    "yes",                                             # personal_guide_consent=yes → guide triggered
+    # → notification_setup_agent now active
+]
 
 # Scenario A prefix that went through records and is now in notification_setup
 # (upload link sent path — agent already asked notification method via bridge)
@@ -4540,14 +4548,16 @@ async def test_D3_records_not_required_goes_to_notification(run_conversation, as
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through (records_required=True)
+            "yes",                                             # personal_guide_consent → guide triggered
             "email",  # notification_method
             "yes",  # email on file confirmed
             "no thanks",  # follow_up closure
         ],
         test_name="test_D3_records_not_required_goes_to_notification",
         scenario=(
-            "Scenario B: records_required=False → skip records_coordination → "
-            "notification_setup directly → follow_up → closure"
+            "Scenario B (REF_B): passes through records_coordination via personal guide → "
+            "notification_setup → follow_up → closure"
         ),
     )
     assert_and_record(
@@ -4575,6 +4585,8 @@ async def test_D4_followup_cannot_answer_then_timeline_answered(run_conversation
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",  # notification_method
             "yes",  # email on file confirmed
             "what is my deductible?",  # out-of-snapshot question
@@ -4644,6 +4656,8 @@ async def test_D6_update_request_in_followup_escalates(run_conversation, assert_
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",  # notification_method
             "yes",  # email confirmed
             "can you resend the upload link to a different email",  # UPDATE_REQUEST in follow_up
@@ -4978,13 +4992,15 @@ async def test_D_latency_1_scenario_b_no_records_email(run_conversation, assert_
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",  # notification_method
             "yes",  # email on file confirmed
             "no thanks",  # closure
         ],
         test_name="test_D_latency_1_scenario_b_no_records_email",
         scenario=(
-            f"Latency benchmark: Scenario B fast path (no records) → "
+            f"Latency benchmark: Scenario B with records pass-through → "
             f"email notification → closure — p50≤{_LATENCY_P50_SEC}s, p95≤{_LATENCY_P95_SEC}s"
         ),
     )
@@ -5113,6 +5129,8 @@ async def test_D_n2_scenario_b_sms_email(run_conversation, assert_and_record):
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "SMS",  # N1 method
             "yes",  # phone on file confirmed → notification_channel=sms
             "email",  # N2 method
@@ -5147,6 +5165,8 @@ async def test_D_n2_scenario_b_email_sms(run_conversation, assert_and_record):
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",  # N1 method
             "yes",  # email on file confirmed → notification_channel=email
             "SMS",  # N2 method
@@ -5169,12 +5189,15 @@ async def test_D_n2_scenario_b_email_sms(run_conversation, assert_and_record):
 # ---------------------------------------------------------------------------
 # Shared prefix for Group E — lands in follow_up after email notification setup
 # ---------------------------------------------------------------------------
-# Scenario B (records_required=False): verification → reference → notification
-# (email confirmed) → follow_up is reached next turn.
+# NOTE: REF_B has records_required=True → must pass through records_coordination
+# via personal guide before reaching notification_setup_agent.
 _E_PREFIX = VERIFICATION_PREFIX_CLAIMS_B + [
     REF_B,
-    "email",  # notification_method
-    "yes",  # email on file confirmed
+    "Feel free to call my doctor's office directly",  # upload_method=personal_guide → records_coordination
+    "yes",                                             # personal_guide_consent=yes → guide triggered
+    # → notification_setup_agent now active
+    "email",  # notification_method (N1)
+    "yes",    # email on file confirmed → follow_up_agent reached
 ]
 
 # Scenario A prefix that goes through upload + guide so personal_guide flag is set
@@ -6043,6 +6066,8 @@ async def test_F1_transfer_request_during_notification_setup(run_conversation, a
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",
             "transfer me to a real person",
         ],
@@ -6073,6 +6098,8 @@ async def test_F2_abuse_during_notification_setup(run_conversation, assert_and_r
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
+            "Feel free to call my doctor's office directly",  # records pass-through
+            "yes",                                             # personal_guide_consent
             "email",
             "you fucking useless machine",
         ],
