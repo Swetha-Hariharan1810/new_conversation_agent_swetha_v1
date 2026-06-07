@@ -92,18 +92,6 @@ class NotificationSetupAgent(BaseAgent):
 
         state = {**state, "awaiting_slot": current_awaiting}
 
-        # ── Skip LLM for phases that use raw text or their own logic ──────────
-        if current_awaiting == "timeline_question":
-            timeline_keywords = ("long", "days", "weeks", "when", "timeline", "finalize", "complete", "take")
-            is_question = "?" in last_user or any(kw in last_user.lower() for kw in timeline_keywords)
-            if is_question:
-                combined = f"{pick(MSG_TIMELINE_ANSWER)}\n\n{pick(N2_METHOD_ASK)}"
-            else:
-                combined = pick(N2_METHOD_ASK)
-            ask_result = self.ask_member(state, combined)
-            ask_result["awaiting_slot"] = "n2_notification_method"
-            return ask_result
-
         # ── LLM extraction ────────────────────────────────────────────────────
         attempts_dict = state.get("slot_attempts") or {}
         current_attempt = attempts_dict.get(current_awaiting, {})
@@ -156,6 +144,32 @@ class NotificationSetupAgent(BaseAgent):
             retry = self.ask_member(state, msg)
             retry["awaiting_slot"] = "notification_method"
             return retry
+
+        # ── PHASE: timeline_question — respond to timeline offer ──────────────
+        if current_awaiting == "timeline_question":
+            timeline_response = extracted.get("timeline_response", "")
+
+            if timeline_response == "question":
+                combined = f"{pick(MSG_TIMELINE_ANSWER)}\n\n{pick(N2_METHOD_ASK)}"
+                ask_result = self.ask_member(state, combined)
+                ask_result["awaiting_slot"] = "n2_notification_method"
+                return ask_result
+
+            if timeline_response in ("yes", "no"):
+                ask_result = self.ask_member(state, pick(N2_METHOD_ASK))
+                ask_result["awaiting_slot"] = "n2_notification_method"
+                return ask_result
+
+            self.slot_fail("timeline_question")
+            if self.get_slot("timeline_question").is_exhausted():
+                return self.signal_escalate(
+                    state, pick(MSG_METHOD_EXHAUST), reason="timeline_question_exhausted"
+                )
+            ctx = ConversationContext.from_state(state)
+            msg = await self._generate_slot_retry_response(state, "timeline_question", ctx, messages)
+            ask_result = self.ask_member(state, msg)
+            ask_result["awaiting_slot"] = "timeline_question"
+            return ask_result
 
         # ── PHASE 2: Phone confirmation (SMS path) ─────────────────────────────
         if current_awaiting == "phone_confirmed":
@@ -298,6 +312,24 @@ class NotificationSetupAgent(BaseAgent):
                     confirm_msg = random.choice(N2_EMAIL_CONFIRM).format(email=email_on_file)
                     return await self._n2_save_and_complete(state, "email", email_on_file, confirm_msg)
                 # No email on file — fall through to exhaust/escalate
+            elif raw_method == "none":
+                logger.info(LOG_N2_PREFERENCE_SAVED + " (opted out)")
+                from agent.agents.follow_up.constants import MSG_FOLLOW_UP_ASK
+
+                handoff = pick(MSG_FOLLOW_UP_ASK)
+                result = self.ask_member(state, handoff)
+                result["next_node"] = "follow_up_agent"
+                result.update(self._n2_completion_context(state, "not_set", ""))
+                result["last_agent_signal"] = {
+                    "status": "complete",
+                    "resolved_intents": ["notification_setup"],
+                    "closure_requested": False,
+                    "context_updates": {},
+                    "proactive_offer_available": False,
+                    "escalation_reason": None,
+                    "reasoning": "notification_setup_agent: n2 complete — waiting for follow-up",
+                }
+                return result
 
             self.slot_fail("n2_notification_method")
             if self.get_slot("n2_notification_method").is_exhausted():
