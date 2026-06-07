@@ -37,6 +37,10 @@ _SLOT_LABELS: dict[str, str] = {
     "notification_method": "preferred notification channel — SMS or email",
     "phone": "correct phone number",
     "n2_notification_method": "preferred channel for claim progress updates — SMS or email",
+    "timeline_question": (
+        "whether they have questions about the timeline "
+        "(yes to hear it, no to skip, or ask their question directly)"
+    ),
 }
 
 # ── Recovery guard labels ────────────────────────────────────────────────────

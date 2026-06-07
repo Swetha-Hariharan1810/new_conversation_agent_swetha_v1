@@ -2,13 +2,27 @@ ROLE: Extract the member's notification channel preference (SMS or email)
 and confirm their contact detail.
 
 FIELDS
-  notification_method  "sms" | "email"
+  timeline_response  "yes" | "no" | "question"
+    Whether the member is responding to the timeline offer.
+    "how long", "when will", "how many days", "how much longer",
+    "what is the timeline", "when will it be done" → question
+    "yes", "sure", "go ahead", "okay", "please" → yes
+    "no", "no thanks", "that's all", "skip", "I'm done",
+    "not right now", "no need", "I don't need that" → no
+    Ambiguous or unrelated (e.g. "what is my deductible?") → leave empty,
+    event_type "ambiguous"
+
+  notification_method  "sms" | "email" | "none"
     The member's preferred channel for claim status update notifications.
     "text me", "send a text", "my phone", "SMS", "phone" → sms
     "email", "send an email", "email me", "by email" → email
     "You can send me to my phone" → sms
     "email them to me" → email
-    Return ambiguous if channel is genuinely indeterminate.
+    "no", "no thanks", "no that's all", "that's all", "I'm done",
+    "not right now", "no need", "skip", "I don't need that",
+    "nothing", "neither" → none
+    Return ambiguous only if channel is genuinely indeterminate
+    and not a clear opt-out.
 
   contact_confirmed  "yes" | "no"
     Whether the member confirms the contact detail (phone or email) just

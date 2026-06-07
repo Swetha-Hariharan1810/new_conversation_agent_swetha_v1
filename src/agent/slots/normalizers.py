@@ -517,10 +517,12 @@ def normalize_reference_number(value: str | None) -> str:
 
 
 def normalize_notification_method(value: str | None) -> str:
-    """Normalize notification method to 'sms' or 'email'."""
+    """Normalize notification method to 'sms', 'email', or 'none'."""
     if not value:
         return ""
     cleaned = _clean(value).lower()
+    if cleaned == "none":
+        return "none"
     _NOTIFICATION_MAP = {
         "sms": "sms",
         "text": "sms",
