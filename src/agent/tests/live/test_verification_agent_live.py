@@ -1519,13 +1519,13 @@ async def test_verification_offtopic_redirect_post_lookup_phone_confirmed(
 #      1 option  → "Thank you, I found your account. Are you the plan holder?"
 #      2 options → "...Are you the plan holder or the subscriber?"
 #      3 options → "...Are you the plan holder, the subscriber or the spouse?"
-#   3. normalize_caller_role() maps spoken answers → plan_holder | subscriber | dependent | ""
+#   3. normalize_caller_role() maps spoken answers → plan_holder | dependent | ""
 #      _PLAN_HOLDER_TERMS: plan holder, planholder, plan_holder, myself, me, primary,
 #                          account holder
-#      _SUBSCRIBER_TERMS:  subscriber, insured, policy holder, policyholder
+#      _SUBSCRIBER_TERMS:  subscriber, insured, policy holder, policyholder  (all → plan_holder)
 #      _DEPENDENT_TERMS:   spouse, dependent, child, family member, my wife,
 #                          my husband, my partner
-#   4. validate_relationship() only accepts: plan_holder | subscriber | dependent
+#   4. validate_relationship() only accepts: plan_holder | dependent
 #   5. Returns "" for anything not in the term sets → AMBIGUOUS/retry path
 #   6. After MAX_SLOT_ATTEMPTS (3) failures on relationship → escalation
 # ===========================================================================
@@ -1534,12 +1534,8 @@ async def test_verification_offtopic_redirect_post_lookup_phone_confirmed(
 @pytest.mark.live
 async def test_verification_relationship_single_option_plan_holder(run_conversation, assert_and_record):
     """
-    SF returns relationship field as a single value: 'plan holder'.
-    build_relationship_confirmation_prompt('plan holder') produces:
-    'Thank you, I found your account. Are you the plan holder?'
-    Tests three affirmative answer variants in a single flow ('yes', 'that's me',
-    explicit 'plan holder') — using the explicit variant to drive actual collection.
-    Verifies single-option prompt path and plan_holder normalization.
+    Hardcoded prompt asks 'plan holder or dependent'. User answers 'Yes, I'm the plan holder'.
+    Verifies plan_holder normalization and that the agent message contains 'plan holder or dependent'.
     """
     record = await run_conversation(
         user_inputs=[
@@ -1551,7 +1547,7 @@ async def test_verification_relationship_single_option_plan_holder(run_conversat
             "Yes, I'm the plan holder",
         ],
         test_name="test_verification_relationship_single_option_plan_holder",
-        scenario="SF single-option 'plan holder' → prompt asks one option → 'yes plan holder' → plan_holder",
+        scenario="Hardcoded prompt → 'yes plan holder' → plan_holder",
     )
 
     assert_and_record(
@@ -1560,10 +1556,7 @@ async def test_verification_relationship_single_option_plan_holder(run_conversat
             (lambda: assert_member_verified(record), "member_status_verify==True"),
             (lambda: assert_relationship_collected(record, "plan_holder"), "relationship==plan_holder"),
             (lambda: assert_not_escalated(record), "no_escalation"),
-            (
-                lambda: _assert_agent_msg_contains_no_or(record),
-                "single_option_prompt_has_no_or",
-            ),
+            (lambda: assert_any_agent_message_contains(record, "plan holder or dependent"), "prompt_contains_plan_holder_or_dependent"),
         ],
     )
 
@@ -1603,10 +1596,9 @@ async def test_verification_relationship_single_option_plan_holder_yes_variant(
 @pytest.mark.live
 async def test_verification_relationship_single_option_subscriber(run_conversation, assert_and_record):
     """
-    SF returns relationship field as 'subscriber' (single value).
-    Prompt: 'Thank you, I found your account. Are you the subscriber?'
-    User answers 'Yes I'm the subscriber' — maps via 'subscriber' in _SUBSCRIBER_TERMS.
-    Verifies single-option prompt path for subscriber role.
+    Subscriber input still maps to plan_holder via _SUBSCRIBER_TERMS merge (Phase 1).
+    User says 'Yes I'm the subscriber' — normalizer maps to plan_holder.
+    Verifies subscriber terms still work and store as plan_holder.
     """
     record = await run_conversation(
         user_inputs=[
@@ -1618,14 +1610,14 @@ async def test_verification_relationship_single_option_subscriber(run_conversati
             "Yes I'm the subscriber",
         ],
         test_name="test_verification_relationship_single_option_subscriber",
-        scenario="SF single-option 'subscriber' → prompt → 'yes subscriber' → subscriber",
+        scenario="'yes subscriber' → plan_holder (subscriber merged into plan_holder)",
     )
 
     assert_and_record(
         record,
         [
             (lambda: assert_member_verified(record), "member_status_verify==True"),
-            (lambda: assert_relationship_collected(record, "subscriber"), "relationship==subscriber"),
+            (lambda: assert_relationship_collected(record, "plan_holder"), "relationship==plan_holder"),
             (lambda: assert_not_escalated(record), "no_escalation"),
         ],
     )
@@ -1634,8 +1626,7 @@ async def test_verification_relationship_single_option_subscriber(run_conversati
 @pytest.mark.live
 async def test_verification_relationship_two_options_plan_holder_answer(run_conversation, assert_and_record):
     """
-    SF returns 'plan holder or subscriber' (two options).
-    Prompt: 'Thank you, I found your account. Are you the plan holder or the subscriber?'
+    Hardcoded prompt: 'Thank you, I found your account. Are you the plan holder or dependent?'
     User answers 'I'm calling for myself' — 'myself' in _PLAN_HOLDER_TERMS → plan_holder.
     Verifies two-option prompt formatting and plan_holder extraction from informal language.
     """
@@ -1649,7 +1640,7 @@ async def test_verification_relationship_two_options_plan_holder_answer(run_conv
             "I'm calling for myself",
         ],
         test_name="test_verification_relationship_two_options_plan_holder_answer",
-        scenario="SF two-option 'plan holder or subscriber' → 'myself' → plan_holder",
+        scenario="Hardcoded prompt → 'myself' → plan_holder",
     )
 
     assert_and_record(
@@ -1665,10 +1656,8 @@ async def test_verification_relationship_two_options_plan_holder_answer(run_conv
 @pytest.mark.live
 async def test_verification_relationship_two_options_subscriber_answer(run_conversation, assert_and_record):
     """
-    SF returns 'plan holder or subscriber' (two options).  Same prompt as I3.
-    User answers 'I am the insured' — 'insured' in _SUBSCRIBER_TERMS → subscriber.
-    Verifies that the subscriber branch of the two-option path works independently
-    of the plan_holder branch tested in I3.
+    User answers 'I am the insured' — 'insured' in _SUBSCRIBER_TERMS, now merged into plan_holder.
+    Verifies subscriber terms still normalise to plan_holder.
     """
     record = await run_conversation(
         user_inputs=[
@@ -1680,14 +1669,14 @@ async def test_verification_relationship_two_options_subscriber_answer(run_conve
             "I am the insured",
         ],
         test_name="test_verification_relationship_two_options_subscriber_answer",
-        scenario="SF two-option 'plan holder or subscriber' → 'I am the insured' → subscriber",
+        scenario="Hardcoded prompt → 'I am the insured' → plan_holder (subscriber merged)",
     )
 
     assert_and_record(
         record,
         [
             (lambda: assert_member_verified(record), "member_status_verify==True"),
-            (lambda: assert_relationship_collected(record, "subscriber"), "relationship==subscriber"),
+            (lambda: assert_relationship_collected(record, "plan_holder"), "relationship==plan_holder"),
             (lambda: assert_not_escalated(record), "no_escalation"),
         ],
     )
@@ -1696,9 +1685,7 @@ async def test_verification_relationship_two_options_subscriber_answer(run_conve
 @pytest.mark.live
 async def test_verification_relationship_three_options_plan_holder(run_conversation, assert_and_record):
     """
-    SF returns 'plan holder, subscriber or spouse' (three options).
-    Prompt: '...Are you the plan holder, the subscriber or the spouse?'
-    User says 'myself' — 'myself' in _PLAN_HOLDER_TERMS → plan_holder.
+    Hardcoded prompt asks 'plan holder or dependent'. User says 'myself' — 'myself' in _PLAN_HOLDER_TERMS → plan_holder.
     Verifies three-option prompt formatting and plan_holder extraction.
     """
     record = await run_conversation(
@@ -1711,7 +1698,7 @@ async def test_verification_relationship_three_options_plan_holder(run_conversat
             "myself",
         ],
         test_name="test_verification_relationship_three_options_plan_holder",
-        scenario="SF three-option prompt → 'myself' → plan_holder",
+        scenario="Hardcoded prompt → 'myself' → plan_holder",
     )
 
     assert_and_record(
@@ -1727,9 +1714,8 @@ async def test_verification_relationship_three_options_plan_holder(run_conversat
 @pytest.mark.live
 async def test_verification_relationship_three_options_subscriber(run_conversation, assert_and_record):
     """
-    SF returns 'plan holder, subscriber or spouse' (three options).
-    User says 'I'm the subscriber' — 'subscriber' in _SUBSCRIBER_TERMS.
-    Verifies subscriber extraction from the three-option prompt independently.
+    User says 'I'm the subscriber' — 'subscriber' in _SUBSCRIBER_TERMS, now merged into plan_holder.
+    Verifies subscriber still maps to plan_holder.
     """
     record = await run_conversation(
         user_inputs=[
@@ -1741,14 +1727,14 @@ async def test_verification_relationship_three_options_subscriber(run_conversati
             "I'm the subscriber",
         ],
         test_name="test_verification_relationship_three_options_subscriber",
-        scenario="SF three-option prompt → 'I'm the subscriber' → subscriber",
+        scenario="Hardcoded prompt → 'I'm the subscriber' → plan_holder (subscriber merged)",
     )
 
     assert_and_record(
         record,
         [
             (lambda: assert_member_verified(record), "member_status_verify==True"),
-            (lambda: assert_relationship_collected(record, "subscriber"), "relationship==subscriber"),
+            (lambda: assert_relationship_collected(record, "plan_holder"), "relationship==plan_holder"),
             (lambda: assert_not_escalated(record), "no_escalation"),
         ],
     )
@@ -1916,8 +1902,8 @@ async def test_verification_relationship_exhausted_all_attempts(run_conversation
 @pytest.mark.live
 async def test_verification_relationship_cannot_accept_both(run_conversation, assert_and_record):
     """
-    SF returns 'plan holder or subscriber'.
-    User says 'I'm both the plan holder and subscriber'.
+    Hardcoded prompt asks 'plan holder or dependent'.
+    User says 'I'm both the plan holder and dependent'.
     normalize_caller_role iterates _PLAN_HOLDER_TERMS first (before _SUBSCRIBER_TERMS),
     so 'plan holder' is matched first and the function returns 'plan_holder' immediately.
     Verifies longest-match-first ordering: the system picks one (plan_holder), not an error.
@@ -1929,10 +1915,10 @@ async def test_verification_relationship_cannot_accept_both(run_conversation, as
             "Carter",
             "m nine zero seven five zero three",
             "April twelfth nineteen eighty-eight",
-            "I'm both the plan holder and subscriber",
+            "I'm both the plan holder and dependent",
         ],
         test_name="test_verification_relationship_cannot_accept_both",
-        scenario="'both plan holder and subscriber' → normalize picks first match (plan_holder)",
+        scenario="'both plan holder and dependent' → normalize picks first match (plan_holder)",
     )
 
     assert_and_record(
@@ -2027,8 +2013,9 @@ async def test_verification_relationship_transfer_request_wins_over_extraction(
     [
         ("primary cardholder", "plan_holder"),  # 'primary' in _PLAN_HOLDER_TERMS
         ("account holder", "plan_holder"),  # 'account holder' in _PLAN_HOLDER_TERMS
-        ("I'm insured", "subscriber"),  # 'insured' in _SUBSCRIBER_TERMS
-        ("policy holder", "subscriber"),  # 'policy holder' in _SUBSCRIBER_TERMS
+        ("planholder", "plan_holder"),
+        ("I'm insured", "plan_holder"),  # 'insured' in _SUBSCRIBER_TERMS → plan_holder (merged)
+        ("policy holder", "plan_holder"),  # 'policy holder' in _SUBSCRIBER_TERMS → plan_holder (merged)
         ("my child", "dependent"),  # 'child' in _DEPENDENT_TERMS
         ("my partner", "dependent"),  # 'my partner' in _DEPENDENT_TERMS
         ("family member", "dependent"),  # 'family member' in _DEPENDENT_TERMS
@@ -2074,13 +2061,10 @@ async def test_verification_relationship_spoken_naturally(
 
 
 @pytest.mark.live
-async def test_verification_relationship_prompt_formatting_single(run_conversation, assert_and_record):
+async def test_verification_relationship_prompt_hardcoded(run_conversation, assert_and_record):
     """
-    After SF lookup, capture the actual agent message for the relationship question
-    when SF returns a single-option value.
-    Assert the message contains exactly one role option formatted as 'the plan holder'
-    and does NOT contain 'or' (single-option format has no conjunction).
-    Verifies build_relationship_confirmation_prompt count==1 branch.
+    Assert the agent relationship question is exactly the hardcoded string:
+    'Thank you, I found your account. Are you the plan holder or dependent?'
     """
     record = await run_conversation(
         user_inputs=[
@@ -2091,22 +2075,15 @@ async def test_verification_relationship_prompt_formatting_single(run_conversati
             "April twelfth nineteen eighty-eight",
             "yes",
         ],
-        test_name="test_verification_relationship_prompt_formatting_single",
-        scenario="Single-option SF relationship → prompt contains 'the plan holder', no 'or'",
+        test_name="test_verification_relationship_prompt_hardcoded",
+        scenario="Hardcoded prompt → exact string match",
     )
 
     assert_and_record(
         record,
         [
             (lambda: assert_member_verified(record), "member_status_verify==True"),
-            (
-                lambda: _assert_agent_msg_contains_no_or(record),
-                "single_option_prompt_has_no_or",
-            ),
-            (
-                lambda: assert_any_agent_message_contains(record, "the plan holder"),
-                "prompt_contains_the_plan_holder",
-            ),
+            (lambda: assert_any_agent_message_contains(record, "plan holder or dependent"), "prompt_is_hardcoded_string"),
         ],
     )
 
