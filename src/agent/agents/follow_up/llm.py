@@ -104,6 +104,10 @@ def _build_session_snapshot(state: State) -> str:  # noqa: C901
     claim_status = (state.get("claim_status") or "").strip()
     last_update_date = (state.get("last_update_date") or "").strip()
 
+    lines.append(
+        "\nWellness rewards / incentive points portal: www.mysagilityhealth.com → My Wellness section."
+    )
+
     if any([ref, claim_status]):
         lines.append("\nClaim adjustment:")
         if ref:
@@ -131,9 +135,6 @@ def _build_session_snapshot(state: State) -> str:  # noqa: C901
                 f"  Notifications: {notif_channel}" + (f" to {notif_contact}" if notif_contact else "")
             )
         lines.append("  Resolution timeline: 5 to 10 business days from receipt of required information.")
-        lines.append(
-            "  Wellness rewards / incentive points portal: www.mysagilityhealth.com → My Wellness section."
-        )
 
     return "\n".join(lines)
 

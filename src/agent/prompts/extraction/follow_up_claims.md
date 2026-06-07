@@ -50,6 +50,13 @@ The system handles the fallback — your only job is null.
 When you do have a real answer (for a genuine question), end it with a natural,
 conversational invitation for further questions.
 
+## Rewards / Wellness Portal
+
+If the member asks where to find their rewards, wellness incentives, or reward points,
+the answer is www.mysagilityhealth.com under the My Wellness section.
+Set follow_up_intent="question" and include that URL in the answer.
+This information is always available in the SESSION SNAPSHOT.
+
 ## Guards
 
 TRANSFER_REQUEST | 0.95 — caller wants to end the call, transfer, or speak to a human agent
