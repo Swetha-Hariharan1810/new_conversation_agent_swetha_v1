@@ -4504,27 +4504,30 @@ async def test_D1_full_scenario_a_decline(run_conversation, assert_and_record):
 @pytest.mark.slow
 async def test_D2_full_scenario_b_upload_guide_sms_followup(run_conversation, assert_and_record):
     """
-    D2: Full Scenario B — intake → verification → claim_adjustment → records
-    (upload link sent + Personal Guide triggered) → notification setup (SMS)
-    → follow_up "where can I see my rewards?" → closure.
-    Verifies: upload_link_sent, personal_guide_outreach_requested,
-    notification_channel='sms', and follow_up answer contains 'mysagilityhealth.com'.
+    D2: Full Scenario A — intake → verification → claim_adjustment → records
+    (upload link sent + Personal Guide triggered) → notification setup (N1=SMS,
+    timeline declined, N2=email) → follow_up "where can I see my rewards?" → closure.
+    Verifies: upload_link_sent, personal_guide_triggered, notification_channel='sms',
+    n2_channel='email', and follow_up answer contains 'mysagilityhealth.com'.
     """
     record = await run_conversation(
         user_inputs=VERIFICATION_PREFIX_CLAIMS
         + [
             REF_A,
-            "yes please",  # upload link accepted
-            "yes",  # email on file confirmed
-            "Perfect. Please do that",  # personal_guide_consent
-            "SMS",  # notification_method = sms
-            "yes",  # phone on file confirmed
+            "yes please",                   # upload link accepted
+            "yes",                          # email on file confirmed → upload_link_sent
+            "Perfect. Please do that",      # personal_guide_consent → guide triggered
+            "SMS",                          # N1 method
+            "yes",                          # N1 phone on file confirmed → preference saved
+            "no",                           # timeline_question → no → go to N2
+            "email",                        # N2 method
+            "yes",                          # N2 email on file confirmed → handoff to follow_up
             "where can I see my rewards?",  # follow_up question
-            "no thanks",  # closure
+            "no thanks",                    # closure
         ],
         test_name="test_D2_full_scenario_b_upload_guide_sms_followup",
         scenario=(
-            "Full Scenario B: upload link + guide triggered → SMS notification → "
+            "Full Scenario A: upload link + guide triggered → N1=sms → timeline no → N2=email → "
             "follow_up rewards question answered from snapshot → closure"
         ),
     )
@@ -4534,6 +4537,7 @@ async def test_D2_full_scenario_b_upload_guide_sms_followup(run_conversation, as
             (lambda: assert_upload_link_sent(record), "upload_link_sent"),
             (lambda: assert_personal_guide_triggered(record), "personal_guide_triggered"),
             (lambda: assert_notification_channel(record, "sms"), "notification_channel==sms"),
+            (lambda: assert_n2_notification_channel(record, "email"), "n2_channel==email"),
             (
                 lambda: assert_any_agent_message_contains(record, "mysagilityhealth.com"),
                 "rewards_portal_in_answer",
@@ -4548,33 +4552,33 @@ async def test_D2_full_scenario_b_upload_guide_sms_followup(run_conversation, as
 @pytest.mark.slow
 async def test_D3_records_not_required_goes_to_notification(run_conversation, assert_and_record):
     """
-    D3: Scenario B member (records_required=False in SF sandbox) — claim_adjustment
-    completes without routing to records_coordination, then goes directly to
-    notification_setup → follow_up → closure.
-    Verifies the fast path when records_required=False.
+    D3: Scenario B — personal guide → notification_setup (N1=email, timeline declined,
+    N2=sms) → closure.
+    Verifies both notification channels are collected and no escalation occurs.
     """
     record = await run_conversation(
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
-            "Feel free to call my doctor's office directly",  # records pass-through (records_required=True)
-            "yes",                                             # personal_guide_consent → guide triggered
-            "email",  # notification_method
-            "yes",  # email on file confirmed
-            "no thanks",  # follow_up closure
+            "Feel free to call my doctor's office directly",  # personal_guide intent
+            "yes",          # personal_guide_consent → guide triggered
+            "email",        # N1 method
+            "yes",          # N1 email on file confirmed → preference saved
+            "no",           # timeline_question → no → go to N2
+            "SMS",          # N2 method
+            "yes",          # N2 phone on file confirmed → handoff to follow_up
+            "no thanks",    # closure
         ],
         test_name="test_D3_records_not_required_goes_to_notification",
         scenario=(
-            "Scenario B (REF_B): passes through records_coordination via personal guide → "
-            "notification_setup → follow_up → closure"
+            "Scenario B (REF_B): personal guide → N1=email → timeline no → N2=sms → closure"
         ),
     )
     assert_and_record(
         record,
         [
-            (lambda: assert_reference_collected(record, REF_B), f"reference_number=={REF_B}"),
-            (lambda: assert_claim_status_reported(record), "claim_status_reported"),
             (lambda: assert_notification_channel(record, "email"), "notification_channel==email"),
+            (lambda: assert_n2_notification_channel(record, "sms"), "n2_channel==sms"),
             (lambda: assert_not_escalated(record), "no_escalation"),
         ],
     )
@@ -4584,34 +4588,39 @@ async def test_D3_records_not_required_goes_to_notification(run_conversation, as
 @pytest.mark.slow
 async def test_D4_followup_cannot_answer_then_timeline_answered(run_conversation, assert_and_record):
     """
-    D4: Full path ending in follow_up where member first asks about deductible
-    (not in snapshot → cannot_answer), then asks about claim timeline
-    (in snapshot → answered with '5 to 10 business days') → closure.
-    Verifies that the claims snapshot populates the follow_up session context
-    correctly so timeline questions are answered and out-of-scope questions are not.
+    D4: Full path — personal guide → N1=email → timeline_question answered with
+    a real timeline question (fires MSG_TIMELINE_ANSWER) → N2=sms → follow_up where
+    member first asks about deductible (cannot_answer), then asks timeline again
+    (answered from snapshot) → closure.
+    Verifies the timeline slot answers inline during notification_setup AND that
+    follow_up also answers timeline questions from the claims snapshot.
     """
     record = await run_conversation(
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
-            "Feel free to call my doctor's office directly",  # records pass-through
-            "yes",                                             # personal_guide_consent
-            "email",  # notification_method
-            "yes",  # email on file confirmed
-            "what is my deductible?",  # out-of-snapshot question
-            "how long will the adjustment take?",  # in-snapshot: timeline
-            "no that's all",  # closure
+            "Feel free to call my doctor's office directly",      # personal_guide intent
+            "yes",                                                 # personal_guide_consent
+            "email",                                              # N1 method
+            "yes",                                                # N1 email on file confirmed
+            "how long will the adjustment take?",                 # timeline_question → answered → go to N2
+            "SMS",                                                # N2 method
+            "yes",                                                # N2 phone on file confirmed → handoff to follow_up
+            "what is my deductible?",                             # follow_up cannot_answer
+            "how long will it take?",                             # follow_up timeline Q → answered from snapshot
+            "no that's all",                                      # closure
         ],
         test_name="test_D4_followup_cannot_answer_then_timeline_answered",
         scenario=(
-            "follow_up: deductible question → cannot_answer → timeline question → "
-            "answered from snapshot ('5 to 10 business days') → closure"
+            "personal guide → N1=email → timeline Q answered → N2=sms → "
+            "follow_up: deductible cannot_answer → timeline answered from snapshot → closure"
         ),
     )
     assert_and_record(
         record,
         [
             (lambda: assert_notification_channel(record, "email"), "notification_channel==email"),
+            (lambda: assert_n2_notification_channel(record, "sms"), "n2_channel==sms"),
             (
                 lambda: _assert_timeline_answer(record),
                 "timeline_in_answer",
@@ -4625,22 +4634,25 @@ async def test_D4_followup_cannot_answer_then_timeline_answered(run_conversation
 @pytest.mark.slow
 async def test_D5_latency_benchmark_full_scenario_b(run_conversation, assert_and_record):
     """
-    D5: Latency benchmark — full Scenario B path.
+    D5: Latency benchmark — full Scenario A path (upload + guide + N1 + N2).
     p50 per-turn latency ≤ 12s, p95 per-turn latency ≤ 20s.
     """
     record = await run_conversation(
         user_inputs=VERIFICATION_PREFIX_CLAIMS
         + [
             REF_A,
-            "yes please",  # upload link accepted
-            "yes",  # email confirmed
-            "yes please do that",  # personal_guide_consent
-            "SMS",  # notification_method
-            "yes",  # phone confirmed
-            "no thanks",  # follow_up closure
+            "yes please",         # upload link accepted
+            "yes",                # email on file confirmed → upload_link_sent
+            "yes please do that", # personal_guide_consent → guide triggered
+            "SMS",                # N1 method
+            "yes",                # N1 phone on file confirmed → preference saved
+            "no",                 # timeline_question → no → go to N2
+            "email",              # N2 method
+            "yes",                # N2 email on file confirmed → handoff to follow_up
+            "no thanks",          # closure
         ],
         test_name="test_D5_latency_benchmark_full_scenario_b",
-        scenario="Latency benchmark: full claim adjustment flow p50≤12s, p95≤20s",
+        scenario=f"Latency benchmark: full claim adjustment flow p50≤{_LATENCY_P50_SEC}s, p95≤{_LATENCY_P95_SEC}s",
     )
     assert_and_record(
         record,
@@ -4656,7 +4668,7 @@ async def test_D5_latency_benchmark_full_scenario_b(run_conversation, assert_and
 @pytest.mark.slow
 async def test_D6_update_request_in_followup_escalates(run_conversation, assert_and_record):
     """
-    D6: Full path reaches follow_up_agent, then member says
+    D6: Full path reaches follow_up_agent via N1 + timeline + N2, then member says
     "can you resend the upload link to a different email" — an UPDATE_REQUEST.
     Verifies that follow_up_agent escalates immediately on UPDATE_REQUEST
     (no threshold, no counting) even in the claims follow-up variant.
@@ -4665,16 +4677,19 @@ async def test_D6_update_request_in_followup_escalates(run_conversation, assert_
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
-            "Feel free to call my doctor's office directly",  # records pass-through
-            "yes",                                             # personal_guide_consent
-            "email",  # notification_method
-            "yes",  # email confirmed
+            "Feel free to call my doctor's office directly",  # personal_guide intent
+            "yes",          # personal_guide_consent → guide triggered
+            "email",        # N1 method
+            "yes",          # N1 email on file confirmed → preference saved
+            "no",           # timeline_question → no → go to N2
+            "SMS",          # N2 method
+            "yes",          # N2 phone on file confirmed → handoff to follow_up
             "can you resend the upload link to a different email",  # UPDATE_REQUEST in follow_up
         ],
         test_name="test_D6_update_request_in_followup_escalates",
         scenario=(
-            "UPDATE_REQUEST in follow_up_agent → immediate escalation "
-            "(no threshold) from claims follow_up variant"
+            "personal guide → N1=email → timeline no → N2=sms → follow_up: "
+            "UPDATE_REQUEST → immediate escalation (no threshold)"
         ),
     )
     assert_and_record(
