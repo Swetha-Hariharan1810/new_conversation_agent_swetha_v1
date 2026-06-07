@@ -5018,22 +5018,26 @@ async def test_D_latency_1_scenario_b_no_records_email(run_conversation, assert_
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
-            "Feel free to call my doctor's office directly",  # records pass-through
-            "yes",                                             # personal_guide_consent
-            "email",  # notification_method
-            "yes",  # email on file confirmed
-            "no thanks",  # closure
+            "Feel free to call my doctor's office directly",  # personal_guide intent
+            "yes",          # personal_guide_consent → guide triggered
+            "email",        # N1 method
+            "yes",          # N1 email on file confirmed → preference saved
+            "no",           # timeline_question → no → go to N2
+            "SMS",          # N2 method
+            "yes",          # N2 phone on file confirmed → handoff to follow_up
+            "no thanks",    # closure
         ],
         test_name="test_D_latency_1_scenario_b_no_records_email",
         scenario=(
-            f"Latency benchmark: Scenario B with records pass-through → "
-            f"email notification → closure — p50≤{_LATENCY_P50_SEC}s, p95≤{_LATENCY_P95_SEC}s"
+            f"Latency benchmark: Scenario B personal guide → N1=email → timeline no → "
+            f"N2=sms → closure — p50≤{_LATENCY_P50_SEC}s, p95≤{_LATENCY_P95_SEC}s"
         ),
     )
     assert_and_record(
         record,
         [
             (lambda: assert_notification_channel(record, "email"), "notification_channel==email"),
+            (lambda: assert_n2_notification_channel(record, "sms"), "n2_channel==sms"),
             (lambda: assert_not_escalated(record), "no_escalation"),
             (lambda: assert_p50_under(record, _LATENCY_P50_SEC), f"p50<={_LATENCY_P50_SEC}s"),
             (lambda: assert_p95_under(record, _LATENCY_P95_SEC), f"p95<={_LATENCY_P95_SEC}s"),
@@ -5067,17 +5071,18 @@ async def test_D_latency_2_full_scenario_a_upload_guide_n1_n2(run_conversation, 
         + [
             REF_A,
             "yes please",  # upload link accepted
-            "yes",  # email confirmed → upload_link_sent
-            "yes",  # personal_guide_consent
-            "SMS",  # N1
-            "yes",  # N1 phone confirmed
-            "email",  # N2
-            "yes",  # N2 email confirmed
-            "no thanks",  # closure
+            "yes",         # email on file confirmed → upload_link_sent
+            "yes",         # personal_guide_consent → guide triggered
+            "SMS",         # N1 method
+            "yes",         # N1 phone on file confirmed → preference saved
+            "no",          # timeline_question → no → go to N2
+            "email",       # N2 method
+            "yes",         # N2 email on file confirmed → handoff to follow_up
+            "no thanks",   # closure
         ],
         test_name="test_D_latency_2_full_scenario_a_upload_guide_n1_n2",
         scenario=(
-            f"Latency benchmark: full Scenario A (upload+guide+N1+N2) — "
+            f"Latency benchmark: full Scenario A (upload+guide+N1+timeline+N2) — "
             f"p50≤{_LATENCY_P50_SEC}s, p95≤{_LATENCY_P95_SEC}s"
         ),
     )
@@ -5155,16 +5160,17 @@ async def test_D_n2_scenario_b_sms_email(run_conversation, assert_and_record):
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
-            "Feel free to call my doctor's office directly",  # records pass-through
-            "yes",                                             # personal_guide_consent
-            "SMS",  # N1 method
-            "yes",  # phone on file confirmed → notification_channel=sms
-            "email",  # N2 method
-            "yes",  # email on file confirmed → claim_timeline_notification_channel=email
+            "Feel free to call my doctor's office directly",  # personal_guide intent
+            "yes",        # personal_guide_consent → guide triggered
+            "SMS",        # N1 method
+            "yes",        # N1 phone on file confirmed → preference saved
+            "no",         # timeline_question → no → go to N2
+            "email",      # N2 method
+            "yes",        # N2 email on file confirmed → handoff to follow_up
             "no thanks",  # closure
         ],
         test_name="test_D_n2_scenario_b_sms_email",
-        scenario="Scenario B: N1=sms confirmed → timeline bridge → N2=email confirmed → closure",
+        scenario="Scenario B: N1=sms confirmed → timeline no → N2=email confirmed → closure",
     )
     assert_and_record(
         record,
@@ -5191,16 +5197,17 @@ async def test_D_n2_scenario_b_email_sms(run_conversation, assert_and_record):
         user_inputs=VERIFICATION_PREFIX_CLAIMS_B
         + [
             REF_B,
-            "Feel free to call my doctor's office directly",  # records pass-through
-            "yes",                                             # personal_guide_consent
-            "email",  # N1 method
-            "yes",  # email on file confirmed → notification_channel=email
-            "SMS",  # N2 method
-            "yes",  # phone on file confirmed → claim_timeline_notification_channel=sms
+            "Feel free to call my doctor's office directly",  # personal_guide intent
+            "yes",        # personal_guide_consent → guide triggered
+            "email",      # N1 method
+            "yes",        # N1 email on file confirmed → preference saved
+            "no",         # timeline_question → no → go to N2
+            "SMS",        # N2 method
+            "yes",        # N2 phone on file confirmed → handoff to follow_up
             "no thanks",  # closure
         ],
         test_name="test_D_n2_scenario_b_email_sms",
-        scenario="Scenario B: N1=email confirmed → timeline bridge → N2=sms confirmed → closure",
+        scenario="Scenario B: N1=email confirmed → timeline no → N2=sms confirmed → closure",
     )
     assert_and_record(
         record,
