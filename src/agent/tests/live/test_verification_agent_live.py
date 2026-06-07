@@ -1514,11 +1514,8 @@ async def test_verification_offtopic_redirect_post_lookup_phone_confirmed(
 # GROUP I — Relationship / Phone Confirmation Edge Cases
 #
 # Context:
-#   1. SF returns relationship as a raw string, e.g. "plan holder, subscriber or spouse"
-#   2. build_relationship_confirmation_prompt() parses it and produces:
-#      1 option  → "Thank you, I found your account. Are you the plan holder?"
-#      2 options → "...Are you the plan holder or the subscriber?"
-#      3 options → "...Are you the plan holder, the subscriber or the spouse?"
+#   1. Hardcoded prompt: "Thank you, I found your account. Are you the plan holder or dependent?"
+#   2. No dynamic prompt building — the prompt is always the same string.
 #   3. normalize_caller_role() maps spoken answers → plan_holder | dependent | ""
 #      _PLAN_HOLDER_TERMS: plan holder, planholder, plan_holder, myself, me, primary,
 #                          account holder
@@ -2089,71 +2086,45 @@ async def test_verification_relationship_prompt_hardcoded(run_conversation, asse
 
 
 @pytest.mark.live
-async def test_verification_relationship_prompt_formatting_two(run_conversation, assert_and_record):
-    """
-    SF lookup returns two relationship options.
-    Agent message for relationship question should contain 'or' exactly once and
-    mention both roles with 'the' prefix:
-    e.g. '...Are you the plan holder or the subscriber?'
-    Verifies build_relationship_confirmation_prompt count==2 branch.
-    """
+async def test_verification_relationship_dependent_child(run_conversation, assert_and_record):
+    """'my child' → dependent"""
     record = await run_conversation(
         user_inputs=[
             "I need to find an in-network doctor",
-            "Emily",
-            "Carter",
+            "Emily", "Carter",
             "m nine zero seven five zero three",
             "April twelfth nineteen eighty-eight",
-            "I'm the plan holder",
+            "my child",
         ],
-        test_name="test_verification_relationship_prompt_formatting_two",
-        scenario="Two-option SF relationship → prompt has 'or' once, both roles with 'the'",
+        test_name="test_verification_relationship_dependent_child",
+        scenario="'my child' → dependent",
     )
-
-    assert_and_record(
-        record,
-        [
-            (lambda: assert_member_verified(record), "member_status_verify==True"),
-            (
-                lambda: assert_any_agent_message_contains(record, "or the"),
-                "prompt_contains_or_the_conjunction",
-            ),
-        ],
-    )
+    assert_and_record(record, [
+        (lambda: assert_member_verified(record), "member_status_verify==True"),
+        (lambda: assert_relationship_collected(record, "dependent"), "relationship==dependent"),
+        (lambda: assert_not_escalated(record), "no_escalation"),
+    ])
 
 
 @pytest.mark.live
-async def test_verification_relationship_prompt_formatting_three(run_conversation, assert_and_record):
-    """
-    SF lookup returns three relationship options.
-    Agent message should use comma between first two options and 'or' before last,
-    without Oxford comma:
-    e.g. '...Are you the plan holder, the subscriber or the spouse?'
-    Verifies build_relationship_confirmation_prompt count>=3 branch (all_but_last join).
-    """
+async def test_verification_relationship_dependent_wife(run_conversation, assert_and_record):
+    """'my wife' → dependent"""
     record = await run_conversation(
         user_inputs=[
             "I need to find an in-network doctor",
-            "Emily",
-            "Carter",
+            "Emily", "Carter",
             "m nine zero seven five zero three",
             "April twelfth nineteen eighty-eight",
-            "I'm the plan holder",
+            "my wife",
         ],
-        test_name="test_verification_relationship_prompt_formatting_three",
-        scenario="Three-option SF relationship → prompt uses comma + 'or' (no Oxford comma)",
+        test_name="test_verification_relationship_dependent_wife",
+        scenario="'my wife' → dependent",
     )
-
-    assert_and_record(
-        record,
-        [
-            (lambda: assert_member_verified(record), "member_status_verify==True"),
-            (
-                lambda: assert_any_agent_message_contains(record, "the plan holder"),
-                "prompt_contains_plan_holder",
-            ),
-        ],
-    )
+    assert_and_record(record, [
+        (lambda: assert_member_verified(record), "member_status_verify==True"),
+        (lambda: assert_relationship_collected(record, "dependent"), "relationship==dependent"),
+        (lambda: assert_not_escalated(record), "no_escalation"),
+    ])
 
 
 # ---------------------------------------------------------------------------
