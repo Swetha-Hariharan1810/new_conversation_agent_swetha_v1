@@ -426,14 +426,12 @@ _DEPENDENT_TERMS = {"spouse", "dependent", "child", "family member", "my wife", 
 
 
 def normalize_caller_role(value: str | None) -> str:
-    """Normalize caller relationship to 'plan_holder' | 'subscriber' | 'dependent' | ''."""
+    """Normalize caller relationship to 'plan_holder' | 'dependent' | ''."""
     if not value:
         return ""
     cleaned = value.strip().lower()
-    if any(term in cleaned for term in _PLAN_HOLDER_TERMS):
+    if any(term in cleaned for term in _PLAN_HOLDER_TERMS) or any(term in cleaned for term in _SUBSCRIBER_TERMS):
         return "plan_holder"
-    if any(term in cleaned for term in _SUBSCRIBER_TERMS):
-        return "subscriber"
     if any(term in cleaned for term in _DEPENDENT_TERMS):
         return "dependent"
     return ""
