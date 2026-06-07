@@ -94,8 +94,12 @@ N2_PHONE_CONFIRM = [
 
 # ── Escalation messages ────────────────────────────────────────────────────────
 MSG_METHOD_EXHAUST = [
-    "I wasn't able to confirm your notification preference. Let me connect you with a representative.",
-    "I wasn't able to set up your notification preference. Connecting you with a specialist.",
+    "I wasn't able to confirm your notification preference. "
+    "Let me connect you with a representative.",
+    "I wasn't able to set up your notification preference. "
+    "Connecting you with a specialist.",
+    "I wasn't able to continue with the setup. "
+    "Let me connect you with a representative who can help.",
 ]
 MSG_CONTACT_EXHAUST = [
     "I wasn't able to confirm your contact details for notifications. "
