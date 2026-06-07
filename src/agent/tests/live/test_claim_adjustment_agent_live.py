@@ -2832,14 +2832,23 @@ async def test_B2_invalid_1_bad_email_then_valid(run_conversation, assert_and_re
 # Records not required (Scenario B): verification → reference → records skipped
 # → notification_setup is the next agent.
 # ---------------------------------------------------------------------------
-# NOTE: REF_B (42695817) has records_required=True in the SF sandbox.
-# _C_PREFIX must pass through records_coordination (personal guide path)
+# NOTE: REF_A (12491584) has records_required=True in the SF sandbox.
+# _C_PREFIX passes through records_coordination (personal guide path)
 # before landing in notification_setup_agent.
-_C_PREFIX = VERIFICATION_PREFIX_CLAIMS_B + [
+_C_PREFIX = VERIFICATION_PREFIX_CLAIMS + [
+    REF_A,
+    "Feel free to call my doctor's office directly",  # upload_method=personal_guide
+    "yes",                                             # personal_guide_consent=yes → guide triggered
+    # → notification_setup_agent now active, awaiting notification_method (N1)
+]
+
+# NOTE: REF_B (42695817) also has records_required=True in the SF sandbox.
+# _C_PREFIX_B is the Scenario B equivalent of _C_PREFIX.
+_C_PREFIX_B = VERIFICATION_PREFIX_CLAIMS_B + [
     REF_B,
     "Feel free to call my doctor's office directly",  # upload_method=personal_guide
     "yes",                                             # personal_guide_consent=yes → guide triggered
-    # → notification_setup_agent now active
+    # → notification_setup_agent now active, awaiting notification_method (N1)
 ]
 
 # Scenario A prefix that went through records and is now in notification_setup
@@ -5187,17 +5196,17 @@ async def test_D_n2_scenario_b_email_sms(run_conversation, assert_and_record):
 
 
 # ---------------------------------------------------------------------------
-# Shared prefix for Group E — lands in follow_up after email notification setup
+# Shared prefix for Group E — lands in follow_up after full N1+timeline+N2 setup
 # ---------------------------------------------------------------------------
 # NOTE: REF_B has records_required=True → must pass through records_coordination
 # via personal guide before reaching notification_setup_agent.
-_E_PREFIX = VERIFICATION_PREFIX_CLAIMS_B + [
-    REF_B,
-    "Feel free to call my doctor's office directly",  # upload_method=personal_guide → records_coordination
-    "yes",                                             # personal_guide_consent=yes → guide triggered
-    # → notification_setup_agent now active
-    "email",  # notification_method (N1)
-    "yes",    # email on file confirmed → follow_up_agent reached
+_E_PREFIX = _C_PREFIX_B + [
+    "email",  # N1 method
+    "yes",    # N1 email on file confirmed → preference saved
+    "no",     # timeline_question → no → move to N2
+    "email",  # N2 method
+    "yes",    # N2 email on file confirmed → handoff to follow_up_agent
+    # follow_up_agent now active
 ]
 
 # Scenario A prefix that goes through upload + guide so personal_guide flag is set
