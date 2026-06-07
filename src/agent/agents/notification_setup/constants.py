@@ -56,6 +56,14 @@ PREFERENCE_SAVED_TEMPLATES = [
     "Perfect. I've set up {method} notifications to {contact}.",
 ]
 
+# ── Timeline question ask ──────────────────────────────────────────────────────
+TIMELINE_QUESTION_ASK = [
+    "I can walk you through the expected timeline — "
+    "do you have any questions about timing, or shall I continue?",
+    "Would you like to know how long the adjustment process typically takes?",
+    "Do you have any questions about the timeline for this request?",
+]
+
 # ── Timeline bridge (connects notification confirm to timeline explanation) ────
 TIMELINE_BRIDGE_TEMPLATES = [
     "I can walk you through the expected timeline for this request.",
@@ -94,8 +102,12 @@ N2_PHONE_CONFIRM = [
 
 # ── Escalation messages ────────────────────────────────────────────────────────
 MSG_METHOD_EXHAUST = [
-    "I wasn't able to confirm your notification preference. Let me connect you with a representative.",
-    "I wasn't able to set up your notification preference. Connecting you with a specialist.",
+    "I wasn't able to confirm your notification preference. "
+    "Let me connect you with a representative.",
+    "I wasn't able to set up your notification preference. "
+    "Connecting you with a specialist.",
+    "I wasn't able to continue with your timeline or notification setup. "
+    "Let me connect you with a representative.",
 ]
 MSG_CONTACT_EXHAUST = [
     "I wasn't able to confirm your contact details for notifications. "
