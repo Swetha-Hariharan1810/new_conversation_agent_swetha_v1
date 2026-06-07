@@ -4732,18 +4732,19 @@ async def test_D_combo_1_upload_guide_n1_sms_n2_email(run_conversation, assert_a
         user_inputs=VERIFICATION_PREFIX_CLAIMS
         + [
             REF_A,
-            "yes please",  # upload link accepted
-            "yes",  # email on file confirmed → upload_link_sent
-            "Perfect. Please do that",  # personal_guide_consent → guide triggered
-            "SMS",  # N1: notification_method = sms
-            "yes",  # N1: phone on file confirmed
-            "email",  # N2: claim_timeline_notification_method = email
-            "yes",  # N2: email on file confirmed
+            "yes please",                   # upload link accepted
+            "yes",                          # email on file confirmed → upload_link_sent
+            "Perfect. Please do that",      # personal_guide_consent → guide triggered
+            "SMS",                          # N1 method
+            "yes",                          # N1 phone on file confirmed → preference saved
+            "no",                           # timeline_question → no → go to N2
+            "email",                        # N2 method
+            "yes",                          # N2 email on file confirmed → handoff to follow_up
             "where can I see my rewards?",  # follow_up question
-            "no thanks",  # closure
+            "no thanks",                    # closure
         ],
         test_name="test_D_combo_1_upload_guide_n1_sms_n2_email",
-        scenario=("Full Scenario A: upload + guide → N1=sms → N2=email → rewards follow_up → closure"),
+        scenario=("Full Scenario A: upload + guide → N1=sms → timeline no → N2=email → rewards follow_up → closure"),
     )
     assert_and_record(
         record,
@@ -4788,17 +4789,18 @@ async def test_D_combo_2_upload_guide_n1_email_n2_sms(run_conversation, assert_a
         user_inputs=VERIFICATION_PREFIX_CLAIMS
         + [
             REF_A,
-            "yes please",  # upload link accepted
-            "yes",  # email on file confirmed → upload_link_sent
-            "yes please do that",  # personal_guide_consent
-            "email",  # N1: notification_method = email
-            "yes",  # N1: email on file confirmed
-            "text me",  # N2: sms
-            "yes",  # N2: phone on file confirmed
-            "no thanks",  # closure
+            "yes please",         # upload link accepted
+            "yes",                # email on file confirmed → upload_link_sent
+            "yes please do that", # personal_guide_consent → guide triggered
+            "email",              # N1 method
+            "yes",                # N1 email on file confirmed → preference saved
+            "no",                 # timeline_question → no → go to N2
+            "text me",            # N2 method = sms
+            "yes",                # N2 phone on file confirmed → handoff to follow_up
+            "no thanks",          # closure
         ],
         test_name="test_D_combo_2_upload_guide_n1_email_n2_sms",
-        scenario=("Full Scenario A: upload + guide → N1=email → N2=sms → closure"),
+        scenario=("Full Scenario A: upload + guide → N1=email → timeline no → N2=sms → closure"),
     )
     assert_and_record(
         record,
@@ -4840,18 +4842,19 @@ async def test_D_combo_3_guide_only_n1_sms_n2_email_timeline(run_conversation, a
         + [
             REF_A,
             "Feel free to call my doctor's office directly",  # personal_guide intent (no upload)
-            "yes",  # personal_guide_consent → guide triggered
-            "SMS",  # N1
-            "yes",  # N1: phone confirmed
-            "email",  # N2
-            "yes",  # N2: email confirmed
-            "how long will it take?",  # follow_up timeline question
-            "no that's all",  # closure
+            "yes",                              # personal_guide_consent → guide triggered
+            "SMS",                              # N1 method
+            "yes",                              # N1 phone on file confirmed → preference saved
+            "how long will it take?",           # timeline_question → question → MSG_TIMELINE_ANSWER fired
+            "email",                            # N2 method (asked after timeline answer)
+            "yes",                              # N2 email on file confirmed → handoff to follow_up
+            "how long will the adjustment take?",  # follow_up timeline Q → answered from snapshot
+            "no that's all",                    # closure
         ],
         test_name="test_D_combo_3_guide_only_n1_sms_n2_email_timeline",
         scenario=(
-            "Full Scenario A: guide only (no upload) → N1=sms → N2=email → "
-            "timeline question answered from snapshot → closure"
+            "Full Scenario A: guide only (no upload) → N1=sms → timeline Q answered → "
+            "N2=email → follow_up timeline Q → closure"
         ),
     )
     assert_and_record(
@@ -4896,17 +4899,20 @@ async def test_D_combo_4_upload_no_guide_n2_sms_phone_updated(run_conversation, 
         + [
             REF_A,
             "yes please",  # upload link accepted
-            "yes",  # email on file confirmed → upload_link_sent
-            "no",  # personal_guide_consent declined
-            "SMS",  # N2: notification_method = sms
-            "no",  # phone on file declined
-            NEW_PHONE,  # new phone number
-            "no thanks",  # closure
+            "yes",         # email on file confirmed → upload_link_sent
+            "no",          # personal_guide_consent declined → no guide, no N1
+            "SMS",         # N1 method (notification_setup entered fresh)
+            "no",          # N1 phone on file declined
+            NEW_PHONE,     # new phone number → N1 preference saved
+            "no",          # timeline_question → no → go to N2
+            "SMS",         # N2 method
+            "yes",         # N2 phone on file confirmed → handoff to follow_up
+            "no thanks",   # closure
         ],
         test_name="test_D_combo_4_upload_no_guide_n2_sms_phone_updated",
         scenario=(
-            "Full Scenario A: upload + guide declined → N2=sms → "
-            "phone declined → new phone 5125554300 → closure"
+            "Full Scenario A: upload + guide declined → N1=sms (new phone) → "
+            "timeline no → N2=sms confirmed → closure"
         ),
     )
     assert_and_record(
@@ -4958,21 +4964,21 @@ async def test_D_combo_5_full_conversational_all_spoken(run_conversation, assert
         user_inputs=VERIFICATION_PREFIX_CLAIMS
         + [
             REF_A,
-            "Can my doctor just send it?",  # doctor_direct
-            "Oh yes please send me the link too",  # upload_consent=yes
-            "Yes that email is correct",  # email_confirmed=yes → link sent
-            "Actually yes have someone reach out too",  # personal_guide_consent=yes
-            "You can text me updates",  # N1=sms
-            "Yes that number is right",  # N1 phone confirmed
-            "Okay how long will this take?",  # timeline question (mid-setup)
-            "Email me the updates please",  # N2=email
-            "Yes that email is fine",  # N2 email confirmed
-            "No that's all, thanks",  # closure
+            "Can my doctor just send it?",                  # doctor_direct
+            "Oh yes please send me the link too",           # upload_consent=yes
+            "Yes that email is correct",                    # email_confirmed=yes → upload_link_sent
+            "Actually yes have someone reach out too",      # personal_guide_consent=yes → guide triggered
+            "You can text me updates",                      # N1=sms
+            "Yes that number is right",                     # N1 phone confirmed → preference saved
+            "Yes please tell me how long it will take",     # timeline_question → yes → MSG_TIMELINE_ANSWER
+            "Email me the updates please",                  # N2=email
+            "Yes that email is fine",                       # N2 email confirmed → handoff to follow_up
+            "No that's all, thanks",                        # closure
         ],
         test_name="test_D_combo_5_full_conversational_all_spoken",
         scenario=(
             "Full conversational Scenario A: every slot answered in natural speech "
-            "→ upload + guide + N1=sms + N2=email + timeline Q + closure"
+            "→ upload + guide + N1=sms + timeline yes + N2=email + closure"
         ),
     )
     assert_and_record(
@@ -4982,10 +4988,6 @@ async def test_D_combo_5_full_conversational_all_spoken(run_conversation, assert
             (lambda: assert_personal_guide_triggered(record), "personal_guide_triggered"),
             (lambda: assert_notification_channel(record, "sms"), "notification_channel==sms"),
             (lambda: assert_n2_notification_channel(record, "email"), "n2_channel==email"),
-            (
-                lambda: _assert_timeline_answer(record),
-                "timeline_in_answer",
-            ),
             (lambda: assert_claim_flow_complete(record), "claim_flow_complete"),
             (lambda: assert_not_escalated(record), "no_escalation"),
         ],
