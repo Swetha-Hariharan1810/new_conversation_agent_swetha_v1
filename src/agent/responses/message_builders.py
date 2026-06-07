@@ -36,24 +36,4 @@ def _parse_relationships(relationship_str: str) -> list[str]:
 
 
 def build_relationship_confirmation_prompt(relationship_str: str) -> str:
-    """Build the relationship question from the relationship field already returned by the SF lookup.
-    relationship_str: raw value from member record
-    e.g. "plan holder, subscriber or spouse"
-    """
-    members = _parse_relationships(relationship_str)
-    # logger.info(f"Parsed relationships: {members} from raw string: {relationship_str}")
-    count = len(members)
-
-    if count == 0:
-        return "Thank you, I found your account. Are you the plan holder or subscriber?"
-
-    if count == 1:
-        return f"Thank you, I found your account. Are you the {members[0]}?"
-
-    if count == 2:
-        return f"Thank you, I found your account. Are you the {members[0]} or the {members[1]}?"
-
-    # 3 or more
-    all_but_last = ", ".join(f"the {m}" for m in members[:-1])
-    last = f"the {members[-1]}"
-    return f"Thank you, I found your account. Are you {all_but_last} or {last}?"
+    return "Thank you, I found your account. Are you the plan holder or dependent?"

@@ -261,8 +261,7 @@ def redirect_off_topic(agent, state, collected, identity_pipeline):
         # and produce a duplicate message.
         awaiting = state.get("awaiting_slot", "")
         if awaiting == "relationship":
-            relationship_str = state.get("relationship", "")
-            next_prompt = build_relationship_confirmation_prompt(relationship_str)
+            next_prompt = build_relationship_confirmation_prompt("")
         elif awaiting in ("phone_confirmed", "phone_confirmation"):
             phone = state.get("phone_number", "")
             next_prompt = (

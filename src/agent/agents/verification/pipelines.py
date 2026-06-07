@@ -83,7 +83,7 @@ def build_provider_pipeline(agent) -> SlotPipeline:
                 slot_type=None,
                 normalizer=normalize_caller_role,
                 validator=validate_relationship,
-                prompt="Thank you, I found your account. Are you the plan holder or a subscriber?",
+                prompt="Thank you, I found your account. Are you the plan holder or dependent?",
             ),
         ],
     )
