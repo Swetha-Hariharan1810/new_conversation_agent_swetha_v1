@@ -15,6 +15,17 @@ unclear → event_type "ambiguous", leave extracted{} empty.
 
 ## Event type
 "answered"  — caller directly and clearly provided the requested value
+"answered_with_followup" — caller clearly provided the requested value AND
+              also directed a secondary signal at the agent. extracted{}
+              must contain the slot value; if no clear value was provided
+              this turn, use "answered" or "ambiguous" instead.
+              Secondary signals:
+                repeat requests       — "can you say that again", "sorry what was that"
+                confirmation requests — "did you get that", "is that right"
+                side questions the agent cannot answer from session state —
+                                        "do you speak Spanish", "what are your hours"
+                format uncertainty about their own answer —
+                                        "I think it's...", "not sure if that's right"
 "ambiguous" — genuinely nothing extractable, garbled, or uncertain — do not guess
 "none"      — a guard fired; set when guard != NONE
 
@@ -31,8 +42,10 @@ If not explicitly stated → omit caller_type from extracted{}.
 Return JSON only — no markdown, no explanation.
 {"extracted": {}, "event_type": "answered", "guard": null, "guard_confidence": 0.0}
 
-event_type: "answered" | "ambiguous" | "none"
+event_type: "answered" | "answered_with_followup" | "ambiguous" | "none"
   answered  — caller directly provided a value for the slot
+  answered_with_followup — caller provided a value for the slot AND added a
+              secondary signal; extracted{} must hold the slot value
   ambiguous — genuinely nothing extractable, garbled, or uncertain — do not guess
   none      — a guard fired; set extracted: {} and populate guard fields
 
