@@ -142,9 +142,9 @@ class DeliveryManagementAgent(BaseAgent):
 
             contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
             # Extraction contract: a replacement fax and fax_confirmed are mutually
-            # exclusive. If both arrive, fax is an echo of the Confirmed: context
-            # line — discard it so the yes/no is honored.
-            if contact_conf in ("yes", "no"):
+            # exclusive. If a "no" arrives alongside a fax, the fax is an echo of
+            # the Confirmed: context line — discard it so the decline is honored.
+            if contact_conf == "no":
                 new_fax_raw = ""
 
             if new_fax_raw:
@@ -235,9 +235,10 @@ class DeliveryManagementAgent(BaseAgent):
 
             contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
             # Extraction contract: a replacement email and email_confirmed are
-            # mutually exclusive. If both arrive, email is an echo of the Confirmed:
-            # context line — discard it so the yes/no is honored.
-            if contact_conf in ("yes", "no"):
+            # mutually exclusive. If a "no" arrives alongside an email, the email is
+            # an echo of the Confirmed: context line — discard it so the decline is
+            # honored.
+            if contact_conf == "no":
                 new_email_raw = ""
 
             if new_email_raw:
