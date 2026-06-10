@@ -43,7 +43,8 @@ FIELDS
 
     Stale-address statements are also declines → "no":
       "I moved", "I moved recently", "my address has changed",
-      "I don't live there anymore", "we relocated", "that's my old zip"
+      "I don't live there anymore", "we relocated", "that's my old zip",
+      "that's outdated", "it's changed"
       The member is indicating the ZIP on file is no longer valid —
       this is an unambiguous decline even without the word "no".
 
