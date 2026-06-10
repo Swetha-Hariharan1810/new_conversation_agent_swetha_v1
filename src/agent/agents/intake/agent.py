@@ -120,29 +120,31 @@ class IntakeAgent(BaseAgent):
                 "IntakeAgent: answered_with_followup — calling generation LLM",
                 extra={"intent": intent_value, "app_run_id": app_run_id},
             )
-            from agent.conversation.context import ConversationContext
+            # Intake has no slot state — call the generation LLM directly
+            # rather than going through _generate_slot_retry_response.
+            from agent.llm.response_generator import generate_recovery_message
 
-            ctx = ConversationContext.from_state(state)
-            msg = await self._generate_slot_retry_response(
-                state,
+            msg = await generate_recovery_message(
                 slot_name="intent",
-                ctx=ctx,
-                messages=messages,
+                attempt=0,
                 guard="ANSWERED_WITH_FOLLOWUP",
-                extracted_this_turn=intent_value,
+                last_messages=messages[-4:],
+                user_utterance=last_user,
+                confirmed_slots={},
+                extracted_value=intent_value,
+                slot_label_override=(
+                    "confirm back what they're calling about, address their "
+                    "repeat/confirmation request, then ask for their first name "
+                    "to get started — ask for nothing else"
+                ),
             )
-            # Intent is confirmed — store it now so on re-entry the guard at
-            # the top of run() fires and routes straight to verification.
+            # The caller's next utterance is their first name — route straight
+            # to verification instead of bouncing through intake's re-entry guard.
             bridge = self.ask_member(state, msg)
             bridge["call_intent"] = intent_value
             bridge["app_run_id"] = app_run_id
-            bridge["next_node"] = AgentNode.INTAKE.value
-            # bridge["metadata_events"] = [
-            #     {
-            #         "eventType": "CallAgentField",
-            #         "data": {"field": "call_intent", "value": intent_value},
-            #     }
-            # ]
+            bridge["resolved_intents"] = ["intake"]
+            bridge["next_node"] = AgentNode.VERIFICATION.value
             bridge["metadata_events"] = []
             return bridge
 

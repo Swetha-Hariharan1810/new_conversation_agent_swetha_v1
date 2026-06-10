@@ -180,22 +180,41 @@ class NotificationSetupAgent(BaseAgent):
         if current_awaiting == "phone_confirmed":
             new_phone_raw = extracted.get("phone", "")
             contact_conf_raw = extracted.get("contact_confirmed", "")
+            phone_on_file = (state.get("phone_number") or "").strip()
+            pending_phone = (state.get("pending_phone") or "").strip()
 
             if new_phone_raw:
                 normalized = normalize_phone_number(str(new_phone_raw))
                 if normalized and validate_phone_number(normalized).valid:
-                    return await self._save_and_complete(state, "sms", normalized)
+                    if normalized == normalize_phone_number(phone_on_file):
+                        # Same number we have on file — the preference write must
+                        # still happen; only NEW contact values are deferred.
+                        done = await self._save_and_complete(state, "sms", phone_on_file)
+                        done["pending_phone"] = ""
+                        return done
+                    confirm = self.ask_member(
+                        state,
+                        f"Just to be sure I have it right — your phone number is "
+                        f"{normalized[:3]}-{normalized[3:6]}-{normalized[6:]}, correct?",
+                    )
+                    confirm["awaiting_slot"] = "phone_confirmed"
+                    confirm["pending_phone"] = normalized
+                    confirm["notification_channel"] = "sms"
+                    return confirm
                 ask_result = self.ask_member(state, pick(PHONE_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "phone"
+                ask_result["pending_phone"] = ""
                 return ask_result
 
             contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
             if contact_conf == "yes":
-                phone_on_file = (state.get("phone_number") or "").strip()
-                return await self._save_and_complete(state, "sms", phone_on_file)
+                done = await self._save_and_complete(state, "sms", pending_phone or phone_on_file)
+                done["pending_phone"] = ""
+                return done
             if contact_conf == "no":
                 ask_result = self.ask_member(state, pick(PHONE_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "phone"
+                ask_result["pending_phone"] = ""
                 return ask_result
 
             self.slot_fail("phone_confirmed")
@@ -216,7 +235,16 @@ class NotificationSetupAgent(BaseAgent):
             if phone_raw:
                 normalized = normalize_phone_number(str(phone_raw))
                 if normalized and validate_phone_number(normalized).valid:
-                    return await self._save_and_complete(state, "sms", normalized)
+                    # Hold the new phone as pending until the member confirms
+                    confirm = self.ask_member(
+                        state,
+                        f"Just to be sure I have it right — your phone number is "
+                        f"{normalized[:3]}-{normalized[3:6]}-{normalized[6:]}, correct?",
+                    )
+                    confirm["awaiting_slot"] = "phone_confirmed"
+                    confirm["pending_phone"] = normalized
+                    confirm["notification_channel"] = "sms"
+                    return confirm
             self.slot_fail("phone")
             if self.get_slot("phone").is_exhausted():
                 return self.signal_escalate(
@@ -232,22 +260,42 @@ class NotificationSetupAgent(BaseAgent):
         if current_awaiting == "email_confirmed":
             new_email_raw = extracted.get("email", "")
             contact_conf_raw = extracted.get("contact_confirmed", "")
+            email_on_file = (state.get("email") or "").strip()
+            pending_email = (state.get("pending_email") or "").strip()
 
             if new_email_raw:
                 normalized = normalize_email(str(new_email_raw))
                 if normalized and validate_email(normalized).valid:
-                    return await self._save_and_complete(state, "email", normalized)
+                    if normalized == normalize_email(email_on_file):
+                        # Same email we have on file — the preference write must
+                        # still happen; only NEW contact values are deferred.
+                        done = await self._save_and_complete(state, "email", email_on_file)
+                        done["pending_email"] = ""
+                        return done
+                    display_email = normalized.replace("@", " at ")
+                    confirm = self.ask_member(
+                        state,
+                        f"Just to be sure I have it right — your email address is "
+                        f"{display_email}, correct?",
+                    )
+                    confirm["awaiting_slot"] = "email_confirmed"
+                    confirm["pending_email"] = normalized
+                    confirm["notification_channel"] = "email"
+                    return confirm
                 ask_result = self.ask_member(state, pick(EMAIL_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "email"
+                ask_result["pending_email"] = ""
                 return ask_result
 
             contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
             if contact_conf == "yes":
-                email_on_file = (state.get("email") or "").strip()
-                return await self._save_and_complete(state, "email", email_on_file)
+                done = await self._save_and_complete(state, "email", pending_email or email_on_file)
+                done["pending_email"] = ""
+                return done
             if contact_conf == "no":
                 ask_result = self.ask_member(state, pick(EMAIL_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "email"
+                ask_result["pending_email"] = ""
                 return ask_result
 
             self.slot_fail("email_confirmed")
@@ -257,8 +305,7 @@ class NotificationSetupAgent(BaseAgent):
                 )
             from agent.llm.response_generator import generate_recovery_message
 
-            email_on_file = (state.get("email") or "").strip()
-            display_email = email_on_file.replace("@", " at ")
+            display_email = (pending_email or email_on_file).replace("@", " at ")
             ctx = ConversationContext.from_state(state)
             retry_msg = await generate_recovery_message(
                 slot_name="email_confirmed",
@@ -282,7 +329,17 @@ class NotificationSetupAgent(BaseAgent):
             if email_raw:
                 normalized = normalize_email(str(email_raw))
                 if normalized and validate_email(normalized).valid:
-                    return await self._save_and_complete(state, "email", normalized)
+                    # Hold the new email as pending until the member confirms
+                    display_email = normalized.replace("@", " at ")
+                    confirm = self.ask_member(
+                        state,
+                        f"Just to be sure I have it right — your email address is "
+                        f"{display_email}, correct?",
+                    )
+                    confirm["awaiting_slot"] = "email_confirmed"
+                    confirm["pending_email"] = normalized
+                    confirm["notification_channel"] = "email"
+                    return confirm
             self.slot_fail("email")
             if self.get_slot("email").is_exhausted():
                 return self.signal_escalate(

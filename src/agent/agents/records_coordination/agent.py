@@ -179,26 +179,46 @@ class RecordsCoordinationAgent(BaseAgent):
             new_email_raw = extracted.get("email", "")
             contact_conf_raw = extracted.get("email_confirmed", extracted.get("contact_confirmed", ""))
             email_on_file = (state.get("email") or "").strip()
+            pending_email = (state.get("pending_email") or "").strip()
 
             # Inline replacement: member declined AND provided new email in same utterance
             if new_email_raw:
                 normalized = normalize_email(str(new_email_raw))
                 if normalized and validate_email(normalized).valid:
-                    return await self._send_link_and_proceed(state, normalized)
+                    if normalized == normalize_email(email_on_file):
+                        # Member repeated the email we already have on file
+                        done = await self._send_link_and_proceed(state, email_on_file)
+                        done["pending_email"] = ""
+                        return done
+                    # New email — hold as pending until the member confirms the
+                    # read-back. @ is escaped for the spoken message only.
+                    display_email = normalized.replace("@", " at ")
+                    confirm = self.ask_member(
+                        state,
+                        f"Just to be sure I have it right — your email address is "
+                        f"{display_email}, correct?",
+                    )
+                    confirm["awaiting_slot"] = "email_confirmed"
+                    confirm["pending_email"] = normalized
+                    return confirm
                 ask_result = self.ask_member(state, pick(MSG_EMAIL_UPDATE_PROMPT))
                 ask_result["awaiting_slot"] = "email"
+                ask_result["pending_email"] = ""
                 return ask_result
 
             contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
 
             # Explicit yes → proceed
             if contact_conf == "yes":
-                return await self._send_link_and_proceed(state, email_on_file)
+                done = await self._send_link_and_proceed(state, pending_email or email_on_file)
+                done["pending_email"] = ""
+                return done
 
             # Explicit no → ask for new email
             if contact_conf == "no":
                 ask_result = self.ask_member(state, pick(MSG_EMAIL_UPDATE_PROMPT))
                 ask_result["awaiting_slot"] = "email"
+                ask_result["pending_email"] = ""
                 return ask_result
 
             # Ambiguous / no extraction → re-read the email, ask again (do NOT ask for new email)
@@ -206,16 +226,18 @@ class RecordsCoordinationAgent(BaseAgent):
             if self.get_slot("email_confirmed").is_exhausted():
                 # FIX: escalate on exhaustion instead of silently pivoting to email collection.
                 # Test B5 expects escalation after 3 consecutive ambiguous email_confirmed answers.
-                return self.signal_escalate(
+                esc = self.signal_escalate(
                     state,
                     pick(MSG_DECLINE_ESCALATE),
                     reason="email_confirmed_exhausted_in_records",
                 )
+                esc["pending_email"] = ""
+                return esc
 
             # Re-read the email on file and ask again using CLARIFY (gentle tone)
             from agent.llm.response_generator import generate_recovery_message
 
-            display_email = email_on_file.replace("@", " at ")
+            display_email = (pending_email or email_on_file).replace("@", " at ")
             ctx = ConversationContext.from_state(state)
             retry_msg = await generate_recovery_message(
                 slot_name="email_confirmed",
@@ -240,7 +262,16 @@ class RecordsCoordinationAgent(BaseAgent):
             if new_email_raw:
                 normalized = normalize_email(str(new_email_raw))
                 if normalized and validate_email(normalized).valid:
-                    return await self._send_link_and_proceed(state, normalized)
+                    # Hold the new email as pending until the member confirms
+                    display_email = normalized.replace("@", " at ")
+                    confirm = self.ask_member(
+                        state,
+                        f"Just to be sure I have it right — your email address is "
+                        f"{display_email}, correct?",
+                    )
+                    confirm["awaiting_slot"] = "email_confirmed"
+                    confirm["pending_email"] = normalized
+                    return confirm
             self.slot_fail("email")
             if self.get_slot("email").is_exhausted():
                 return self.signal_escalate(

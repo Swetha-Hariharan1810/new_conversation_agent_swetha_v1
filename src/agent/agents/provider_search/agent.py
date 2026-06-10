@@ -163,38 +163,77 @@ class ProviderSearchAgent(BaseAgent):
                 interrupt["provider_type"] = provider_type
                 return interrupt
             new_zip = collected_zip["zip_code"]
-            if fail := await update_zip_in_salesforce(self, state, new_zip):
-                return fail
-            logger.info(LOG_ZIP_UPDATED, extra={"zip_code": new_zip})
-            return self._signal_done(state, provider_type, new_zip)
+            # Hold the new ZIP as pending — no Salesforce write until the member
+            # confirms the read-back. zip_code stays on the on-file value because
+            # ask_member would otherwise persist the pipeline-confirmed slot.
+            confirm = self.ask_member(
+                state,
+                f"Just to be sure I have it right — your ZIP code is {' '.join(new_zip)}, correct?",
+            )
+            confirm["awaiting_slot"] = "zip_confirmed"
+            confirm["pending_zip_code"] = new_zip
+            confirm["provider_type"] = provider_type
+            confirm["zip_code"] = zip_on_file
+            return confirm
 
         # 7b. Processing response to ZIP confirmation question
         if current_awaiting == "zip_confirmed":
             extracted = (result.extracted or {}) if result else {}
             new_zip_raw = extracted.get("zip_code", "")
             zip_conf_raw = extracted.get("zip_confirmed", "")
+            pending_zip = (state.get("pending_zip_code") or "").strip()
 
             if new_zip_raw:
                 normalized = normalize_zip_code(str(new_zip_raw))
                 if normalized and validate_zip_code(normalized).valid:
-                    if fail := await update_zip_in_salesforce(self, state, normalized):
-                        return fail
-                    logger.info(LOG_ZIP_UPDATED, extra={"zip_code": normalized})
-                    return self._signal_done(state, provider_type, normalized)
+                    if normalized == normalize_zip_code(zip_on_file):
+                        # Member repeated the ZIP we already have on file
+                        logger.info(LOG_ZIP_CONFIRMED, extra={"zip_code": zip_on_file})
+                        done = self._signal_done(state, provider_type, zip_on_file)
+                        done["pending_zip_code"] = ""
+                        spoken = " ".join(zip_on_file)
+                        done["messages"]["content"] = (
+                            f"That's right — {spoken}. " + done["messages"]["content"]
+                        )
+                        return done
+                    # New ZIP — hold as pending until the member confirms the read-back
+                    confirm = self.ask_member(
+                        state,
+                        f"Just to be sure I have it right — your ZIP code is "
+                        f"{' '.join(normalized)}, correct?",
+                    )
+                    confirm["awaiting_slot"] = "zip_confirmed"
+                    confirm["pending_zip_code"] = normalized
+                    confirm["provider_type"] = provider_type
+                    confirm["zip_code"] = zip_on_file
+                    return confirm
                 # Provided ZIP was invalid — ask for a proper one
                 ask_result = self.ask_member(state, ZIP_UPDATE_PROMPT)
                 ask_result["awaiting_slot"] = "zip_code"
                 ask_result["provider_type"] = provider_type
+                ask_result["pending_zip_code"] = ""
+                ask_result["zip_code"] = zip_on_file
                 return ask_result
 
             zip_conf = normalize_yes_no(zip_conf_raw) if zip_conf_raw else ""
             if zip_conf == "yes":
+                if pending_zip:
+                    if fail := await update_zip_in_salesforce(self, state, pending_zip):
+                        return fail
+                    logger.info(LOG_ZIP_UPDATED, extra={"zip_code": pending_zip})
+                    done = self._signal_done(state, provider_type, pending_zip)
+                    done["pending_zip_code"] = ""
+                    return done
                 logger.info(LOG_ZIP_CONFIRMED, extra={"zip_code": zip_on_file})
-                return self._signal_done(state, provider_type, zip_on_file)
+                done = self._signal_done(state, provider_type, zip_on_file)
+                done["pending_zip_code"] = ""
+                return done
             if zip_conf == "no":
                 ask_result = self.ask_member(state, ZIP_UPDATE_PROMPT)
                 ask_result["awaiting_slot"] = "zip_code"
                 ask_result["provider_type"] = provider_type
+                ask_result["pending_zip_code"] = ""
+                ask_result["zip_code"] = zip_on_file
                 return ask_result
 
             # No clear yes/no — retry or exhaust
@@ -202,10 +241,12 @@ class ProviderSearchAgent(BaseAgent):
             slot = self.get_slot("zip_confirmed")
             if slot.is_exhausted():
                 return self.signal_escalate(state, pick(MSG_ZIP_EXHAUST), reason="zip_confirmed_exhausted")
-            retry_msg = random.choice(ZIP_CONFIRM_TEMPLATES).format(zip_code=zip_on_file)
+            live_zip = pending_zip or zip_on_file
+            retry_msg = random.choice(ZIP_CONFIRM_TEMPLATES).format(zip_code=live_zip)
             retry_result = self.ask_member(state, retry_msg)
             retry_result["awaiting_slot"] = "zip_confirmed"
             retry_result["provider_type"] = provider_type
+            retry_result["zip_code"] = zip_on_file
             return retry_result
 
         # 7c. First time asking ZIP confirmation
