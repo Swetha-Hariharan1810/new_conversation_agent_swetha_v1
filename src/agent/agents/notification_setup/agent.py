@@ -183,6 +183,14 @@ class NotificationSetupAgent(BaseAgent):
             phone_on_file = (state.get("phone_number") or "").strip()
             pending_phone = (state.get("pending_phone") or "").strip()
 
+            contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
+            # Extraction contract: a replacement phone and contact_confirmed are
+            # mutually exclusive. If a "no" arrives alongside a phone, the phone is
+            # an echo of the Confirmed: context line — discard it so the decline is
+            # honored.
+            if contact_conf == "no":
+                new_phone_raw = ""
+
             if new_phone_raw:
                 normalized = normalize_phone_number(str(new_phone_raw))
                 if normalized and validate_phone_number(normalized).valid:
@@ -206,7 +214,6 @@ class NotificationSetupAgent(BaseAgent):
                 ask_result["pending_phone"] = ""
                 return ask_result
 
-            contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
             if contact_conf == "yes":
                 done = await self._save_and_complete(state, "sms", pending_phone or phone_on_file)
                 done["pending_phone"] = ""
@@ -263,6 +270,14 @@ class NotificationSetupAgent(BaseAgent):
             email_on_file = (state.get("email") or "").strip()
             pending_email = (state.get("pending_email") or "").strip()
 
+            contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
+            # Extraction contract: a replacement email and contact_confirmed are
+            # mutually exclusive. If a "no" arrives alongside an email, the email is
+            # an echo of the Confirmed: context line — discard it so the decline is
+            # honored.
+            if contact_conf == "no":
+                new_email_raw = ""
+
             if new_email_raw:
                 normalized = normalize_email(str(new_email_raw))
                 if normalized and validate_email(normalized).valid:
@@ -287,7 +302,6 @@ class NotificationSetupAgent(BaseAgent):
                 ask_result["pending_email"] = ""
                 return ask_result
 
-            contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
             if contact_conf == "yes":
                 done = await self._save_and_complete(state, "email", pending_email or email_on_file)
                 done["pending_email"] = ""

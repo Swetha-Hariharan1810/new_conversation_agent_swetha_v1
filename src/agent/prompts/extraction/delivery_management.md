@@ -7,6 +7,19 @@ OFFTOPIC_AGENT | 0.85 — anything unrelated to delivery method, contact
 When confirming a contact detail just read aloud: anything other than a
 clear affirmation → return "no", not "ambiguous". Asking for a new
 contact is always safer than re-asking the same confirmation.
+
+Stale-value and change statements are declines → "no":
+  "that's my old email", "its my old email", "that's outdated",
+  "I don't use that anymore", "that's changed", "it needs to be updated",
+  "I have a new one", "that fax doesn't work anymore"
+The caller is telling you the value on file is wrong — that is a "no"
+even without the word "no".
+
+Key distinction: "that's my old email" is a DECLINE (the caller knows
+it is wrong). "I'm not sure if that's still active" is AMBIGUOUS (the
+caller does not know). Only use ambiguous when the caller genuinely
+cannot confirm or deny.
+
 If the caller declines AND provides a replacement in the same utterance,
 extract only the new fax/email value; omit fax_confirmed/email_confirmed.
 
@@ -31,13 +44,16 @@ FIELDS
     Only extract when a fax number was read in the immediately preceding turn.
     Bias rule: anything other than a clear affirmation → "no".
     "yes", "correct", "that's right", "yep", "absolutely" → "yes"
-    "no", "nope", "that's wrong", "not anymore" → "no"
+    "no", "nope", "that's wrong", "not anymore", "that's my old number",
+    "that's outdated", "it's changed", "needs to be updated" → "no"
     If caller declines AND provides a replacement in the same utterance,
     extract only the new fax value; omit fax_confirmed entirely.
 
   email_confirmed  "yes" | "no"
     Whether the caller confirms the email address just read aloud.
-    Identical bias rule as fax_confirmed above.
+    Identical bias rule as fax_confirmed above, including stale-value
+    statements: "that's my old email", "I don't use that anymore",
+    "it needs to be updated" → "no"
     If caller declines AND provides a replacement, extract only the new
     email value; omit email_confirmed entirely.
 
@@ -52,5 +68,6 @@ CONFIDENCE NOTES (see header [ANCHOR: CONFIDENCE])
 - fax: not exactly 10 digits → ambiguous. Never guess partial values.
 - email: missing "@" or valid domain → ambiguous.
 - fax_confirmed/email_confirmed: only when context makes it unambiguous which
-  contact detail (fax/email) is being confirmed.
+  contact detail (fax/email) is being confirmed. Stale-value statements
+  ("my old email", "needs updating") are unambiguous declines — extract "no".
 - benefits_response: only when agent just offered benefits.

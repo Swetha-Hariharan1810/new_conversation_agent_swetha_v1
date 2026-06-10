@@ -26,6 +26,7 @@ from agent.agents.provider_search.pipelines import (
     build_provider_type_pipeline,
     build_zip_confirmation_pipeline,
 )
+from agent.conversation.context import ConversationContext
 from agent.core.agent import BaseAgent
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
@@ -183,6 +184,14 @@ class ProviderSearchAgent(BaseAgent):
             zip_conf_raw = extracted.get("zip_confirmed", "")
             pending_zip = (state.get("pending_zip_code") or "").strip()
 
+            zip_conf = normalize_yes_no(zip_conf_raw) if zip_conf_raw else ""
+            # Extraction contract: a replacement ZIP and zip_confirmed are mutually
+            # exclusive ("if caller declines AND provides a new ZIP, omit
+            # zip_confirmed"). If both arrive, zip_code is an echo of the
+            # Confirmed: context line — discard it so the yes/no is honored.
+            if zip_conf in ("yes", "no"):
+                new_zip_raw = ""
+
             if new_zip_raw:
                 normalized = normalize_zip_code(str(new_zip_raw))
                 if normalized and validate_zip_code(normalized).valid:
@@ -215,7 +224,6 @@ class ProviderSearchAgent(BaseAgent):
                 ask_result["zip_code"] = zip_on_file
                 return ask_result
 
-            zip_conf = normalize_yes_no(zip_conf_raw) if zip_conf_raw else ""
             if zip_conf == "yes":
                 if pending_zip:
                     if fail := await update_zip_in_salesforce(self, state, pending_zip):
@@ -241,8 +249,24 @@ class ProviderSearchAgent(BaseAgent):
             slot = self.get_slot("zip_confirmed")
             if slot.is_exhausted():
                 return self.signal_escalate(state, pick(MSG_ZIP_EXHAUST), reason="zip_confirmed_exhausted")
+            from agent.llm.response_generator import generate_recovery_message
+
             live_zip = pending_zip or zip_on_file
-            retry_msg = random.choice(ZIP_CONFIRM_TEMPLATES).format(zip_code=live_zip)
+            spoken_zip = " ".join(live_zip)
+            ctx = ConversationContext.from_state(state)
+            retry_msg = await generate_recovery_message(
+                slot_name="zip_confirmed",
+                attempt=slot.attempt_count,
+                guard="RETRY",
+                last_messages=messages[-4:],
+                slot_label_override=(
+                    f"whether the ZIP code {spoken_zip} on file is correct (yes or no) — "
+                    f"if they say their address changed, ask for their current ZIP"
+                ),
+                caller_name=ctx.caller_first_name,
+                confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
+                user_utterance=last_user,
+            )
             retry_result = self.ask_member(state, retry_msg)
             retry_result["awaiting_slot"] = "zip_confirmed"
             retry_result["provider_type"] = provider_type

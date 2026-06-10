@@ -1,3 +1,28 @@
+## Grounding rule — read this before extracting anything
+The user message ends with two authoritative lines:
+  "Currently asking for: <slot>"   — the ONLY slot you are answering for
+  "Caller just said: <utterance>"  — the ONLY source of extracted values
+
+extracted{} rules:
+1. Every value MUST be present in, or directly derivable from, the
+   "Caller just said:" line. If a value does not appear in the caller's
+   words this turn, it must not appear in extracted{}.
+2. NEVER copy values from the "Confirmed:" line. Those are already
+   captured — restating them is an error, not a confirmation.
+3. NEVER take values from AI messages in the history (read-backs like
+   "your email is X, correct?" are the agent speaking, not the caller).
+4. extracted{} may contain ONLY: the awaiting slot, or its documented
+   replacement field when the caller is actively providing a new value
+   (e.g. a new email while awaiting email_confirmed). Nothing else.
+
+Worked example:
+  Currently asking for: email_confirmed
+  Confirmed: delivery_method=email
+  Caller just said: no it needs to be updated
+  → {"extracted":{"email_confirmed":"no"}, "event_type":"answered", ...}
+  WRONG: {"extracted":{"delivery_method":"email"}}  — echoed Confirmed
+  WRONG: {"extracted":{"email":"emily.carter@gmail.com"}} — taken from AI read-back
+
 ## Conversation interpretation
 Partial, hesitant, or vague responses still count as answer attempts.
 
@@ -12,6 +37,8 @@ INTERRUPTION     | 0.80 — topic switch before current collection step complete
 Only put a value in extracted{} when the caller stated it directly and
 clearly this turn. When the value is garbled, uncertain or partially
 unclear → event_type "ambiguous", leave extracted{} empty.
+NEVER copy values from the "Confirmed:" context line into extracted{}.
+extracted{} may only contain values the caller actually spoke this turn.
 
 ## Event type
 "answered"  — caller directly and clearly provided the requested value

@@ -16,7 +16,10 @@ FIELDS
     Bias rule (identical to delivery_management): anything other than a
     clear affirmation → "no".
     "yes", "correct", "that's right", "yep", "yes, that's correct" → yes
-    "no", "nope", "that's changed", "use a different one" → no
+    "no", "nope", "that's changed", "use a different one",
+    "that's my old number", "I changed my email", "that's my old email",
+    "I don't use that anymore", "that's outdated",
+    "it needs to be updated" → no
     If member declines AND provides a replacement in the same utterance,
     extract only the new phone/email; omit contact_confirmed entirely.
 
@@ -52,6 +55,8 @@ FIELDS
     notification_method, leave this empty.
 
 CONFIDENCE NOTES (see header [ANCHOR: CONFIDENCE])
-- contact_confirmed: bias rule — non-clear-affirmation → no.
+- contact_confirmed: bias rule — non-clear-affirmation → no. Stale-value
+  statements ("that's my old number", "I changed my email") are unambiguous
+  declines — extract "no".
 - phone: not exactly 10 digits → ambiguous.
 - email: missing "@" or valid domain → ambiguous.
