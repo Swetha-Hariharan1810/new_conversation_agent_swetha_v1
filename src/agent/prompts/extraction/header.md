@@ -42,6 +42,9 @@ When in doubt → event_type:"ambiguous".
 
 ## EVENT_TYPE
 "answered"  — caller directly and clearly answered the awaiting slot.
+"answered_with_followup" — caller clearly answered the awaiting slot AND also
+              asked for a repeat, read-back, or confirmation, or asked a side
+              question. Extract the value into extracted{} as normal.
 "corrected" — caller is explicitly changing a value in Confirmed[].
               corrections{} must be non-empty; otherwise use "ambiguous".
               If Confirmed[] is empty, use "answered" instead.
@@ -55,6 +58,7 @@ When in doubt → event_type:"ambiguous".
 | "no wait that's wrong"             | ambiguous  | Correction intent, no new value     |
 | "actually it's M451982"            | corrected  | Explicit replacement with new value |
 | "November 5 1992"                  | answered   | Clear complete value                |
+| "It's Sophia — could you repeat the question?" | answered_with_followup | Valid value + repeat request |
 
 ## LOCKED FIELDS
 Never put these in corrections{}: member_status_verify, call_intent.
@@ -73,6 +77,6 @@ If not explicitly stated → omit caller_type from extracted{}.
 ## RETURN
 Return JSON only — no markdown, no explanation.
 { "extracted": {}, "corrections": {}, "event_type": "answered", "guard": null, "guard_confidence": 0.0 }
-event_type: "answered" | "corrected" | "ambiguous" | "none" — default "answered"
+event_type: "answered" | "answered_with_followup" | "corrected" | "ambiguous" | "none" — default "answered"
 `extracted` — newly provided slot values; `corrections` — replaces a previously accepted slot
 `guard` — triggered guard label or null; `guard_confidence` — 0.0 when no guard fires

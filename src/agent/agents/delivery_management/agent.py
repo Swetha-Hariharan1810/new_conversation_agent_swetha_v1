@@ -138,25 +138,53 @@ class DeliveryManagementAgent(BaseAgent):
             extracted = (result.extracted or {}) if result else {}
             new_fax_raw = extracted.get("fax", "")
             contact_conf_raw = extracted.get("fax_confirmed", "")
+            pending_fax = (state.get("pending_fax") or "").strip()
 
             if new_fax_raw:
                 normalized = normalize_fax_number(str(new_fax_raw))
                 if normalized and validate_fax_number(normalized).valid:
-                    if fail := await update_fax_in_salesforce(self, state, normalized):
-                        return fail
-                    logger.info(LOG_CONTACT_UPDATED, extra={"fax_tail": normalized[-4:]})
-                    return await self._proceed_to_dispatch(state, delivery_method, normalized)
+                    if normalized == normalize_fax_number(fax_on_file):
+                        # Member repeated the fax we already have on file
+                        logger.info(LOG_CONTACT_CONFIRMED, extra={"method": "fax"})
+                        done = await self._proceed_to_dispatch(state, delivery_method, fax_on_file)
+                        done["pending_fax"] = ""
+                        return done
+                    # New fax — hold as pending until the member confirms the
+                    # read-back. fax stays on the on-file value because ask_member
+                    # would otherwise persist the pipeline-confirmed slot.
+                    confirm = self.ask_member(
+                        state,
+                        f"Just to be sure I have it right — your fax number is "
+                        f"{normalized[:3]}-{normalized[3:6]}-{normalized[6:]}, correct?",
+                    )
+                    confirm["awaiting_slot"] = "fax_confirmed"
+                    confirm["pending_fax"] = normalized
+                    confirm["fax"] = fax_on_file
+                    return confirm
                 ask_result = self.ask_member(state, pick(FAX_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "fax"
+                ask_result["pending_fax"] = ""
+                ask_result["fax"] = fax_on_file
                 return ask_result
 
             contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
             if contact_conf == "yes":
+                if pending_fax:
+                    if fail := await update_fax_in_salesforce(self, state, pending_fax):
+                        return fail
+                    logger.info(LOG_CONTACT_UPDATED, extra={"fax_tail": pending_fax[-4:]})
+                    done = await self._proceed_to_dispatch(state, delivery_method, pending_fax)
+                    done["pending_fax"] = ""
+                    return done
                 logger.info(LOG_CONTACT_CONFIRMED, extra={"method": "fax"})
-                return await self._proceed_to_dispatch(state, delivery_method, fax_on_file)
+                done = await self._proceed_to_dispatch(state, delivery_method, fax_on_file)
+                done["pending_fax"] = ""
+                return done
             if contact_conf == "no":
                 ask_result = self.ask_member(state, pick(FAX_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "fax"
+                ask_result["pending_fax"] = ""
+                ask_result["fax"] = fax_on_file
                 return ask_result
 
             # No clear yes/no — retry or exhaust
@@ -165,9 +193,11 @@ class DeliveryManagementAgent(BaseAgent):
                 return self.signal_escalate(
                     state, pick(MSG_CONTACT_EXHAUST), reason="fax_confirmed_exhausted"
                 )
-            retry_msg = random.choice(FAX_READBACK_TEMPLATES).format(fax=fax_on_file)
+            live_fax = pending_fax or fax_on_file
+            retry_msg = random.choice(FAX_READBACK_TEMPLATES).format(fax=live_fax)
             retry_result = self.ask_member(state, retry_msg)
             retry_result["awaiting_slot"] = "fax_confirmed"
+            retry_result["fax"] = fax_on_file
             return retry_result
 
         # ── FAX UPDATE ───────────────────────────────────────────────────────
@@ -179,35 +209,70 @@ class DeliveryManagementAgent(BaseAgent):
             ):
                 return interrupt
             new_fax = collected_fax["fax"]
-            if fail := await update_fax_in_salesforce(self, state, new_fax):
-                return fail
-            logger.info(LOG_CONTACT_UPDATED, extra={"fax_tail": new_fax[-4:]})
-            return await self._proceed_to_dispatch(state, delivery_method, new_fax)
+            # Hold the new fax as pending — no Salesforce write until confirmed
+            confirm = self.ask_member(
+                state,
+                f"Just to be sure I have it right — your fax number is "
+                f"{new_fax[:3]}-{new_fax[3:6]}-{new_fax[6:]}, correct?",
+            )
+            confirm["awaiting_slot"] = "fax_confirmed"
+            confirm["pending_fax"] = new_fax
+            confirm["fax"] = fax_on_file
+            return confirm
 
         # ── EMAIL CONFIRMATION ───────────────────────────────────────────────
         if current_awaiting == "email_confirmed":
             extracted = (result.extracted or {}) if result else {}
             new_email_raw = extracted.get("email", "")
             contact_conf_raw = extracted.get("email_confirmed", "")
+            pending_email = (state.get("pending_email") or "").strip()
 
             if new_email_raw:
                 normalized = normalize_email(str(new_email_raw))
                 if normalized and validate_email(normalized).valid:
-                    if fail := await update_email_in_salesforce(self, state, normalized):
-                        return fail
-                    logger.info(LOG_CONTACT_UPDATED, extra={"method": "email"})
-                    return await self._proceed_to_dispatch(state, delivery_method, normalized)
+                    if normalized == normalize_email(email_on_file):
+                        # Member repeated the email we already have on file
+                        logger.info(LOG_CONTACT_CONFIRMED, extra={"method": "email"})
+                        done = await self._proceed_to_dispatch(state, delivery_method, email_on_file)
+                        done["pending_email"] = ""
+                        return done
+                    # New email — hold as pending until the member confirms the
+                    # read-back. @ is escaped for the spoken message only; the raw
+                    # value stays in pending_email.
+                    display_email = normalized.replace("@", " at ")
+                    confirm = self.ask_member(
+                        state,
+                        f"Just to be sure I have it right — your email address is "
+                        f"{display_email}, correct?",
+                    )
+                    confirm["awaiting_slot"] = "email_confirmed"
+                    confirm["pending_email"] = normalized
+                    confirm["email"] = email_on_file
+                    return confirm
                 ask_result = self.ask_member(state, pick(EMAIL_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "email"
+                ask_result["pending_email"] = ""
+                ask_result["email"] = email_on_file
                 return ask_result
 
             contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
             if contact_conf == "yes":
+                if pending_email:
+                    if fail := await update_email_in_salesforce(self, state, pending_email):
+                        return fail
+                    logger.info(LOG_CONTACT_UPDATED, extra={"method": "email"})
+                    done = await self._proceed_to_dispatch(state, delivery_method, pending_email)
+                    done["pending_email"] = ""
+                    return done
                 logger.info(LOG_CONTACT_CONFIRMED, extra={"method": "email"})
-                return await self._proceed_to_dispatch(state, delivery_method, email_on_file)
+                done = await self._proceed_to_dispatch(state, delivery_method, email_on_file)
+                done["pending_email"] = ""
+                return done
             if contact_conf == "no":
                 ask_result = self.ask_member(state, pick(EMAIL_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "email"
+                ask_result["pending_email"] = ""
+                ask_result["email"] = email_on_file
                 return ask_result
 
             # No clear yes/no — retry or exhaust
@@ -217,10 +282,12 @@ class DeliveryManagementAgent(BaseAgent):
                     state, pick(MSG_CONTACT_EXHAUST), reason="email_confirmed_exhausted"
                 )
             # FIX: escape @ before writing into message history
-            display_email = email_on_file.replace("@", " at ")
+            live_email = pending_email or email_on_file
+            display_email = live_email.replace("@", " at ")
             retry_msg = random.choice(EMAIL_READBACK_TEMPLATES).format(email=display_email)
             retry_result = self.ask_member(state, retry_msg)
             retry_result["awaiting_slot"] = "email_confirmed"
+            retry_result["email"] = email_on_file
             return retry_result
 
         # ── EMAIL UPDATE ─────────────────────────────────────────────────────
@@ -232,10 +299,16 @@ class DeliveryManagementAgent(BaseAgent):
             ):
                 return interrupt
             new_email = collected_email["email"]
-            if fail := await update_email_in_salesforce(self, state, new_email):
-                return fail
-            logger.info(LOG_CONTACT_UPDATED, extra={"method": "email"})
-            return await self._proceed_to_dispatch(state, delivery_method, new_email)
+            # Hold the new email as pending — no Salesforce write until confirmed
+            display_email = new_email.replace("@", " at ")
+            confirm = self.ask_member(
+                state,
+                f"Just to be sure I have it right — your email address is {display_email}, correct?",
+            )
+            confirm["awaiting_slot"] = "email_confirmed"
+            confirm["pending_email"] = new_email
+            confirm["email"] = email_on_file
+            return confirm
 
         # ── FALLBACK: delivery_method known but awaiting_slot not matched ────
         # Re-ask for contact confirmation (handles unexpected re-entry)

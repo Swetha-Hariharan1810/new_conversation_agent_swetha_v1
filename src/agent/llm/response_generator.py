@@ -52,6 +52,9 @@ _SLOT_LABELS: dict[str, str] = {
 # "RETRY"        | _collect_slot            | Genuine failed answer — attempt counted
 # "CLARIFY"      | _collect_slot            | First AMBIGUOUS turn — no attempt cost;
 #                |                          | ask caller to repeat more clearly
+# "ANSWERED_WITH_FOLLOWUP" | _collect_slot / intake | Slot value accepted this turn;
+#                |                          | acknowledge it and address the caller's
+#                |                          | side question — no attempt cost, no re-ask
 # "CORRECTION"   | _generate_correction_ack | Caller corrected a confirmed slot
 # "INTERRUPTION" | guards.py               | Caller switched topic mid-collection
 # "OFFTOPIC_AGENT"| guards.py              | Wrong-agent topic — steer back
@@ -70,6 +73,7 @@ _FALLBACKS: dict[str, str] = {
     "CLARIFY": (
         "I just want to make sure I have that right — \ncould you say your {slot_label} one more time for me?"
     ),
+    "ANSWERED_WITH_FOLLOWUP": "Got that — and to confirm, that's your {slot_label}.",
 }
 
 
@@ -90,6 +94,7 @@ async def generate_recovery_message(
     Generate a natural recovery response via LLM 2 (Gemini).
 
     guard: "CORRECTION" | "CLARIFY" | "INTERRUPTION" | "OFFTOPIC" | "RETRY" | "OFFTOPIC_AGENT"
+           | "ANSWERED_WITH_FOLLOWUP"
     last_messages: recent conversation history (role/content dicts); up to 8 messages used.
     caller_name: caller's first name if already confirmed, for personalisation.
     confirmed_slots: dict of slot names → confirmed values for this session.
@@ -129,7 +134,7 @@ async def generate_recovery_message(
         content_lines.append(f"Pending:    {', '.join(pending_slots)}")
     if extracted_value is not None:
         content_lines.append(f"Extracted this turn: {extracted_value}")
-    if guard in ("CORRECTION", "CLARIFY", "OFFTOPIC_AGENT"):
+    if guard in ("CORRECTION", "CLARIFY", "OFFTOPIC_AGENT", "ANSWERED_WITH_FOLLOWUP"):
         content_lines.append(f"Event:      {guard}")
 
     user_content = "\n".join(content_lines)

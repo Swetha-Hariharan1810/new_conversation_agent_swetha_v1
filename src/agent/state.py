@@ -71,6 +71,12 @@ class State(TypedDict):
     phone_confirmed: bool
     phone_update_requested: bool
 
+    # ── Pending reconfirmation values (held until member confirms) ──────────
+    pending_zip_code: str
+    pending_fax: str
+    pending_email: str
+    pending_phone: str
+
     # ── Escalation ───────────────────────────────────────────────────────────
     escalation_reference_number: str
     escalation_reason: str
