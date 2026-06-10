@@ -73,7 +73,7 @@ _FALLBACKS: dict[str, str] = {
     "CLARIFY": (
         "I just want to make sure I have that right — \ncould you say your {slot_label} one more time for me?"
     ),
-    "ANSWERED_WITH_FOLLOWUP": "Thank you — I have your {slot_label}, and we can keep going from here.",
+    "ANSWERED_WITH_FOLLOWUP": "Got that — and to confirm, that's your {slot_label}.",
 }
 
 

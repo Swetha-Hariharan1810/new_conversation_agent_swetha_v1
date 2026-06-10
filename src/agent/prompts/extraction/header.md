@@ -42,13 +42,9 @@ When in doubt → event_type:"ambiguous".
 
 ## EVENT_TYPE
 "answered"  — caller directly and clearly answered the awaiting slot.
-"answered_with_followup" — caller directly and clearly answered the awaiting
-              slot AND also directed a secondary signal at the agent
-              (repeat request, confirmation request, side question the agent
-              cannot answer from session state, or uncertainty about their
-              own answer). extracted{} must contain the slot value; if no
-              clear value was provided this turn, use "answered" or
-              "ambiguous" instead.
+"answered_with_followup" — caller clearly answered the awaiting slot AND also
+              asked for a repeat, read-back, or confirmation, or asked a side
+              question. Extract the value into extracted{} as normal.
 "corrected" — caller is explicitly changing a value in Confirmed[].
               corrections{} must be non-empty; otherwise use "ambiguous".
               If Confirmed[] is empty, use "answered" instead.
@@ -62,7 +58,7 @@ When in doubt → event_type:"ambiguous".
 | "no wait that's wrong"             | ambiguous  | Correction intent, no new value     |
 | "actually it's M451982"            | corrected  | Explicit replacement with new value |
 | "November 5 1992"                  | answered   | Clear complete value                |
-| "M451982 — did you get that?"      | answered_with_followup | Clear value plus confirmation request |
+| "It's Sophia — could you repeat the question?" | answered_with_followup | Valid value + repeat request |
 
 ## LOCKED FIELDS
 Never put these in corrections{}: member_status_verify, call_intent.
