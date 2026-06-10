@@ -140,6 +140,13 @@ class DeliveryManagementAgent(BaseAgent):
             contact_conf_raw = extracted.get("fax_confirmed", "")
             pending_fax = (state.get("pending_fax") or "").strip()
 
+            contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
+            # Extraction contract: a replacement fax and fax_confirmed are mutually
+            # exclusive. If both arrive, fax is an echo of the Confirmed: context
+            # line — discard it so the yes/no is honored.
+            if contact_conf in ("yes", "no"):
+                new_fax_raw = ""
+
             if new_fax_raw:
                 normalized = normalize_fax_number(str(new_fax_raw))
                 if normalized and validate_fax_number(normalized).valid:
@@ -167,7 +174,6 @@ class DeliveryManagementAgent(BaseAgent):
                 ask_result["fax"] = fax_on_file
                 return ask_result
 
-            contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
             if contact_conf == "yes":
                 if pending_fax:
                     if fail := await update_fax_in_salesforce(self, state, pending_fax):
@@ -227,6 +233,13 @@ class DeliveryManagementAgent(BaseAgent):
             contact_conf_raw = extracted.get("email_confirmed", "")
             pending_email = (state.get("pending_email") or "").strip()
 
+            contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
+            # Extraction contract: a replacement email and email_confirmed are
+            # mutually exclusive. If both arrive, email is an echo of the Confirmed:
+            # context line — discard it so the yes/no is honored.
+            if contact_conf in ("yes", "no"):
+                new_email_raw = ""
+
             if new_email_raw:
                 normalized = normalize_email(str(new_email_raw))
                 if normalized and validate_email(normalized).valid:
@@ -255,7 +268,6 @@ class DeliveryManagementAgent(BaseAgent):
                 ask_result["email"] = email_on_file
                 return ask_result
 
-            contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
             if contact_conf == "yes":
                 if pending_email:
                     if fail := await update_email_in_salesforce(self, state, pending_email):

@@ -181,6 +181,13 @@ class RecordsCoordinationAgent(BaseAgent):
             email_on_file = (state.get("email") or "").strip()
             pending_email = (state.get("pending_email") or "").strip()
 
+            contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
+            # Extraction contract: a replacement email and email_confirmed are
+            # mutually exclusive. If both arrive, email is an echo of the Confirmed:
+            # context line — discard it so the yes/no is honored.
+            if contact_conf in ("yes", "no"):
+                new_email_raw = ""
+
             # Inline replacement: member declined AND provided new email in same utterance
             if new_email_raw:
                 normalized = normalize_email(str(new_email_raw))
@@ -205,8 +212,6 @@ class RecordsCoordinationAgent(BaseAgent):
                 ask_result["awaiting_slot"] = "email"
                 ask_result["pending_email"] = ""
                 return ask_result
-
-            contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
 
             # Explicit yes → proceed
             if contact_conf == "yes":

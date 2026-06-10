@@ -184,6 +184,14 @@ class ProviderSearchAgent(BaseAgent):
             zip_conf_raw = extracted.get("zip_confirmed", "")
             pending_zip = (state.get("pending_zip_code") or "").strip()
 
+            zip_conf = normalize_yes_no(zip_conf_raw) if zip_conf_raw else ""
+            # Extraction contract: a replacement ZIP and zip_confirmed are mutually
+            # exclusive ("if caller declines AND provides a new ZIP, omit
+            # zip_confirmed"). If both arrive, zip_code is an echo of the
+            # Confirmed: context line — discard it so the yes/no is honored.
+            if zip_conf in ("yes", "no"):
+                new_zip_raw = ""
+
             if new_zip_raw:
                 normalized = normalize_zip_code(str(new_zip_raw))
                 if normalized and validate_zip_code(normalized).valid:
@@ -216,7 +224,6 @@ class ProviderSearchAgent(BaseAgent):
                 ask_result["zip_code"] = zip_on_file
                 return ask_result
 
-            zip_conf = normalize_yes_no(zip_conf_raw) if zip_conf_raw else ""
             if zip_conf == "yes":
                 if pending_zip:
                     if fail := await update_zip_in_salesforce(self, state, pending_zip):

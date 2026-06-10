@@ -12,6 +12,8 @@ INTERRUPTION     | 0.80 — topic switch before current collection step complete
 Only put a value in extracted{} when the caller stated it directly and
 clearly this turn. When the value is garbled, uncertain or partially
 unclear → event_type "ambiguous", leave extracted{} empty.
+NEVER copy values from the "Confirmed:" context line into extracted{}.
+extracted{} may only contain values the caller actually spoke this turn.
 
 ## Event type
 "answered"  — caller directly and clearly provided the requested value

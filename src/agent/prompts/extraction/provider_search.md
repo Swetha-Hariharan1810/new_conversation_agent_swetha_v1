@@ -24,6 +24,8 @@ FIELDS
     Normalize spoken digits ("one six seven eight three" → "16783").
     NEVER pad with zeros or any character to reach 5 digits.
     Return ambiguous if the result is not exactly 5 digits after normalization.
+    If the caller's utterance contains no digits, zip_code must not appear
+    in extracted{}.
 
     Examples of the length rule:
     "four two" → ambiguous (2 digits, not 5)
@@ -62,6 +64,8 @@ FIELDS
     zip_confirmed empty.
 
 CONFIDENCE NOTES (see header [ANCHOR: CONFIDENCE])
+- NEVER copy values from the "Confirmed:" context line into extracted{}.
+  extracted{} may only contain values the caller actually spoke this turn.
 - zip_code: not exactly 5 digits after normalization → ambiguous. Never pad short values.
 - provider_type: does not map to a medical provider category → ambiguous.
 - zip_confirmed: only extract when a ZIP was just read aloud. Stale-address
