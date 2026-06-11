@@ -22,6 +22,7 @@ from typing import List, Optional
 from agent.core.signal import AgentSignal, AgentStatus
 from agent.orchestration.orchestration import AgentNode
 from agent.responses.static import MSG_EMERGENCY
+from agent.speech import spokenize_text
 from agent.state import State
 
 
@@ -31,7 +32,7 @@ class SignalsMixin:
     def ask_member(self, state: State, message: str) -> dict:
         """Interrupt graph and wait for member input."""
         result = {
-            "messages": {"role": "assistant", "content": message},
+            "messages": {"role": "assistant", "content": spokenize_text(message)},
             "next_node": self.AGENT_NAME,
             "is_interrupt": True,
             "active_agent": self.AGENT_NAME,
@@ -116,7 +117,7 @@ class SignalsMixin:
             "awaiting_slot": "",
         }
         if isinstance(message, str) and message.strip():
-            result["messages"] = {"role": "assistant", "content": message}
+            result["messages"] = {"role": "assistant", "content": spokenize_text(message)}
         for k, v in (sig.context_updates or {}).items():
             result[k] = v
         if self._pending_ambiguous_resets:
@@ -145,7 +146,7 @@ class SignalsMixin:
             status=AgentStatus.ESCALATE, escalation_reason=f"Unhandled error in {self.AGENT_NAME}: {reason}"
         )
         return {
-            "messages": {"role": "assistant", "content": MSG_EMERGENCY.format(ref=ref)},
+            "messages": {"role": "assistant", "content": spokenize_text(MSG_EMERGENCY.format(ref=ref))},
             "last_agent_signal": sig.to_state_dict(),
             "next_node": "orchestrator",
             "is_interrupt": False,

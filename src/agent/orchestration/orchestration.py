@@ -15,6 +15,7 @@ from agent.llm.config import get_routing_llm
 from agent.logger import get_logger
 from agent.orchestration.fast_path import get_fast_path_route
 from agent.orchestration.safeguards import apply_safeguards
+from agent.speech import spokenize_text
 from agent.state import State
 from agent.utils import _last_user_msg, build_system_prompt
 
@@ -117,7 +118,7 @@ class Orchestrator:
         if decision.message_override and decision.message_override.strip():
             updates["messages"] = {
                 "role": "assistant",
-                "content": decision.message_override.strip(),
+                "content": spokenize_text(decision.message_override.strip()),
             }
 
         return updates
