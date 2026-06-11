@@ -20,8 +20,9 @@ AGENT_NAME = "provider_search_agent"
 
 MAX_SLOT_ATTEMPTS = 3
 
-# Bound on ZIP readback rejections (explicit "no" or a replacement value)
-# before escalating — prevents an unbounded confirm/update cycle.
+# ── Contact change-cycle limit ────────────────────────────────────────────────
+# Max read-back rejections (explicit "no" or inline replacement)
+# before escalating. Valid answers to update prompts are not counted.
 MAX_CONTACT_CHANGE_CYCLES = 3
 
 # ── Log labels ────────────────────────────────────────────────────────────────

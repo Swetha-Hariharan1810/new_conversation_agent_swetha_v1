@@ -8,10 +8,9 @@ from __future__ import annotations
 
 AGENT_NAME = "delivery_management_agent"
 
-# ── Retry limits ──────────────────────────────────────────────────────────────
-
-# Bound on contact readback rejections (explicit "no" or a replacement value)
-# before escalating — prevents an unbounded confirm/update cycle.
+# ── Contact change-cycle limit ────────────────────────────────────────────────
+# Max read-back rejections (explicit "no" or inline replacement)
+# before escalating. Valid answers to update prompts are not counted.
 MAX_CONTACT_CHANGE_CYCLES = 3
 
 # ── Log labels ────────────────────────────────────────────────────────────────

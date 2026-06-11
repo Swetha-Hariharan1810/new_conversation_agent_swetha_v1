@@ -4,8 +4,9 @@ from __future__ import annotations
 
 AGENT_NAME = "notification_setup_agent"
 
-# Bound on contact readback rejections (explicit "no" or a replacement value)
-# before escalating — prevents an unbounded confirm/update cycle.
+# ── Contact change-cycle limit ────────────────────────────────────────────────
+# Max read-back rejections (explicit "no" or inline replacement)
+# before escalating. Valid answers to update prompts are not counted.
 MAX_CONTACT_CHANGE_CYCLES = 3
 
 LOG_ENTERED = "notification_setup_agent: entered"
