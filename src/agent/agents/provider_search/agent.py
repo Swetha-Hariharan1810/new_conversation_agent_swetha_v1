@@ -205,14 +205,14 @@ class ProviderSearchAgent(BaseAgent):
                         done["messages"]["content"] = done["messages"]["content"]
                         return done
                     # New ZIP — hold as pending until the member confirms the read-back.
-                    # A replacement is an implicit rejection of the read-back —
-                    # bound the confirm/update cycle.
+                    # Inline replacement = implicit rejection of the read-back.
+                    # Bound the change cycle so valid-value churn cannot loop forever.
                     if escalation := self.guard_loop_limit(
                         state,
                         "zip_change_cycles",
                         MAX_CONTACT_CHANGE_CYCLES,
                         escalate_message=pick(MSG_ZIP_EXHAUST),
-                        escalate_reason="zip_change_cycles_exhausted",
+                        escalate_reason="zip_change_loop_exceeded",
                     ):
                         return escalation
                     confirm = self.ask_member(
@@ -251,7 +251,7 @@ class ProviderSearchAgent(BaseAgent):
                     "zip_change_cycles",
                     MAX_CONTACT_CHANGE_CYCLES,
                     escalate_message=pick(MSG_ZIP_EXHAUST),
-                    escalate_reason="zip_change_cycles_exhausted",
+                    escalate_reason="zip_change_loop_exceeded",
                 ):
                     return escalation
                 ask_result = self.ask_member(state, ZIP_UPDATE_PROMPT)
