@@ -4,6 +4,11 @@ from __future__ import annotations
 
 AGENT_NAME = "notification_setup_agent"
 
+# ── Contact change-cycle limit ────────────────────────────────────────────────
+# Max read-back rejections (explicit "no" or inline replacement)
+# before escalating. Valid answers to update prompts are not counted.
+MAX_CONTACT_CHANGE_CYCLES = 3
+
 LOG_ENTERED = "notification_setup_agent: entered"
 LOG_PREFERENCE_SAVED = "notification_setup_agent: notification preference saved to Salesforce"
 LOG_N2_PREFERENCE_SAVED = "notification_setup_agent: timeline notification preference saved"

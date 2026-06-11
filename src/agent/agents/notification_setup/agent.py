@@ -24,6 +24,7 @@ from agent.agents.notification_setup.constants import (
     LOG_METHOD_COLLECTED,
     LOG_N2_PREFERENCE_SAVED,
     LOG_PREFERENCE_SAVED,
+    MAX_CONTACT_CHANGE_CYCLES,
     MSG_CONTACT_EXHAUST,
     MSG_METHOD_EXHAUST,
     MSG_TIMELINE_ANSWER,
@@ -200,6 +201,16 @@ class NotificationSetupAgent(BaseAgent):
                         done = await self._save_and_complete(state, "sms", phone_on_file)
                         done["pending_phone"] = ""
                         return done
+                    # Inline replacement = implicit rejection of the read-back.
+                    # Bound the change cycle so valid-value churn cannot loop forever.
+                    if escalation := self.guard_loop_limit(
+                        state,
+                        "phone_change_cycles",
+                        MAX_CONTACT_CHANGE_CYCLES,
+                        escalate_message=pick(MSG_CONTACT_EXHAUST),
+                        escalate_reason="phone_change_loop_exceeded_in_notification",
+                    ):
+                        return escalation
                     confirm = self.ask_member(
                         state,
                         f"Just to be sure I have it right — your phone number is "
@@ -219,6 +230,14 @@ class NotificationSetupAgent(BaseAgent):
                 done["pending_phone"] = ""
                 return done
             if contact_conf == "no":
+                if escalation := self.guard_loop_limit(
+                    state,
+                    "phone_change_cycles",
+                    MAX_CONTACT_CHANGE_CYCLES,
+                    escalate_message=pick(MSG_CONTACT_EXHAUST),
+                    escalate_reason="phone_change_loop_exceeded_in_notification",
+                ):
+                    return escalation
                 ask_result = self.ask_member(state, pick(PHONE_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "phone"
                 ask_result["pending_phone"] = ""
@@ -287,6 +306,16 @@ class NotificationSetupAgent(BaseAgent):
                         done = await self._save_and_complete(state, "email", email_on_file)
                         done["pending_email"] = ""
                         return done
+                    # Inline replacement = implicit rejection of the read-back.
+                    # Bound the change cycle so valid-value churn cannot loop forever.
+                    if escalation := self.guard_loop_limit(
+                        state,
+                        "email_change_cycles",
+                        MAX_CONTACT_CHANGE_CYCLES,
+                        escalate_message=pick(MSG_CONTACT_EXHAUST),
+                        escalate_reason="email_change_loop_exceeded_in_notification",
+                    ):
+                        return escalation
                     display_email = normalized.replace("@", " at ")
                     confirm = self.ask_member(
                         state,
@@ -306,6 +335,14 @@ class NotificationSetupAgent(BaseAgent):
                 done["pending_email"] = ""
                 return done
             if contact_conf == "no":
+                if escalation := self.guard_loop_limit(
+                    state,
+                    "email_change_cycles",
+                    MAX_CONTACT_CHANGE_CYCLES,
+                    escalate_message=pick(MSG_CONTACT_EXHAUST),
+                    escalate_reason="email_change_loop_exceeded_in_notification",
+                ):
+                    return escalation
                 ask_result = self.ask_member(state, pick(EMAIL_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "email"
                 ask_result["pending_email"] = ""
