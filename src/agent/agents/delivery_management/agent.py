@@ -160,14 +160,14 @@ class DeliveryManagementAgent(BaseAgent):
                     # New fax — hold as pending until the member confirms the
                     # read-back. fax stays on the on-file value because ask_member
                     # would otherwise persist the pipeline-confirmed slot.
-                    # A replacement is an implicit rejection of the read-back —
-                    # bound the confirm/update cycle.
+                    # Inline replacement = implicit rejection of the read-back.
+                    # Bound the change cycle so valid-value churn cannot loop forever.
                     if escalation := self.guard_loop_limit(
                         state,
                         "fax_change_cycles",
                         MAX_CONTACT_CHANGE_CYCLES,
                         escalate_message=pick(MSG_CONTACT_EXHAUST),
-                        escalate_reason="fax_change_cycles_exhausted",
+                        escalate_reason="fax_change_loop_exceeded",
                     ):
                         return escalation
                     confirm = self.ask_member(
@@ -203,7 +203,7 @@ class DeliveryManagementAgent(BaseAgent):
                     "fax_change_cycles",
                     MAX_CONTACT_CHANGE_CYCLES,
                     escalate_message=pick(MSG_CONTACT_EXHAUST),
-                    escalate_reason="fax_change_cycles_exhausted",
+                    escalate_reason="fax_change_loop_exceeded",
                 ):
                     return escalation
                 ask_result = self.ask_member(state, pick(FAX_UPDATE_PROMPTS))
@@ -272,14 +272,14 @@ class DeliveryManagementAgent(BaseAgent):
                     # New email — hold as pending until the member confirms the
                     # read-back. @ is escaped for the spoken message only; the raw
                     # value stays in pending_email.
-                    # A replacement is an implicit rejection of the read-back —
-                    # bound the confirm/update cycle.
+                    # Inline replacement = implicit rejection of the read-back.
+                    # Bound the change cycle so valid-value churn cannot loop forever.
                     if escalation := self.guard_loop_limit(
                         state,
                         "email_change_cycles",
                         MAX_CONTACT_CHANGE_CYCLES,
                         escalate_message=pick(MSG_CONTACT_EXHAUST),
-                        escalate_reason="email_change_cycles_exhausted",
+                        escalate_reason="email_change_loop_exceeded",
                     ):
                         return escalation
                     display_email = normalized.replace("@", " at ")
@@ -315,7 +315,7 @@ class DeliveryManagementAgent(BaseAgent):
                     "email_change_cycles",
                     MAX_CONTACT_CHANGE_CYCLES,
                     escalate_message=pick(MSG_CONTACT_EXHAUST),
-                    escalate_reason="email_change_cycles_exhausted",
+                    escalate_reason="email_change_loop_exceeded",
                 ):
                     return escalation
                 ask_result = self.ask_member(state, pick(EMAIL_UPDATE_PROMPTS))
