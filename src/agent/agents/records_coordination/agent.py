@@ -28,6 +28,7 @@ from agent.agents.records_coordination.constants import (
     LOG_ENTERED,
     LOG_GUIDE_TRIGGERED,
     LOG_UPLOAD_LINK_SENT,
+    MAX_CONTACT_CHANGE_CYCLES,
     MSG_DECLINE_ESCALATE,
     MSG_DOCTOR_DIRECT_ACK,
     MSG_EMAIL_UPDATE_PROMPT,
@@ -200,6 +201,16 @@ class RecordsCoordinationAgent(BaseAgent):
                         return done
                     # New email — hold as pending until the member confirms the
                     # read-back. @ is escaped for the spoken message only.
+                    # A replacement is an implicit rejection of the read-back —
+                    # bound the confirm/update cycle.
+                    if escalation := self.guard_loop_limit(
+                        state,
+                        "email_change_cycles",
+                        MAX_CONTACT_CHANGE_CYCLES,
+                        escalate_message=pick(MSG_DECLINE_ESCALATE),
+                        escalate_reason="email_change_cycles_exhausted_in_records",
+                    ):
+                        return escalation
                     display_email = normalized.replace("@", " at ")
                     confirm = self.ask_member(
                         state,
@@ -221,6 +232,14 @@ class RecordsCoordinationAgent(BaseAgent):
 
             # Explicit no → ask for new email
             if contact_conf == "no":
+                if escalation := self.guard_loop_limit(
+                    state,
+                    "email_change_cycles",
+                    MAX_CONTACT_CHANGE_CYCLES,
+                    escalate_message=pick(MSG_DECLINE_ESCALATE),
+                    escalate_reason="email_change_cycles_exhausted_in_records",
+                ):
+                    return escalation
                 ask_result = self.ask_member(state, pick(MSG_EMAIL_UPDATE_PROMPT))
                 ask_result["awaiting_slot"] = "email"
                 ask_result["pending_email"] = ""

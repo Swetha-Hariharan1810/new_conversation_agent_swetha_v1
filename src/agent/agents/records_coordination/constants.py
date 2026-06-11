@@ -4,6 +4,10 @@ from __future__ import annotations
 
 AGENT_NAME = "records_coordination_agent"
 
+# Bound on contact readback rejections (explicit "no" or a replacement value)
+# before escalating — prevents an unbounded confirm/update cycle.
+MAX_CONTACT_CHANGE_CYCLES = 3
+
 LOG_ENTERED = "records_coordination_agent: entered"
 LOG_UPLOAD_LINK_SENT = "records_coordination_agent: upload link sent"
 LOG_GUIDE_TRIGGERED = "records_coordination_agent: personal guide outreach triggered"

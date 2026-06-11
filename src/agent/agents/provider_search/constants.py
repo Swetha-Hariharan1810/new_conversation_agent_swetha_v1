@@ -20,6 +20,10 @@ AGENT_NAME = "provider_search_agent"
 
 MAX_SLOT_ATTEMPTS = 3
 
+# Bound on ZIP readback rejections (explicit "no" or a replacement value)
+# before escalating — prevents an unbounded confirm/update cycle.
+MAX_CONTACT_CHANGE_CYCLES = 3
+
 # ── Log labels ────────────────────────────────────────────────────────────────
 
 LOG_ENTERED = "provider_search_agent: entered"

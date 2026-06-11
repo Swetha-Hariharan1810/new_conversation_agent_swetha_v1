@@ -20,6 +20,7 @@ from agent.agents.delivery_management.constants import (
     LOG_ENTERED,
     LOG_LIST_DISPATCHED,
     LOG_METHOD_COLLECTED,
+    MAX_CONTACT_CHANGE_CYCLES,
     MSG_CONTACT_EXHAUST,
 )
 from agent.agents.delivery_management.handlers import (
@@ -159,6 +160,16 @@ class DeliveryManagementAgent(BaseAgent):
                     # New fax — hold as pending until the member confirms the
                     # read-back. fax stays on the on-file value because ask_member
                     # would otherwise persist the pipeline-confirmed slot.
+                    # A replacement is an implicit rejection of the read-back —
+                    # bound the confirm/update cycle.
+                    if escalation := self.guard_loop_limit(
+                        state,
+                        "fax_change_cycles",
+                        MAX_CONTACT_CHANGE_CYCLES,
+                        escalate_message=pick(MSG_CONTACT_EXHAUST),
+                        escalate_reason="fax_change_cycles_exhausted",
+                    ):
+                        return escalation
                     confirm = self.ask_member(
                         state,
                         f"Just to be sure I have it right — your fax number is "
@@ -187,6 +198,14 @@ class DeliveryManagementAgent(BaseAgent):
                 done["pending_fax"] = ""
                 return done
             if contact_conf == "no":
+                if escalation := self.guard_loop_limit(
+                    state,
+                    "fax_change_cycles",
+                    MAX_CONTACT_CHANGE_CYCLES,
+                    escalate_message=pick(MSG_CONTACT_EXHAUST),
+                    escalate_reason="fax_change_cycles_exhausted",
+                ):
+                    return escalation
                 ask_result = self.ask_member(state, pick(FAX_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "fax"
                 ask_result["pending_fax"] = ""
@@ -253,6 +272,16 @@ class DeliveryManagementAgent(BaseAgent):
                     # New email — hold as pending until the member confirms the
                     # read-back. @ is escaped for the spoken message only; the raw
                     # value stays in pending_email.
+                    # A replacement is an implicit rejection of the read-back —
+                    # bound the confirm/update cycle.
+                    if escalation := self.guard_loop_limit(
+                        state,
+                        "email_change_cycles",
+                        MAX_CONTACT_CHANGE_CYCLES,
+                        escalate_message=pick(MSG_CONTACT_EXHAUST),
+                        escalate_reason="email_change_cycles_exhausted",
+                    ):
+                        return escalation
                     display_email = normalized.replace("@", " at ")
                     confirm = self.ask_member(
                         state,
@@ -281,6 +310,14 @@ class DeliveryManagementAgent(BaseAgent):
                 done["pending_email"] = ""
                 return done
             if contact_conf == "no":
+                if escalation := self.guard_loop_limit(
+                    state,
+                    "email_change_cycles",
+                    MAX_CONTACT_CHANGE_CYCLES,
+                    escalate_message=pick(MSG_CONTACT_EXHAUST),
+                    escalate_reason="email_change_cycles_exhausted",
+                ):
+                    return escalation
                 ask_result = self.ask_member(state, pick(EMAIL_UPDATE_PROMPTS))
                 ask_result["awaiting_slot"] = "email"
                 ask_result["pending_email"] = ""

@@ -13,6 +13,7 @@ from agent.agents.provider_search.constants import (
     LOG_PROVIDER_TYPE,
     LOG_ZIP_CONFIRMED,
     LOG_ZIP_UPDATED,
+    MAX_CONTACT_CHANGE_CYCLES,
     MSG_NOT_VERIFIED,
     MSG_PROVIDER_TYPE_UNSUPPORTED,
     MSG_ZIP_EXHAUST,
@@ -203,7 +204,17 @@ class ProviderSearchAgent(BaseAgent):
                         # spoken = " ".join(zip_on_file)
                         done["messages"]["content"] = done["messages"]["content"]
                         return done
-                    # New ZIP — hold as pending until the member confirms the read-back
+                    # New ZIP — hold as pending until the member confirms the read-back.
+                    # A replacement is an implicit rejection of the read-back —
+                    # bound the confirm/update cycle.
+                    if escalation := self.guard_loop_limit(
+                        state,
+                        "zip_change_cycles",
+                        MAX_CONTACT_CHANGE_CYCLES,
+                        escalate_message=pick(MSG_ZIP_EXHAUST),
+                        escalate_reason="zip_change_cycles_exhausted",
+                    ):
+                        return escalation
                     confirm = self.ask_member(
                         state,
                         f"Just to be sure I have it right — your ZIP code is "
@@ -235,6 +246,14 @@ class ProviderSearchAgent(BaseAgent):
                 done["pending_zip_code"] = ""
                 return done
             if zip_conf == "no":
+                if escalation := self.guard_loop_limit(
+                    state,
+                    "zip_change_cycles",
+                    MAX_CONTACT_CHANGE_CYCLES,
+                    escalate_message=pick(MSG_ZIP_EXHAUST),
+                    escalate_reason="zip_change_cycles_exhausted",
+                ):
+                    return escalation
                 ask_result = self.ask_member(state, ZIP_UPDATE_PROMPT)
                 ask_result["awaiting_slot"] = "zip_code"
                 ask_result["provider_type"] = provider_type
