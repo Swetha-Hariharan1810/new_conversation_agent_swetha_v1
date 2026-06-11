@@ -59,8 +59,6 @@ class CareWellnessAgent(BaseAgent):
             return fail
 
         logger.info(LOG_DETAILS_SENT, extra={"method": method, "contact_tail": contact[-4:]})
-        if method == "email":
-            contact = contact.replace("@", " at ")
         message = random.choice(CARE_COACH_INTRO_TEMPLATES).format(method=method, contact=contact)
         result = self.ask_member(state, message)  # is_interrupt=True — user sees message and can respond
         result["next_node"] = "follow_up_agent"  # their response goes to follow_up_agent

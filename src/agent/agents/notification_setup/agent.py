@@ -330,10 +330,9 @@ class NotificationSetupAgent(BaseAgent):
                         escalate_reason="email_change_loop_exceeded_in_notification",
                     ):
                         return escalation
-                    display_email = normalized.replace("@", " at ")
                     confirm = self.ask_member(
                         state,
-                        f"Just to be sure I have it right — your email address is {display_email}, correct?",
+                        f"Just to be sure I have it right — your email address is {normalized}, correct?",
                     )
                     confirm["awaiting_slot"] = "email_confirmed"
                     confirm["pending_email"] = normalized
@@ -369,15 +368,17 @@ class NotificationSetupAgent(BaseAgent):
                 )
             from agent.llm.response_generator import generate_recovery_message
 
-            display_email = (pending_email or email_on_file).replace("@", " at ")
+            # Raw email in the label: this string goes to the generation LLM,
+            # not TTS — the LLM's output is spokenized by ask_member on emission.
+            live_email = pending_email or email_on_file
             ctx = ConversationContext.from_state(state)
             retry_msg = await generate_recovery_message(
                 slot_name="email_confirmed",
                 attempt=self.get_slot("email_confirmed").attempt_count,
                 guard="RETRY",
                 last_messages=messages[-4:],
-                slot_label_override=f"whether the email address"
-                f"{display_email} is correct for notifications (yes or no)",
+                slot_label_override=f"whether the email address "
+                f"{live_email} is correct for notifications (yes or no)",
                 caller_name=ctx.caller_first_name,
                 confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
                 user_utterance=_last_user_msg(messages),
@@ -394,10 +395,9 @@ class NotificationSetupAgent(BaseAgent):
                 normalized = normalize_email(str(email_raw))
                 if normalized and validate_email(normalized).valid:
                     # Hold the new email as pending until the member confirms
-                    display_email = normalized.replace("@", " at ")
                     confirm = self.ask_member(
                         state,
-                        f"Just to be sure I have it right — your email address is {display_email}, correct?",
+                        f"Just to be sure I have it right — your email address is {normalized}, correct?",
                     )
                     confirm["awaiting_slot"] = "email_confirmed"
                     confirm["pending_email"] = normalized
@@ -432,8 +432,8 @@ class NotificationSetupAgent(BaseAgent):
             elif method == "email":
                 email_on_file = (state.get("email") or "").strip()
                 if email_on_file:
-                    # Use the raw email from state — never replace @ with "at".
-                    # The @ form is what the member expects to hear confirmed.
+                    # Raw email goes into the template; the central sanitizer in
+                    # signals.py renders the spoken form on emission.
                     confirm_msg = random.choice(N2_EMAIL_CONFIRM).format(email=email_on_file)
                     return await self._n2_save_and_complete(state, "email", email_on_file, confirm_msg)
                 # No email on file — fall through to exhaust/escalate
@@ -496,8 +496,7 @@ class NotificationSetupAgent(BaseAgent):
         else:  # email
             email_on_file = (state.get("email") or "").strip()
             if email_on_file:
-                display_email = email_on_file.replace("@", " at ")
-                msg = random.choice(EMAIL_READBACK_TEMPLATES).format(email=display_email)
+                msg = random.choice(EMAIL_READBACK_TEMPLATES).format(email=email_on_file)
                 result = self.ask_member(state, msg)
                 result["awaiting_slot"] = "email_confirmed"
                 result["notification_channel"] = "email"
@@ -514,8 +513,7 @@ class NotificationSetupAgent(BaseAgent):
 
         logger.info(LOG_PREFERENCE_SAVED, extra={"method": method})
 
-        display_contact = contact.replace("@", " at ") if method == "email" else contact
-        confirm_msg = random.choice(PREFERENCE_SAVED_TEMPLATES).format(method=method, contact=display_contact)
+        confirm_msg = random.choice(PREFERENCE_SAVED_TEMPLATES).format(method=method, contact=contact)
         timeline_bridge = pick(TIMELINE_BRIDGE_TEMPLATES)
         combined = f"{confirm_msg} {timeline_bridge}"
 

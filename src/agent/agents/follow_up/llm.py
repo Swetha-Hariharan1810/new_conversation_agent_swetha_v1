@@ -38,9 +38,11 @@ def _build_session_snapshot(state: State) -> str:  # noqa: C901
     name = f"{first} {last}".strip()
     if name:
         lines.append(f"Member name: {name}")
+    # Snapshot goes to the LLM, not TTS — keep the true address; the model's
+    # generated answer is spokenized on emission in signals.py.
     member_email = (state.get("email") or "").strip()
     if member_email:
-        lines.append(f"Member email on file: {member_email.replace('@', ' at ')}")
+        lines.append(f"Member email on file: {member_email}")
 
     # ── Benefits ──────────────────────────────────────────────────────────────
     indv_ded = state.get("individual_deductible") or ""
@@ -86,7 +88,7 @@ def _build_session_snapshot(state: State) -> str:  # noqa: C901
     if method == "fax" and fax:
         lines.append(f"\nDelivery: sent by fax to {fax}")
     elif method == "email" and email:
-        lines.append(f"\nDelivery: sent by email to {email.replace('@', ' at ')}")
+        lines.append(f"\nDelivery: sent by email to {email}")
 
     # ── Care Coach ────────────────────────────────────────────────────────────
     if state.get("care_coach_details_sent"):

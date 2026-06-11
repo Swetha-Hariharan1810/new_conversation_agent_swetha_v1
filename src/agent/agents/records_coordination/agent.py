@@ -151,8 +151,7 @@ class RecordsCoordinationAgent(BaseAgent):
                 # Confirm email before sending
                 email_on_file = (state.get("email") or "").strip()
                 if email_on_file:
-                    display_email = email_on_file.replace("@", " at ")
-                    msg = random.choice(EMAIL_READBACK_FOR_UPLOAD).format(email=display_email)
+                    msg = random.choice(EMAIL_READBACK_FOR_UPLOAD).format(email=email_on_file)
                     confirm_result = self.ask_member(state, msg)
                     confirm_result["awaiting_slot"] = "email_confirmed"
                     return confirm_result
@@ -200,7 +199,7 @@ class RecordsCoordinationAgent(BaseAgent):
                         done["pending_email"] = ""
                         return done
                     # New email — hold as pending until the member confirms the
-                    # read-back. @ is escaped for the spoken message only.
+                    # read-back. signals.py renders the spoken form on emission.
                     # Inline replacement = implicit rejection of the read-back.
                     # Bound the change cycle so valid-value churn cannot loop forever.
                     if escalation := self.guard_loop_limit(
@@ -211,10 +210,9 @@ class RecordsCoordinationAgent(BaseAgent):
                         escalate_reason="email_change_loop_exceeded_in_records",
                     ):
                         return escalation
-                    display_email = normalized.replace("@", " at ")
                     confirm = self.ask_member(
                         state,
-                        f"Just to be sure I have it right — your email address is {display_email}, correct?",
+                        f"Just to be sure I have it right — your email address is {normalized}, correct?",
                     )
                     confirm["awaiting_slot"] = "email_confirmed"
                     confirm["pending_email"] = normalized
@@ -261,7 +259,9 @@ class RecordsCoordinationAgent(BaseAgent):
             # Re-read the email on file and ask again using CLARIFY (gentle tone)
             from agent.llm.response_generator import generate_recovery_message
 
-            display_email = (pending_email or email_on_file).replace("@", " at ")
+            # Raw email in the label: this string goes to the generation LLM,
+            # not TTS — the LLM's output is spokenized by ask_member on emission.
+            live_email = pending_email or email_on_file
             ctx = ConversationContext.from_state(state)
             retry_msg = await generate_recovery_message(
                 slot_name="email_confirmed",
@@ -269,7 +269,7 @@ class RecordsCoordinationAgent(BaseAgent):
                 guard="CLARIFY",
                 last_messages=messages[-4:],
                 slot_label_override=(
-                    f"whether the email address {display_email} is correct "
+                    f"whether the email address {live_email} is correct "
                     f"for sending the upload link (yes or no)"
                 ),
                 caller_name=ctx.caller_first_name,
@@ -287,10 +287,9 @@ class RecordsCoordinationAgent(BaseAgent):
                 normalized = normalize_email(str(new_email_raw))
                 if normalized and validate_email(normalized).valid:
                     # Hold the new email as pending until the member confirms
-                    display_email = normalized.replace("@", " at ")
                     confirm = self.ask_member(
                         state,
-                        f"Just to be sure I have it right — your email address is {display_email}, correct?",
+                        f"Just to be sure I have it right — your email address is {normalized}, correct?",
                     )
                     confirm["awaiting_slot"] = "email_confirmed"
                     confirm["pending_email"] = normalized

@@ -270,8 +270,8 @@ class DeliveryManagementAgent(BaseAgent):
                         done["pending_email"] = ""
                         return done
                     # New email — hold as pending until the member confirms the
-                    # read-back. @ is escaped for the spoken message only; the raw
-                    # value stays in pending_email.
+                    # read-back. The raw value stays in pending_email; the central
+                    # sanitizer in signals.py renders the spoken form on emission.
                     # Inline replacement = implicit rejection of the read-back.
                     # Bound the change cycle so valid-value churn cannot loop forever.
                     if escalation := self.guard_loop_limit(
@@ -282,10 +282,9 @@ class DeliveryManagementAgent(BaseAgent):
                         escalate_reason="email_change_loop_exceeded",
                     ):
                         return escalation
-                    display_email = normalized.replace("@", " at ")
                     confirm = self.ask_member(
                         state,
-                        f"Just to be sure I have it right — your email address is {display_email}, correct?",
+                        f"Just to be sure I have it right — your email address is {normalized}, correct?",
                     )
                     confirm["awaiting_slot"] = "email_confirmed"
                     confirm["pending_email"] = normalized
@@ -330,10 +329,10 @@ class DeliveryManagementAgent(BaseAgent):
                 return self.signal_escalate(
                     state, pick(MSG_CONTACT_EXHAUST), reason="email_confirmed_exhausted"
                 )
-            # FIX: escape @ before writing into message history
+            # Raw email goes into the template; signals.py spokenizes on emission,
+            # so message history stays @-free.
             live_email = pending_email or email_on_file
-            display_email = live_email.replace("@", " at ")
-            retry_msg = random.choice(EMAIL_READBACK_TEMPLATES).format(email=display_email)
+            retry_msg = random.choice(EMAIL_READBACK_TEMPLATES).format(email=live_email)
             retry_result = self.ask_member(state, retry_msg)
             retry_result["awaiting_slot"] = "email_confirmed"
             retry_result["email"] = email_on_file
@@ -349,10 +348,9 @@ class DeliveryManagementAgent(BaseAgent):
                 return interrupt
             new_email = collected_email["email"]
             # Hold the new email as pending — no Salesforce write until confirmed
-            display_email = new_email.replace("@", " at ")
             confirm = self.ask_member(
                 state,
-                f"Just to be sure I have it right — your email address is {display_email}, correct?",
+                f"Just to be sure I have it right — your email address is {new_email}, correct?",
             )
             confirm["awaiting_slot"] = "email_confirmed"
             confirm["pending_email"] = new_email
@@ -455,10 +453,10 @@ class DeliveryManagementAgent(BaseAgent):
                 result["delivery_method"] = delivery_method
         elif delivery_method == "email":
             if email_on_file:
-                # Escape @ to prevent Azure content filter triggering on
-                # email addresses in conversation history
-                display_email = email_on_file.replace("@", " at ")
-                msg = random.choice(EMAIL_READBACK_TEMPLATES).format(email=display_email)
+                # The central sanitizer in signals.py converts the email to its
+                # spoken form on emission, so message history stays @-free and
+                # the Azure content filter is still never shown a raw address.
+                msg = random.choice(EMAIL_READBACK_TEMPLATES).format(email=email_on_file)
                 result = self.ask_member(state, msg)
                 result["awaiting_slot"] = "email_confirmed"
                 result["delivery_method"] = delivery_method
