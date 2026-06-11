@@ -201,14 +201,14 @@ class RecordsCoordinationAgent(BaseAgent):
                         return done
                     # New email — hold as pending until the member confirms the
                     # read-back. @ is escaped for the spoken message only.
-                    # A replacement is an implicit rejection of the read-back —
-                    # bound the confirm/update cycle.
+                    # Inline replacement = implicit rejection of the read-back.
+                    # Bound the change cycle so valid-value churn cannot loop forever.
                     if escalation := self.guard_loop_limit(
                         state,
                         "email_change_cycles",
                         MAX_CONTACT_CHANGE_CYCLES,
                         escalate_message=pick(MSG_DECLINE_ESCALATE),
-                        escalate_reason="email_change_cycles_exhausted_in_records",
+                        escalate_reason="email_change_loop_exceeded_in_records",
                     ):
                         return escalation
                     display_email = normalized.replace("@", " at ")
@@ -237,7 +237,7 @@ class RecordsCoordinationAgent(BaseAgent):
                     "email_change_cycles",
                     MAX_CONTACT_CHANGE_CYCLES,
                     escalate_message=pick(MSG_DECLINE_ESCALATE),
-                    escalate_reason="email_change_cycles_exhausted_in_records",
+                    escalate_reason="email_change_loop_exceeded_in_records",
                 ):
                     return escalation
                 ask_result = self.ask_member(state, pick(MSG_EMAIL_UPDATE_PROMPT))
