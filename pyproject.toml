@@ -114,11 +114,12 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 
 [tool.pytest.ini_options]
-testpaths = ["src/agent/tests"]
-pythonpath = ["src"]
+testpaths = ["src/agent/tests", "tests"]
+pythonpath = ["src", "."]
 asyncio_mode = "auto"
 asyncio_default_test_loop_scope = "session"
-addopts = "-v --tb=short"
+# live marker excluded by default — run live E2E with: pytest -m live
+addopts = "-v --tb=short -m 'not live'"
 filterwarnings = [
     "ignore::UserWarning:pydantic",
 ]
@@ -139,4 +140,5 @@ markers = [
     "regression: bug regression tests",
     "followup: follow-up agent tests",
     "slow: tests with many parametrized LLM calls",
+    "live: live end-to-end tests hitting real Azure OpenAI and Salesforce (excluded by default)",
 ]
