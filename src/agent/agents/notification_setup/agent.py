@@ -201,14 +201,14 @@ class NotificationSetupAgent(BaseAgent):
                         done = await self._save_and_complete(state, "sms", phone_on_file)
                         done["pending_phone"] = ""
                         return done
-                    # A replacement is an implicit rejection of the read-back —
-                    # bound the confirm/update cycle.
+                    # Inline replacement = implicit rejection of the read-back.
+                    # Bound the change cycle so valid-value churn cannot loop forever.
                     if escalation := self.guard_loop_limit(
                         state,
                         "phone_change_cycles",
                         MAX_CONTACT_CHANGE_CYCLES,
                         escalate_message=pick(MSG_CONTACT_EXHAUST),
-                        escalate_reason="phone_change_cycles_exhausted_in_notification",
+                        escalate_reason="phone_change_loop_exceeded_in_notification",
                     ):
                         return escalation
                     confirm = self.ask_member(
@@ -235,7 +235,7 @@ class NotificationSetupAgent(BaseAgent):
                     "phone_change_cycles",
                     MAX_CONTACT_CHANGE_CYCLES,
                     escalate_message=pick(MSG_CONTACT_EXHAUST),
-                    escalate_reason="phone_change_cycles_exhausted_in_notification",
+                    escalate_reason="phone_change_loop_exceeded_in_notification",
                 ):
                     return escalation
                 ask_result = self.ask_member(state, pick(PHONE_UPDATE_PROMPTS))
@@ -306,14 +306,14 @@ class NotificationSetupAgent(BaseAgent):
                         done = await self._save_and_complete(state, "email", email_on_file)
                         done["pending_email"] = ""
                         return done
-                    # A replacement is an implicit rejection of the read-back —
-                    # bound the confirm/update cycle.
+                    # Inline replacement = implicit rejection of the read-back.
+                    # Bound the change cycle so valid-value churn cannot loop forever.
                     if escalation := self.guard_loop_limit(
                         state,
                         "email_change_cycles",
                         MAX_CONTACT_CHANGE_CYCLES,
                         escalate_message=pick(MSG_CONTACT_EXHAUST),
-                        escalate_reason="email_change_cycles_exhausted_in_notification",
+                        escalate_reason="email_change_loop_exceeded_in_notification",
                     ):
                         return escalation
                     display_email = normalized.replace("@", " at ")
@@ -340,7 +340,7 @@ class NotificationSetupAgent(BaseAgent):
                     "email_change_cycles",
                     MAX_CONTACT_CHANGE_CYCLES,
                     escalate_message=pick(MSG_CONTACT_EXHAUST),
-                    escalate_reason="email_change_cycles_exhausted_in_notification",
+                    escalate_reason="email_change_loop_exceeded_in_notification",
                 ):
                     return escalation
                 ask_result = self.ask_member(state, pick(EMAIL_UPDATE_PROMPTS))
