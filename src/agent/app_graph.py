@@ -73,15 +73,36 @@ def orchestrator_routing(state: State) -> str:
 
 
 # ── Human interrupt node ──────────────────────────────────────────────────────
+def _msg_role(m) -> str:
+    return (m.get("role") if isinstance(m, dict) else getattr(m, "role", getattr(m, "type", ""))) or ""
+
+
+def _msg_content(m) -> str:
+    return (m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")) or ""
+
+
 def human_node(state: State) -> Command:
     interrupt_message = ""
     try:
         messages = state.get("messages")
         if isinstance(messages, list) and messages:
-            last = messages[-1]
-            interrupt_message = (
-                last.get("content", "") if isinstance(last, dict) else getattr(last, "content", "")
-            )
+            # Safety net for Change B: a single graph step can append several
+            # assistant messages with no intervening human turn (LangGraph's
+            # add_messages reducer stacks them). The member only ever sees one
+            # turn, so read the trailing run of consecutive assistant messages
+            # and display only the final (most recent) one. If the last message
+            # is not an assistant message there is no trailing run and we fall
+            # back to it as-is.
+            trailing_run = 0
+            for m in reversed(messages):
+                if _msg_role(m) in ("assistant", "ai"):
+                    trailing_run += 1
+                else:
+                    break
+            chosen = messages[-1]  # final message == last of the trailing assistant run
+            interrupt_message = _msg_content(chosen)
+            if trailing_run > 1:
+                logger.info("human_node: collapsed consecutive assistant msgs", extra={"run": trailing_run})
         elif isinstance(messages, dict):
             interrupt_message = messages.get("content", "")
         else:

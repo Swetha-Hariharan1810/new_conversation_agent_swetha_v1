@@ -553,7 +553,9 @@ class NotificationSetupAgent(BaseAgent):
 
         from agent.agents.follow_up.constants import MSG_FOLLOW_UP_ASK
 
-        handoff = f"{confirm_msg}\n{pick(MSG_FOLLOW_UP_ASK)}"
+        # Only the last message is sent: drop the N2 confirmation and send just
+        # the follow-up opener so this single handoff turn isn't a doubled message.
+        handoff = pick(MSG_FOLLOW_UP_ASK)
 
         # Use ask_member so the graph pauses here and the next human turn
         # is the true follow-up response — not the N2 method answer.

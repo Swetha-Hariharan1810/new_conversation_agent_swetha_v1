@@ -32,7 +32,6 @@ from agent.agents.records_coordination.constants import (
     MSG_DECLINE_ESCALATE,
     MSG_DOCTOR_DIRECT_ACK,
     MSG_EMAIL_UPDATE_PROMPT,
-    MSG_GUIDE_SCHEDULED,
     MSG_NOTIFICATION_BRIDGE,
     MSG_PERSONAL_GUIDE_OFFER,
     MSG_UPLOAD_OFFER,
@@ -394,11 +393,12 @@ class RecordsCoordinationAgent(BaseAgent):
 
         logger.info(LOG_GUIDE_TRIGGERED)
 
-        scheduled_msg = pick(MSG_GUIDE_SCHEDULED)
+        # Only the last message is sent: drop the "guide scheduled" confirmation
+        # and send just the notification bridge so this handoff to
+        # notification_setup_agent isn't a doubled assistant turn.
         notification_bridge = pick(MSG_NOTIFICATION_BRIDGE)
-        combined = f"{scheduled_msg}\n\n{notification_bridge}"
 
-        result = self.ask_member(state, combined)
+        result = self.ask_member(state, notification_bridge)
         result["personal_guide_outreach_requested"] = True
         result["records_branch_taken"] = "personal_guide"
         result["next_node"] = "notification_setup_agent"
