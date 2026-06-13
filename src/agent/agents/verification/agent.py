@@ -11,13 +11,10 @@ run() is the only logic here. Everything else is delegated:
 
 from __future__ import annotations
 
-import random
-
 from agent.agents.verification.constants import (
     IDENTITY_SLOT_ORDER,
     LOG_ENTERED,
     LOG_VERIFIED,
-    VERIFIED_MSG_TEMPLATES,
 )
 from agent.agents.verification.handlers import (
     _NORMALIZERS,
@@ -274,13 +271,13 @@ class VerificationAgent(BaseAgent):
                 if val:
                     context_updates[field] = val
         logger.info(LOG_VERIFIED)
+        # Emit only one message: stay silent here so the receiving agent speaks.
+        # This is an is_interrupt=False handoff — the orchestrator routes straight
+        # to the next agent with no human turn, so emitting a greeting here would
+        # produce two consecutive AI messages (greeting + the receiver's prompt).
         return self.signal_complete(
             state,
-            message=(
-                ""
-                if state.get("call_intent") in ("provider_services", "claim_services")
-                else random.choice(VERIFIED_MSG_TEMPLATES).format(first_name=collected["first_name"])
-            ),
+            message="",
             resolved_intents=["verification"],
             context_updates=context_updates,
             reasoning="Identity verified — routing to domain agent",
