@@ -234,13 +234,13 @@ async def collect_post_lookup(
         if phone_declined:
             import logging
 
-            from langgraph.graph import END
+            from agent.sentinels import END_SENTINEL
 
             logging.getLogger(__name__).info(
                 "collect_post_lookup: phone_confirmed=no — ending call with static message"
             )
             result = agent.ask_member(state, MSG_PHONE_NOT_CONFIRMED)
-            result["next_node"] = END
+            result["next_node"] = END_SENTINEL
             result["is_interrupt"] = False
             result["phone_update_requested"] = True
             return result

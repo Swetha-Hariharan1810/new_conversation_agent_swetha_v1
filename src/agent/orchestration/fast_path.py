@@ -63,7 +63,7 @@ def get_fast_path_route(state: State) -> str | None:
     if signal.status == AgentStatus.COMPLETE and signal.closure_requested:
         if active_agent != "closure_agent":
             return "closure_agent"
-        return None  # closure_agent set next_node=END; let conditional_routing handle it
+        return None  # closure_agent set next_node="END" (END_SENTINEL); let conditional_routing handle it
 
     # After verification — route to the correct domain agent
     if member_verified and active_agent == "verification_agent":

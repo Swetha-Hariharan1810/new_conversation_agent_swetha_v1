@@ -108,7 +108,7 @@ class ConversationGuardsMixin:
         """
         import random
 
-        from langgraph.graph import END
+        from agent.sentinels import END_SENTINEL
 
         label, number = _NON_MEMBER_ROUTING.get(
             caller_type,
@@ -123,7 +123,7 @@ class ConversationGuardsMixin:
         result = self.ask_member(state, msg)
         result["caller_type"] = caller_type
         result["caller_type_handled"] = True
-        result["next_node"] = END
+        result["next_node"] = END_SENTINEL
         result["is_interrupt"] = False
         result["awaiting_slot"] = ""
         return result

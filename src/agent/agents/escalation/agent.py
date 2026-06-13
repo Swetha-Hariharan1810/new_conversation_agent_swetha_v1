@@ -6,10 +6,9 @@ from __future__ import annotations
 
 import random
 
-from langgraph.graph import END
-
 from agent.core.agent import BaseAgent
 from agent.logger import get_logger
+from agent.sentinels import END_SENTINEL
 from agent.state import State
 from agent.utils import pick
 
@@ -166,7 +165,7 @@ class EscalationAgent(BaseAgent):
             reasoning=f"Member transferred — ref {ref_no}",
         )
         result["metadata_events"] = result.get("metadata_events", []) + [transfer_event]
-        result["next_node"] = END
+        result["next_node"] = END_SENTINEL
         return result
 
     def _build_message(self, state: State, ref_no: str) -> str:

@@ -113,11 +113,10 @@ async def handle_out_of_scope_intent(agent, state: State, result=None) -> dict:
     """
     import random
 
-    from langgraph.graph import END
-
     from agent.agents.intake.constants import (
         OUT_OF_SCOPE_MSG_TEMPLATES,
     )
+    from agent.sentinels import END_SENTINEL
     from agent.utils import _last_user_msg
 
     logger.warning(LOG_OUT_OF_SCOPE)
@@ -146,7 +145,7 @@ async def handle_out_of_scope_intent(agent, state: State, result=None) -> dict:
     # The message already says "I'll connect you now" and gives the number.
     # escalation_agent would add a second message with a reference number.
     result = agent.ask_member(state, msg)
-    result["next_node"] = END
+    result["next_node"] = END_SENTINEL
     result["escalation_reason"] = OUT_OF_SCOPE_REASON
     result["is_interrupt"] = False
     return result

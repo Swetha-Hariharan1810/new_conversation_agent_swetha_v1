@@ -6,10 +6,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from langgraph.graph import END
-
 from agent.core.agent import BaseAgent
 from agent.logger import get_logger
+from agent.sentinels import END_SENTINEL
 from agent.state import State
 from agent.utils import name_part as get_name_part
 from agent.utils import pick
@@ -101,7 +100,7 @@ class ClosureAgent(BaseAgent):
             closure_requested=True,
             reasoning="Closure confirmed by prior agent — delivering goodbye",
         )
-        result["next_node"] = END
+        result["next_node"] = END_SENTINEL
         return result
 
     def _classify(self, text: str) -> tuple[bool, Optional[str]]:

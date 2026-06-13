@@ -5,7 +5,8 @@ Agents: intake · verification · closure · escalation · orchestrator
 
 import asyncio as _asyncio
 
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END as _LANGGRAPH_END
+from langgraph.graph import StateGraph
 from langgraph.types import Command, interrupt
 
 from agent.agents.benefits.agent import benefits_agent
@@ -26,6 +27,11 @@ from agent.orchestration.orchestration import (
     AgentNode,
     orchestrator,
 )
+
+# END_SENTINEL ("END") is the value our agents store in State.next_node. The
+# real LangGraph end object (_LANGGRAPH_END == "__end__") is only ever returned
+# to the graph by the router functions / human_node below — never stored in state.
+from agent.sentinels import END_SENTINEL
 from agent.state import State
 from agent.utils import clean_asr_input
 
@@ -36,8 +42,8 @@ logger = get_logger(__name__)
 def intake_routing(state: State) -> str:
     if state.get("is_interrupt"):
         return "human_node"
-    if state.get("next_node") == END:
-        return END
+    if state.get("next_node") in (END_SENTINEL, _LANGGRAPH_END):
+        return _LANGGRAPH_END
     if state.get("next_node") == AgentNode.ESCALATION.value:
         return AgentNode.ESCALATION.value
     return AgentNode.VERIFICATION.value
@@ -50,8 +56,8 @@ def conditional_routing(state: State) -> str:
     logger.info("conditional_routing", extra={"next_node": next_node, "is_interrupt": is_interrupt})
     if is_interrupt:
         return "human_node"
-    if next_node == END:
-        return END
+    if next_node in (END_SENTINEL, _LANGGRAPH_END):
+        return _LANGGRAPH_END
     known = ALL_AGENT_NODES + ["orchestrator", "human_node"]
     if next_node in known:
         return next_node
@@ -64,8 +70,8 @@ def orchestrator_routing(state: State) -> str:
     next_node = state.get("next_node", "")
     if state.get("is_interrupt"):
         return "human_node"
-    if next_node == END:
-        return END
+    if next_node in (END_SENTINEL, _LANGGRAPH_END):
+        return _LANGGRAPH_END
     if next_node in ALL_AGENT_NODES:
         return next_node
     logger.warning("orchestrator_routing: unknown node — fallback", extra={"next_node": next_node})
@@ -91,6 +97,8 @@ def human_node(state: State) -> Command:
     value = interrupt(interrupt_message)
     value = clean_asr_input(str(value) if value is not None else "")
     next_node = state.get("next_node", AgentNode.INTAKE.value)
+    if next_node in (END_SENTINEL, _LANGGRAPH_END):
+        next_node = _LANGGRAPH_END
     logger.info(f"human_node: collected → {next_node}", extra={"len": len(value)})
     return Command(
         goto=next_node,
