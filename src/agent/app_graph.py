@@ -92,8 +92,9 @@ def human_node(state: State) -> Command:
     value = clean_asr_input(str(value) if value is not None else "")
     next_node = state.get("next_node", AgentNode.INTAKE.value)
     logger.info(f"human_node: collected → {next_node}", extra={"len": len(value)})
+    goto = END if next_node == END else next_node
     return Command(
-        goto=next_node,
+        goto=goto,
         update={"is_interrupt": False, "messages": [{"role": "user", "content": value}]},
     )
 
