@@ -20,6 +20,8 @@ from agent.agents.follow_up.constants import (
     AGENT_NAME,
     BARE_AFFIRMATIONS,
     CLOSURE_KEYWORDS,
+    FLOW_COMPLETE_FLAGS,
+    INTAKE_INTENTS,
     LOG_ANSWERED,
     LOG_CANNOT_ANSWER,
     LOG_CLOSURE,
@@ -32,14 +34,14 @@ from agent.agents.follow_up.constants import (
     MSG_FOLLOW_UP_ASK,
     MSG_NUDGE,
     MSG_UPDATE_REQUEST_ESCALATE,
-    NEW_INTENT_CLEAR_FIELDS,
 )
 from agent.agents.follow_up.llm import extract_follow_up_decision
 from agent.core.agent import BaseAgent
 from agent.llm.config import get_follow_up_llm
 from agent.llm.schema import FollowUpIntent
 from agent.logger import get_logger
-from agent.state import State
+from agent.orchestration.orchestration import AgentNode
+from agent.state import State, reset_for_new_intent
 from agent.utils import (
     _last_assistant_msg,
     _last_user_msg,
@@ -83,6 +85,40 @@ def _last_user_is_question(last_user: str) -> bool:
     if lowered in CLOSURE_KEYWORDS:
         return True  # treat as substantive so LLM classifies DONE
     return True
+
+
+def _prior_flow_complete(state: State, intent: str) -> bool:
+    """True when the flow for `intent` has already finished this call.
+
+    Lets a same-intent request (e.g. a second, distinct claim) qualify as a
+    fresh intake while a same-intent clarification — where the flow is still
+    open — does not.
+    """
+    flag = FLOW_COMPLETE_FLAGS.get(intent)
+    return bool(state.get(flag)) if flag else False
+
+
+def is_new_intake_intent(detected_intent: str | None, state: State) -> bool:
+    """True only when `detected_intent` is a fresh, routable intake intent that
+    warrants restarting the call from verification.
+
+    Returns False for:
+      * empty / missing detected_intent — covers "no"/goodbye/end-call, survey
+        responses, and same-intent clarifications, which the classifier returns
+        without a detected_intent (as done/unsure/question, not new_intent);
+      * any intent outside the routable intake set (INTAKE_INTENTS);
+      * the same intent just served, unless that prior flow already completed
+        (otherwise it is a same-intent clarification, not a new request).
+    """
+    if not detected_intent:
+        return False
+    intent = detected_intent.strip().lower()
+    if intent not in INTAKE_INTENTS:
+        return False
+    served = (state.get("call_intent") or "").strip().lower()
+    if intent != served:
+        return True
+    return _prior_flow_complete(state, intent)
 
 
 class FollowUpAgent(BaseAgent):
@@ -224,10 +260,16 @@ class FollowUpAgent(BaseAgent):
         # ── NEW_INTENT — member asked about a different service ──────────────────
         if follow_up_intent == FollowUpIntent.NEW_INTENT:
             detected = (extraction_result.detected_intent or "").strip()
-            if detected:
-                return self._handle_new_intent(state, detected)
-            # Fallback: if LLM omitted detected_intent, treat as cannot-answer
-            logger.warning("follow_up_agent: new_intent but no detected_intent — falling back to cannot-answer")
+            if is_new_intake_intent(detected, state):
+                # Fresh intake intent → full reset + re-verify before the new flow.
+                return self._reroute_through_verification(state, detected)
+            # Not a fresh intake intent (missing/unrecognised detected_intent, or a
+            # same-intent clarification). Fall through to the QUESTION/cannot-answer
+            # handling below so we stay in follow_up rather than restarting the call.
+            logger.info(
+                "follow_up_agent: new_intent did not qualify as fresh intake — staying in follow_up",
+                extra={"detected_intent": detected, "call_intent": state.get("call_intent", "")},
+            )
 
         # ── UNSURE ────────────────────────────────────────────────────────────
         if follow_up_intent == FollowUpIntent.UNSURE:
@@ -279,47 +321,35 @@ class FollowUpAgent(BaseAgent):
         result["follow_up_cannot_answer_count"] = 0
         return result
 
-    def _handle_new_intent(self, state: State, detected_intent: str) -> dict:
+    def _reroute_through_verification(self, state: State, detected_intent: str) -> dict:
         """
-        Called when the member asks about a completely different service mid-follow-up.
+        A fresh intake intent was detected mid-follow-up. Fully reset the
+        conversation (identity + verification flags + every domain field) and
+        route to the verification node so the caller re-verifies before the new
+        flow begins.
 
-        Clears all domain-specific state, sets the new call_intent, and signals
-        COMPLETE with new_intent_detected so the orchestrator routes to the
-        correct domain agent (verification fast-paths because member is already
-        verified).
+        Routing uses the same mechanism every other hand-off uses: set
+        ``next_node`` and let ``conditional_routing`` (the follow_up node's
+        conditional edge) dispatch — no Command(goto=...) needed. ``is_interrupt``
+        is False so verification runs in the same super-step and owns its own
+        first prompt.
+
+        ``reset_for_new_intent`` stages the new intent in BOTH ``call_intent``
+        (which verification reads to choose its claims/provider pipeline, and
+        which the post-verification fast-path reads to pick the domain agent) and
+        ``pending_intent`` (a durable marker that this is a mid-call switch).
         """
         logger.info(
             LOG_NEW_INTENT,
             extra={"detected_intent": detected_intent, "previous_intent": state.get("call_intent", "")},
         )
-
-        # Build a cleared state update — zero every domain field
-        clear_updates: dict = {}
-        for field in NEW_INTENT_CLEAR_FIELDS:
-            # Use None for most fields; use {} for dicts, [] for lists, "" for strings
-            current = state.get(field)
-            if isinstance(current, dict):
-                clear_updates[field] = {}
-            elif isinstance(current, list):
-                clear_updates[field] = []
-            elif isinstance(current, bool):
-                clear_updates[field] = False
-            elif isinstance(current, int):
-                clear_updates[field] = 0
-            else:
-                clear_updates[field] = ""
-
-        # Set the new intent
-        clear_updates["call_intent"] = detected_intent
-
-        return self.signal_complete(
-            state=state,
-            message="",
-            resolved_intents=["follow_up"],
-            new_intent_detected=detected_intent,
-            context_updates=clear_updates,
-            reasoning=f"New intent detected: {detected_intent} — restarting flow",
-        )
+        updates = reset_for_new_intent(state, detected_intent)
+        updates["next_node"] = AgentNode.VERIFICATION.value
+        updates["is_interrupt"] = False
+        updates["active_agent"] = self.AGENT_NAME
+        updates["metadata_events"] = []
+        updates["app_run_id"] = state.get("app_run_id", "")
+        return updates
 
 
 async def follow_up_agent(state: State) -> dict:
