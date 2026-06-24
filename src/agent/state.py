@@ -50,6 +50,7 @@ class State(TypedDict):
     orchestrator_reasoning: str
     router_loop_count: int
     call_intent: str
+    pending_intent: Optional[str]  # new intent staged by reset_for_new_intent (mid-call switch)
     ref_no: str
     slot_attempts: dict[str, SlotState]
     conversation_context: Optional[ConversationContextDict]
@@ -148,3 +149,116 @@ class State(TypedDict):
     claim_timeline_notification_channel: str  # "sms"|"email"|"not_set" — for progress updates
     claim_timeline_notification_contact: str  # contact for progress update notifications
     claim_flow_complete: bool  # True once both notification preferences are saved
+
+
+def reset_for_new_intent(state: State, new_intent: Optional[str]) -> dict:
+    """Return the state updates that fully reset the conversation for a brand-new
+    intent detected mid-call, forcing identity re-verification from scratch.
+
+    Unlike ``follow_up.constants.NEW_INTENT_CLEAR_FIELDS`` (which deliberately
+    *keeps* identity + verification so the member fast-paths through
+    verification), this reset zeroes identity and verification too, so the
+    verification agent restarts at the first slot ("first name").
+
+    The new intent is staged in BOTH:
+      * ``call_intent``   — the field routing actually reads (verification's
+        pipeline/prompt selection AND the post-verification fast-path branch).
+      * ``pending_intent`` — a dedicated, durable marker that a re-verification
+        triggered by a mid-call switch is in flight, independent of the
+        transient ``new_intent_detected`` signal (which is gated on the member
+        already being verified and so cannot survive this reset).
+
+    Fields NOT returned here are preserved by LangGraph's last-write-wins
+    reducers — in particular the transcript (``messages``, an ``add_messages``
+    field), the session/run id (``app_run_id``), the call reference (``ref_no``),
+    ``metadata_events`` and ``last_agent_signal``. ``state`` is accepted for API
+    symmetry and future conditional resets; the current reset is unconditional.
+    """
+    return {
+        # ── Intent carriers ──────────────────────────────────────────────────
+        "call_intent": new_intent or "",  # field routing reads (pipeline + post-verify)
+        "pending_intent": new_intent,  # durable mid-call-switch marker
+        "new_intent_detected": "",  # consumed — clear the trigger
+        "intent_queue": [],
+        # ── Member identity → None ───────────────────────────────────────────
+        "first_name": None,
+        "last_name": None,
+        "member_id": None,
+        "dob": None,
+        "zip_code": None,
+        "relationship": None,
+        "caller_role": None,
+        "phone_number": None,
+        "fax": None,
+        "email": None,
+        "conversation_context": None,  # rebuilt fresh from cleared identity
+        # ── Verification flag(s) → False/0 ───────────────────────────────────
+        "member_status_verify": False,
+        "name_confirmed": False,
+        "name_confirm_attempts": 0,
+        "phone_confirmed": False,
+        "phone_update_requested": False,
+        # ── Verification sub-step pointer → initial (restart at first_name) ───
+        "awaiting_slot": "",  # verification recomputes first empty slot = first_name
+        "slot_attempts": {},
+        "correction_return_to": "",
+        "ambiguous_counts": {},
+        "verification_restart_index": 0,
+        # ── Provider search ──────────────────────────────────────────────────
+        "provider_type": "",
+        "zip_code_used": "",
+        "zip_code_updated": False,
+        "provider_list_sent": False,
+        "delivery_timestamp": "",
+        "fax_confirmed": False,
+        "fax_update_requested": False,
+        "email_confirmed": False,
+        "email_update_requested": False,
+        "delivery_method": "",
+        "benefits_offer_made": False,
+        # ── Pending reconfirmation values ────────────────────────────────────
+        "pending_zip_code": "",
+        "pending_fax": "",
+        "pending_email": "",
+        "pending_phone": "",
+        # ── Benefits & wellness ──────────────────────────────────────────────
+        "individual_deductible": "",
+        "family_deductible": "",
+        "coinsurance_percent": "",
+        "individual_oop_max": "",
+        "family_oop_max": "",
+        "benefits_explained": False,
+        "care_coach_offer_made": False,
+        "care_coach_offered": False,
+        "care_coach_details_sent": False,
+        "rewards_portal_shared": False,
+        "care_coach_nooffer_sent": False,
+        # ── Follow-up counters ───────────────────────────────────────────────
+        "follow_up_turn_count": 0,
+        "follow_up_last_question": "",
+        "follow_up_cannot_answer_count": 0,
+        # ── Claim adjustment ─────────────────────────────────────────────────
+        "reference_number": "",
+        "claim_status": "",
+        "last_update_date": "",
+        "records_required": False,
+        "records_branch_taken": "",
+        "upload_link_sent": False,
+        "personal_guide_outreach_requested": False,
+        "notification_channel": "not_set",
+        "claim_notification_contact": "",
+        "claim_timeline_notification_channel": "not_set",
+        "claim_timeline_notification_contact": "",
+        "claim_flow_complete": False,
+        # ── Escalation ───────────────────────────────────────────────────────
+        "escalation_reference_number": "",
+        "escalation_reason": "",
+        "escalation_pre_message": "",
+        # ── Flow control / orchestration bookkeeping ─────────────────────────
+        "offtopic_global_count": 0,
+        "closure_requested": False,
+        "proactive_offer_available": False,
+        "router_loop_count": 0,
+        "orchestrator_reasoning": "",
+        "previous_agents": [],
+    }
