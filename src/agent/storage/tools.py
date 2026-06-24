@@ -18,8 +18,20 @@ async def lookup_member(
     last_name: str = "",
     dob: str = "",
 ) -> Optional[Dict[str, Any]]:
-    """Full identity verification against Salesforce member record."""
-    from agent.storage.queries.members import find_member_by_identity
+    """Full identity verification against Salesforce member record.
+
+    On a full identity match, returns ``verified=True`` with the member's
+    contact fields (unchanged contract). On a failed full match, additionally
+    reports whether a record exists for the Member ID and, when it does, which
+    identity fields matched — so callers can give targeted re-prompts without a
+    second lookup. ``verified`` is always present, so verified-only callers are
+    unaffected.
+    """
+    from agent.storage.queries.members import (
+        compare_identity_fields,
+        find_member_by_identity,
+        get_member_contact,
+    )
 
     try:
         record = await find_member_by_identity(
@@ -32,17 +44,34 @@ async def lookup_member(
             "lookup_member: verification attempt",
             extra={"verified": bool(record), "member_tail": member_id[-4:]},
         )
-        if not record:
-            return {"verified": False}
+        if record:
+            return {
+                "verified": True,
+                "member_id": record.get("member_id"),
+                "phone_number": record.get("phone_number", ""),
+                "zip_code": record.get("zip_code", ""),
+                "fax": record.get("fax", ""),
+                "email": record.get("email", ""),
+                "relationship": record.get("relationship", ""),
+                "record": record,
+            }
+
+        # Failed full match — fetch by Member ID alone to see whether the ID
+        # exists and, if so, which identity fields differ.
+        id_record = await get_member_contact(member_id) if member_id else None
+        if not id_record:
+            return {"verified": False, "member_id_found": False}
+
         return {
-            "verified": True,
-            "member_id": record.get("member_id"),
-            "phone_number": record.get("phone_number", ""),
-            "zip_code": record.get("zip_code", ""),
-            "fax": record.get("fax", ""),
-            "email": record.get("email", ""),
-            "relationship": record.get("relationship", ""),
-            "record": record,
+            "verified": False,
+            "member_id_found": True,
+            "field_matches": compare_identity_fields(
+                id_record,
+                first_name=first_name,
+                last_name=last_name,
+                dob=dob,
+            ),
+            "record": id_record,
         }
     except Exception:
         logger.exception("lookup_member failed")
