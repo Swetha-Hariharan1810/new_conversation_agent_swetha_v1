@@ -1616,6 +1616,168 @@ email_change_loop_in_notification = Scenario(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# G2. Notification contact-confirmation advances on the first affirmative
+#
+# Regression guard for the phone_confirmed / email_confirmed loop in
+# notification_setup_agent. The bug: advancement depended solely on the
+# extraction LLM returning contact_confirmed="yes". Because notification_method
+# is passed in as an already-confirmed slot, the LLM is biased to treat a plain
+# affirmative as a redundant acknowledgment and return an EMPTY contact_confirmed,
+# which fell through to a non-advancing slot retry — so the caller had to repeat
+# "yes" two or three times before the flow moved on (see the transcript symptom
+# on the fix commit). The fix adds a deterministic normalize_yes_no(last_user)
+# fallback, gated on no replacement contact being extracted this turn.
+#
+# These scenarios drive the claim flow to the notification phone/email read-back
+# and answer with the exact affirmative phrasings from the bug report
+# ("yes thats correct", "yes", "yes please"). The decisive assertion is the
+# turn_expectation on the AI prompt that FOLLOWS the affirmative: awaiting_slot
+# must already be "timeline_question" (the flow advanced to _save_and_complete +
+# the timeline bridge on the FIRST turn). Under the bug the agent re-asks and
+# awaiting_slot stays phone_confirmed / email_confirmed, failing the assertion.
+#
+# James M310188 has phone 512-555-6101 (the number from the bug transcript) and
+# email james.wilson@gmail.com on file, so both confirmation read-backs fire.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Claim flow up to the point where notification_setup asks for the channel:
+# verify → reference number → doctor-direct records + upload link → Personal Guide.
+# The next scripted turn (index 12) is the notification_method answer.
+_CLAIM_TO_NOTIFICATION = CLAIM_VERIFY + [
+    "42695817",  # 7  reference number
+    "Can I ask my doctor to send it over?",  # 8  doctor-direct
+    "Yes, please",  # 9  accept upload link
+    "Yes, that's correct",  # 10 confirm email on file (records upload link)
+    "Perfect. Please do that",  # 11 accept Personal Guide → notification setup
+]
+
+notification_phone_confirm_advances = Scenario(
+    name="notification_phone_confirm_advances",
+    flow="claim",
+    timeout_s=360,
+    retries=1,  # whether the LLM extracts "yes" or returns empty (→ deterministic
+    # fallback) is non-deterministic; BOTH must advance, but the surrounding flow
+    # has other LLM-driven steps, so allow one rerun for unrelated flakiness
+    user_turns=_CLAIM_TO_NOTIFICATION
+    + [
+        "You can send me the updates to my phone",  # 12 notification_method = sms
+        "yes thats correct",  # 13 phone_confirmed — affirmative phrasing from the bug
+        "Okay, how long will it take to finalize the request?",  # 14 timeline question
+        "email them to me",  # 15 N2 channel
+        "No, that's it. Thanks!",  # 16 close
+    ],
+    turn_expectations={
+        # The phone read-back before the affirmative: still awaiting confirmation.
+        13: TurnExpectation(
+            ai_contains=[r"(still the correct number|on file|is that right)"],
+            slot_awaiting="phone_confirmed",
+        ),
+        # THE REGRESSION CATCH: one affirmative advanced the flow to the timeline
+        # bridge. awaiting_slot must be timeline_question (not a phone_confirmed
+        # re-ask), and the AI prompt is the timeline bridge.
+        14: TurnExpectation(ai_contains=[r"timeline"], slot_awaiting="timeline_question"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "member_status_verify": True,
+            "upload_link_sent": True,
+            "personal_guide_outreach_requested": True,
+            "notification_channel": "sms",
+            "claim_timeline_notification_channel": "email",
+            "claim_flow_complete": True,
+        },
+    ),
+    notes=(
+        "Phone-confirmation regression guard. At phone_confirmed the member says "
+        "'yes thats correct'; the flow must advance to the timeline bridge on the "
+        "FIRST turn (turn-14 expectation: awaiting_slot=timeline_question). Before "
+        "the fix, an empty contact_confirmed extraction fell through to a "
+        "non-advancing slot retry and awaiting_slot stayed phone_confirmed."
+    ),
+)
+
+notification_phone_confirm_bare_yes_advances = Scenario(
+    name="notification_phone_confirm_bare_yes_advances",
+    flow="claim",
+    timeout_s=360,
+    retries=1,
+    user_turns=_CLAIM_TO_NOTIFICATION
+    + [
+        "You can send me the updates to my phone",  # 12 notification_method = sms
+        "yes",  # 13 phone_confirmed — bare "yes": the strongest empty-extraction trigger
+        "Okay, how long will it take to finalize the request?",  # 14 timeline question
+        "email them to me",  # 15 N2 channel
+        "No, that's it. Thanks!",  # 16 close
+    ],
+    turn_expectations={
+        13: TurnExpectation(
+            ai_contains=[r"(still the correct number|on file|is that right)"],
+            slot_awaiting="phone_confirmed",
+        ),
+        14: TurnExpectation(ai_contains=[r"timeline"], slot_awaiting="timeline_question"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "notification_channel": "sms",
+            "claim_timeline_notification_channel": "email",
+            "claim_flow_complete": True,
+        },
+    ),
+    notes=(
+        "Same as notification_phone_confirm_advances but with a bare 'yes' — the "
+        "phrasing most likely to be dropped by the extraction LLM as a redundant "
+        "acknowledgment. The deterministic normalize_yes_no fallback must still "
+        "advance the flow on the first turn."
+    ),
+)
+
+notification_email_confirm_advances = Scenario(
+    name="notification_email_confirm_advances",
+    flow="claim",
+    timeout_s=360,
+    retries=1,
+    user_turns=_CLAIM_TO_NOTIFICATION
+    + [
+        "email please",  # 12 notification_method = email
+        "yes please",  # 13 email_confirmed — affirmative phrasing from the bug
+        "Okay, how long will it take to finalize the request?",  # 14 timeline question
+        "email them to me",  # 15 N2 channel
+        "No, that's all. Thanks!",  # 16 close
+    ],
+    turn_expectations={
+        # The email read-back before the affirmative: still awaiting confirmation.
+        13: TurnExpectation(
+            ai_contains=[r"(still the right address|on file|correct email)"],
+            slot_awaiting="email_confirmed",
+        ),
+        # THE REGRESSION CATCH: one affirmative advanced to the timeline bridge.
+        14: TurnExpectation(ai_contains=[r"timeline"], slot_awaiting="timeline_question"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "member_status_verify": True,
+            "notification_channel": "email",
+            "claim_timeline_notification_channel": "email",
+            "claim_flow_complete": True,
+        },
+    ),
+    notes=(
+        "Email-confirmation regression guard (mirror of the phone case). At "
+        "email_confirmed the member says 'yes please'; the flow must advance to "
+        "the timeline bridge on the FIRST turn (turn-14 expectation: "
+        "awaiting_slot=timeline_question). Before the fix an empty contact_confirmed "
+        "extraction fell through to a non-advancing slot retry."
+    ),
+)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # H. Conversational & confusion-recovery
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -2519,6 +2681,10 @@ SCENARIOS: list[Scenario] = [
     # G. Contact-change loop limits
     zip_change_loop_escalates,  # 32  (redefined: invalid-ZIP slot exhaustion)
     email_change_loop_in_notification,  # 33 (mutating)
+    # G2. Notification contact-confirmation advances on first affirmative (regression)
+    notification_phone_confirm_advances,  # 33a
+    notification_phone_confirm_bare_yes_advances,  # 33b
+    notification_email_confirm_advances,  # 33c
     # H. Conversational & confusion-recovery
     pcp_happy_path_conversational,  # 34
     claim_happy_path_conversational,  # 35
