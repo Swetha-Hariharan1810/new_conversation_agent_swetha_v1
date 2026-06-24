@@ -113,6 +113,14 @@ are wrapped in a `finally` block that restores the snapshotted values via
 - **F. Follow-up escalations** — update request, 3× cannot-answer.
 - **G. Contact-change loop limits** — zip change loop, email change loop in
   notification setup.
+- **G2. Notification contact-confirmation advancement** — regression guards
+  (`notification_phone_confirm_advances`, `notification_phone_confirm_bare_yes_advances`,
+  `notification_email_confirm_advances`) proving the phone/email read-back in
+  notification setup advances to the timeline bridge on the FIRST affirmative
+  ("yes thats correct" / "yes" / "yes please"), rather than looping with a
+  non-advancing confirmation re-ask. The decisive check is the turn expectation
+  that `awaiting_slot` is `timeline_question` on the AI prompt right after the
+  affirmative.
 - **H. Conversational & confusion-recovery** —
   - `pcp_happy_path_conversational`: same Emily flow as A but with
     `PCP_VERIFY_CONVERSATIONAL` (natural phrasing, spelling-out of last name);

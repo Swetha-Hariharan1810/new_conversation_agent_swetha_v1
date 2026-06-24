@@ -173,7 +173,9 @@ class SlotManagerMixin:
                 f"{digits[:3]}-{digits[3:6]}-{digits[6:]}" if len(digits) == 10 else state["phone_number"]
             )
             slot_label_override = (
-                f"phone confirmation — whether {formatted} is still the number on file (yes or no)"
+                f"phone confirmation — ASK the member to confirm whether {formatted} is still the "
+                f"correct number for updates (yes or no). Do NOT claim the number is already "
+                f"confirmed and do NOT say 'I've confirmed' — you are still waiting on their yes/no."
             )
         sc = session_context or {}
         text = await generate_recovery_message(
