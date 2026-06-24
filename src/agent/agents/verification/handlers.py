@@ -185,6 +185,15 @@ def _partial_reask(agent, state, mismatched: list[str]) -> dict:
         ctx.caller_first_name = ""
     result["conversation_context"] = ctx.to_dict()
 
+    # Point awaiting_slot at the FIRST mismatched field (identity order). run()
+    # recomputes awaiting_slot as `state.get("awaiting_slot") or <first empty>`,
+    # so a stale truthy pointer (e.g. "member_id" left over from a multi-slot
+    # utterance, or "dob" after a last-name mismatch) would otherwise mislabel the
+    # extraction context on the re-ask turn. The identity pipeline collects in
+    # IDENTITY_SLOT_ORDER and stops at the first empty slot, which — now that the
+    # matched fields stay populated — is exactly this first mismatched slot.
+    result["awaiting_slot"] = next(s for s in IDENTITY_SLOT_ORDER if s in mismatched)
+
     result["verification_restart_index"] = len(state.get("messages") or [])
 
     import logging

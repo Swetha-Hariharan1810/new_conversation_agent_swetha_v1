@@ -318,6 +318,32 @@ class VerificationAgent(BaseAgent):
             return await self._handle_name_confirmation(state, messages, last_user)
 
         # Salesforce lookup
+        #
+        # ── Partial re-ask round-trip (wrong DOB only) ───────────────────────────
+        # Trace of the targeted re-ask path, e.g. caller's DOB is wrong but name +
+        # Member ID match:
+        #
+        #   Turn N (all four slots collected):
+        #     pipeline.collect() completes → lookup_and_verify() runs →
+        #     full match fails → lookup_member returns member_id_found=True with
+        #     field_matches={first_name:T, last_name:T, dob:F} →
+        #     handlers._partial_reask(mismatched=["dob"]) returns an interrupt that:
+        #       • clears ONLY dob (""); keeps first_name, last_name, member_id
+        #       • leaves name_confirmed=True untouched (no name field mismatched)
+        #       • sets awaiting_slot="dob" and verification_restart_index=len(msgs)
+        #       • asks MSG_REASK_DOB  ("…date of birth once more?")
+        #     member_status_verify is NOT set, so the loop stays open.
+        #
+        #   Turn N+1 (caller restates DOB):
+        #     • name gate (line ~136) skipped: name_confirmed is True
+        #     • both readback intercepts (lines ~260, ~316) skipped: name_confirmed True
+        #       → NO spelled-name read-back, NO name/Member-ID re-ask
+        #     • awaiting_slot="dob" gives the extractor the correct slot context
+        #     • pipeline.collect() skips the still-populated first_name / last_name /
+        #       member_id and collects only dob (first empty slot in identity order)
+        #     • member_status_verify still falsy → lookup_and_verify() runs AGAIN
+        #       with the corrected dob → fresh full match → _signal_verified().
+        # ─────────────────────────────────────────────────────────────────────────
         if not state.get("member_status_verify"):
             member_record, interrupt = await lookup_and_verify(self, state, collected)
             if interrupt:

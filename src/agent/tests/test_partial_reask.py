@@ -115,6 +115,9 @@ def test_partial_reask_dob_only_clears_only_dob():
     assert ctx["confirmed_slots"] == ["first_name", "last_name", "member_id"]
     assert ctx["caller_first_name"] == "James"
 
+    # awaiting_slot points at the cleared field so run() gives the extractor the
+    # correct slot context on the re-ask turn.
+    assert result["awaiting_slot"] == "dob"
     assert result["verification_restart_index"] == 2
     assert result["messages"]["content"] in MSG_REASK_DOB
 
@@ -139,6 +142,7 @@ def test_partial_reask_last_name_resets_name_confirmation_only():
     assert ctx["confirmed_slots"] == ["first_name", "member_id", "dob"]
     # first_name matched, so the cached caller name is preserved.
     assert ctx["caller_first_name"] == "James"
+    assert result["awaiting_slot"] == "last_name"
     assert result["messages"]["content"] in MSG_REASK_LAST_NAME
 
 
@@ -157,6 +161,7 @@ def test_partial_reask_first_name_clears_cached_name():
     ctx = result["conversation_context"]
     assert ctx["caller_first_name"] == ""
     assert ctx["confirmed_slots"] == ["last_name", "member_id", "dob"]
+    assert result["awaiting_slot"] == "first_name"
     assert result["messages"]["content"] in MSG_REASK_FIRST_NAME
 
 
@@ -176,6 +181,8 @@ def test_partial_reask_multi_field_uses_generic():
     assert result["name_confirmed"] is False  # last_name is a name field
     ctx = result["conversation_context"]
     assert set(ctx["confirmed_slots"]) == {"first_name", "member_id"}
+    # First mismatched field in identity order (last_name before dob).
+    assert result["awaiting_slot"] == "last_name"
     assert result["messages"]["content"] in MSG_REASK_GENERIC
 
 
