@@ -6,7 +6,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agent.agents.verification.constants import IDENTITY_SLOT_ORDER, MAX_LOOKUP_ATTEMPTS
+from agent.agents.verification.constants import (
+    IDENTITY_SLOT_ORDER,
+    LOG_PARTIAL_REASK,
+    MAX_LOOKUP_ATTEMPTS,
+    MSG_REASK_DOB,
+    MSG_REASK_FIRST_NAME,
+    MSG_REASK_GENERIC,
+    MSG_REASK_LAST_NAME,
+)
 from agent.conversation.context import ConversationContext
 
 if TYPE_CHECKING:
@@ -102,6 +110,89 @@ _VALIDATORS = {
 }
 
 
+def _reask_message(mismatched: list[str]) -> str:
+    """Pick the targeted re-ask prompt for the mismatch set.
+
+    Single-field mismatches use the disclosing, field-named pools (Phase 0
+    decision). Any multi-field mismatch falls back to the non-disclosing
+    generic pool so we don't read every wrong detail back to the caller.
+    """
+    if mismatched == ["first_name"]:
+        return pick(MSG_REASK_FIRST_NAME)
+    if mismatched == ["last_name"]:
+        return pick(MSG_REASK_LAST_NAME)
+    if mismatched == ["dob"]:
+        return pick(MSG_REASK_DOB)
+    return pick(MSG_REASK_GENERIC)
+
+
+def _full_restart(agent, state) -> dict:
+    """Wipe all four identity fields and re-ask from the top (MSG_RESTART).
+
+    Used when the Member ID isn't found (Phase 0: re-ask everything) or when no
+    usable field-match info is available.
+    """
+    # Reset attempt counters so the next round starts with a full budget.
+    for _slot in ("first_name", "last_name", "member_id", "dob"):
+        agent.get_slot(_slot).reset()
+    restart = agent.ask_member(state, pick(MSG_RESTART))
+    restart.update({"first_name": "", "last_name": "", "member_id": "", "dob": ""})
+    restart["name_confirmed"] = False
+    restart["name_confirm_attempts"] = 0
+
+    ctx = ConversationContext.from_state(state)
+    ctx.caller_first_name = ""
+    ctx.confirmed_slots = [s for s in ctx.confirmed_slots if s not in ("first_name", "last_name")]
+    restart["conversation_context"] = ctx.to_dict()
+
+    restart["verification_restart_index"] = len(state.get("messages") or [])
+    return restart
+
+
+def _partial_reask(agent, state, mismatched: list[str]) -> dict:
+    """Clear only the mismatched identity slots and re-ask just those fields.
+
+    Preserves the Member ID and every matched field (slot value, attempt count,
+    and confirmation). Name confirmation is only reset when a name field is in
+    the mismatch set. ``verification_restart_index`` is refreshed so the
+    extractor re-reads recent turns for the corrected field(s).
+    """
+    name_mismatch = any(f in mismatched for f in ("first_name", "last_name"))
+
+    # Reset attempt counters ONLY for the mismatched slots — matched fields keep
+    # their state. Done before ask_member so the cleared slots are not persisted
+    # back as confirmed values.
+    for _slot in mismatched:
+        agent.get_slot(_slot).reset()
+
+    result = agent.ask_member(state, _reask_message(mismatched))
+
+    # Clear ONLY the mismatched slot values; matched fields (incl. member_id)
+    # were persisted by ask_member and stay intact.
+    for _slot in mismatched:
+        result[_slot] = ""
+
+    # Name confirmation only reset if a name field mismatched (Phase 0 decision).
+    if name_mismatch:
+        result["name_confirmed"] = False
+        result["name_confirm_attempts"] = 0
+
+    # Drop only the re-asked slots from confirmed_slots; clear the cached caller
+    # name only when first_name itself is being re-asked.
+    ctx = ConversationContext.from_state(state)
+    ctx.confirmed_slots = [s for s in ctx.confirmed_slots if s not in mismatched]
+    if "first_name" in mismatched:
+        ctx.caller_first_name = ""
+    result["conversation_context"] = ctx.to_dict()
+
+    result["verification_restart_index"] = len(state.get("messages") or [])
+
+    import logging
+
+    logging.getLogger(__name__).info(LOG_PARTIAL_REASK, extra={"mismatched": mismatched})
+    return result
+
+
 async def lookup_and_verify(agent, state, collected):
     import asyncio as _asyncio
 
@@ -138,6 +229,8 @@ async def lookup_and_verify(agent, state, collected):
     verified = result is not None and result.get("verified") is True
 
     if not verified:
+        # Global attempt cap (unchanged): escalate to a human after
+        # MAX_LOOKUP_ATTEMPTS failed lookups, counted across all fields.
         if escalation := agent.guard_loop_limit(
             state,
             "lookup_fail",
@@ -146,21 +239,23 @@ async def lookup_and_verify(agent, state, collected):
             escalate_reason="Verification failed after max lookup attempts",
         ):
             return None, escalation
-        # Reset attempt counters so the second round starts with a full budget
-        for _slot in ("first_name", "last_name", "member_id", "dob"):
-            agent.get_slot(_slot).reset()
-        restart = agent.ask_member(state, pick(MSG_RESTART))
-        restart.update({"first_name": "", "last_name": "", "member_id": "", "dob": ""})
-        restart["name_confirmed"] = False
-        restart["name_confirm_attempts"] = 0
 
-        ctx = ConversationContext.from_state(state)
-        ctx.caller_first_name = ""
-        ctx.confirmed_slots = [s for s in ctx.confirmed_slots if s not in ("first_name", "last_name")]
-        restart["conversation_context"] = ctx.to_dict()
+        # Phase 2 lookup attaches member_id_found + field_matches on failure.
+        # Older/exception failure shapes (just {"verified": False}) fall through
+        # to the full-restart branch below.
+        field_matches = (result or {}).get("field_matches") or {}
+        mismatched = [f for f in IDENTITY_SLOT_ORDER if field_matches.get(f) is False]
+        member_id_found = bool(result and result.get("member_id_found"))
 
-        restart["verification_restart_index"] = len(state.get("messages") or [])
-        return None, restart
+        # No record for this Member ID (or no usable field-match info) → full
+        # restart per Phase 0: wipe all four identity fields and re-ask with
+        # MSG_RESTART.
+        if not member_id_found or not mismatched:
+            return None, _full_restart(agent, state)
+
+        # Member ID found but some identity fields differ → targeted re-ask:
+        # clear only the mismatched slots; keep Member ID and every matched field.
+        return None, _partial_reask(agent, state, mismatched)
 
     # Merge prefetched benefits into the result dict so _signal_verified()
     # can pass them through context_updates into state, making them available
