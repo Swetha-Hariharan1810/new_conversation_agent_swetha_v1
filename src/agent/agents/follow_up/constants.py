@@ -4,6 +4,20 @@ from __future__ import annotations
 
 AGENT_NAME = "follow_up_agent"
 
+# ── New-intake-intent restart ─────────────────────────────────────────────────
+# Top-level, routable intake intents. When one of these is newly detected
+# mid-follow-up, the call is fully reset and re-routed through verification.
+# Mirrors the routable service flows in intake.models.IntentTag.
+INTAKE_INTENTS: frozenset[str] = frozenset({"provider_services", "claim_services"})
+
+# Per-intent "prior flow already completed" flags. Used so a same-intent
+# request (e.g. a second, distinct claim) qualifies as a fresh intake while a
+# same-intent clarification does not.
+FLOW_COMPLETE_FLAGS: dict[str, str] = {
+    "claim_services": "claim_flow_complete",
+    "provider_services": "provider_list_sent",
+}
+
 # ── Escalation thresholds ─────────────────────────────────────────────────────
 # UPDATE_REQUEST: immediate escalation every time — no threshold, no counting.
 # MSG_CANNOT_ANSWER: escalate after this many consecutive cannot-answer turns.
