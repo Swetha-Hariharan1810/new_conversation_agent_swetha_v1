@@ -192,6 +192,17 @@ async def test_intent_change_in_followup_reverifies(snapshot):
     ai = extract_last_ai_message(state.get("messages", []))
     assert "first name" in ai.lower(), f"agent should re-ask for the first name, got: {ai!r}"
 
+    # The pivot turn must deliver the deterministic first-name bridge intake uses
+    # (every bridge message ends with INTENT_BRIDGE_MSG), and the one-shot flag
+    # must be cleared so the following turn extracts normally.
+    from agent.agents.intake.constants import INTENT_BRIDGE_MSG
+
+    assert INTENT_BRIDGE_MSG in ai, f"pivot turn should emit the first-name bridge, got: {ai!r}"
+    assert not state.get("reverify_bridge_pending"), "bridge one-shot flag must be cleared after the pivot turn"
+    assert state.get("awaiting_slot") == "first_name", (
+        f"bridge should set awaiting_slot=first_name, got {state.get('awaiting_slot')!r}"
+    )
+
     # 3. Complete re-verification (claims slot order ends with phone confirmation).
     state = await _send_all(graph, config, _EMILY_CLAIM_REVERIFY)
 
