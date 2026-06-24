@@ -614,7 +614,18 @@ class VerificationAgent(BaseAgent):
             # name rather than re-asking an already-known slot.
             collected = {k: (state.get(k) or "").strip() for k in IDENTITY_SLOT_ORDER}
             call_intent = state.get("call_intent", "")
-            return await self._finish_after_identity(state, collected, messages, call_intent, None)
+            result = await self._finish_after_identity(state, collected, messages, call_intent, None)
+            # Persist the just-confirmed name on the RETURNED dict. On success
+            # _finish_after_identity returns the post-lookup interrupt
+            # (relationship / phone) or the COMPLETE signal — neither carries
+            # name_confirmed, so without this the gate would re-fire the read-back
+            # on the next (post-lookup) turn. If the lookup instead returned a
+            # re-ask that deliberately set name_confirmed (full restart, or a
+            # fresh name mismatch → False), respect that value.
+            if isinstance(result, dict) and "name_confirmed" not in result:
+                result["name_confirmed"] = True
+                result["name_confirm_attempts"] = 0
+            return result
 
         slot_type = SlotType.MEMBER_ID if next_slot == "member_id" else SlotType.DOB
         msg = build_transition_prompt(slot_type, ctx)
