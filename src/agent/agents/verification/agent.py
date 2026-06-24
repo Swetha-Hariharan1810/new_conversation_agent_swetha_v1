@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import random
 
+from agent.agents.intake.constants import INTENT_BRIDGE_MSGS
 from agent.agents.verification.constants import (
     IDENTITY_SLOT_ORDER,
     LOG_ENTERED,
@@ -117,6 +118,25 @@ class VerificationAgent(BaseAgent):
         messages = list(state.get("messages") or [])
         last_user = _last_user_msg(messages)
         call_intent = state.get("call_intent", "")
+
+        # ── Mid-call re-verification first-name bridge (one-shot) ────────────
+        # reset_for_new_intent sets reverify_bridge_pending=True when a fresh
+        # intent is detected mid-call. The utterance that triggered the switch
+        # carries no identity data, so the extraction LLM call below would be
+        # wasted. Instead deliver the same deterministic first-name bridge intake
+        # uses and pause for the member's reply. The flag is one-shot — keyed off
+        # reverify_bridge_pending, NOT pending_intent (which persists across every
+        # re-verification turn and would re-fire the bridge each turn).
+        # Edge case (acceptable tradeoff): if the trigger utterance happened to
+        # include a name, we still re-ask for first name via the bridge rather
+        # than extracting it — identity is re-collected from scratch by design.
+        if state.get("reverify_bridge_pending"):
+            msg = random.choice(INTENT_BRIDGE_MSGS)
+            result = self.ask_member(state, msg)  # sets is_interrupt=True, next_node=verification_agent
+            result["reverify_bridge_pending"] = False  # one-shot: clear so next turn extracts normally
+            result["awaiting_slot"] = "first_name"  # correct slot context for next-turn extraction
+            logger.info("VerificationAgent: re-verify first-name bridge delivered (LLM call skipped)")
+            return result
 
         _prompt_file = (
             "extraction/verification_claims.md"

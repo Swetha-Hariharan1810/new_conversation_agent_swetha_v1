@@ -63,6 +63,7 @@ class State(TypedDict):
     relationship: str
     caller_role: str
     member_status_verify: bool
+    reverify_bridge_pending: bool  # one-shot: deliver first-name bridge on next verification entry
 
     # ── Name confirmation (new) ──────────────────────────────────────────────────
     name_confirmed: bool
@@ -194,6 +195,7 @@ def reset_for_new_intent(state: State, new_intent: Optional[str]) -> dict:
         "conversation_context": None,  # rebuilt fresh from cleared identity
         # ── Verification flag(s) → False/0 ───────────────────────────────────
         "member_status_verify": False,
+        "reverify_bridge_pending": True,  # one-shot: deliver first-name bridge on next verification entry
         "name_confirmed": False,
         "name_confirm_attempts": 0,
         "phone_confirmed": False,
