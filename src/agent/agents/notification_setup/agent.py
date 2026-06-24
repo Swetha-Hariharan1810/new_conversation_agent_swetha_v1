@@ -205,6 +205,17 @@ class NotificationSetupAgent(BaseAgent):
             pending_phone = (state.get("pending_phone") or "").strip()
 
             contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
+            # Deterministic fallback: the LLM is biased to treat a plain "yes" here
+            # as a redundant acknowledgment (notification_method is passed in as an
+            # already-confirmed slot) and return an empty contact_confirmed, which
+            # would otherwise fall through to a non-advancing slot retry. When the
+            # extraction is empty AND no replacement phone was given this turn, map
+            # the raw user reply ("yes thats correct", "yes", "yes please" → "yes")
+            # directly so a clear yes/no advances on the first turn. Gated on the
+            # absence of a replacement phone so an inline correction
+            # ("no, use 555-1234") still routes through the replacement branch.
+            if not contact_conf and not new_phone_raw:
+                contact_conf = normalize_yes_no(last_user)
             # Extraction contract: a replacement phone and contact_confirmed are
             # mutually exclusive. If a "no" arrives alongside a phone, the phone is
             # an echo of the Confirmed: context line — discard it so the decline is
@@ -310,6 +321,16 @@ class NotificationSetupAgent(BaseAgent):
             pending_email = (state.get("pending_email") or "").strip()
 
             contact_conf = normalize_yes_no(contact_conf_raw) if contact_conf_raw else ""
+            # Deterministic fallback (mirrors phone_confirmed): the LLM tends to
+            # treat a plain "yes" here as a redundant acknowledgment and return an
+            # empty contact_confirmed, which would otherwise fall through to a
+            # non-advancing slot retry. When the extraction is empty AND no
+            # replacement email was given this turn, map the raw user reply
+            # ("yes thats correct", "yes", "yes please" → "yes") directly so a clear
+            # yes/no advances on the first turn. Gated on the absence of a
+            # replacement email so an inline correction does not get swallowed.
+            if not contact_conf and not new_email_raw:
+                contact_conf = normalize_yes_no(last_user)
             # Extraction contract: a replacement email and contact_confirmed are
             # mutually exclusive. If a "no" arrives alongside an email, the email is
             # an echo of the Confirmed: context line — discard it so the decline is
@@ -384,8 +405,10 @@ class NotificationSetupAgent(BaseAgent):
                 attempt=self.get_slot("email_confirmed").attempt_count,
                 guard="RETRY",
                 last_messages=messages[-4:],
-                slot_label_override=f"whether the email address "
-                f"{display_email} is correct for notifications (yes or no)",
+                slot_label_override=f"email confirmation — ASK the member to confirm whether the "
+                f"email address {display_email} is correct for notifications (yes or no). Do NOT "
+                f"claim the email is already confirmed and do NOT say 'I've confirmed' — you are "
+                f"still waiting on their yes/no.",
                 caller_name=ctx.caller_first_name,
                 confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
                 user_utterance=_last_user_msg(messages),
