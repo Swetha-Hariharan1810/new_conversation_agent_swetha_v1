@@ -37,7 +37,10 @@ from __future__ import annotations
 from agent.agents.follow_up.constants import MSG_UPDATE_REQUEST_ESCALATE  # noqa: E402
 from agent.agents.verification.constants import (  # noqa: E402
     MSG_REASK_DOB,
+    MSG_REASK_FIRST_NAME,
+    MSG_REASK_GENERIC,
     MSG_REASK_LAST_NAME,
+    NAME_CORRECTION_PROMPTS,
 )
 from agent.agents.verification.handlers import MSG_PHONE_NOT_CONFIRMED, MSG_RESTART  # noqa: E402
 from agent.responses.static import MSG_SELF_HARM_ESCALATION  # noqa: E402
@@ -683,6 +686,175 @@ verification_last_name_only_mismatch = Scenario(
         "back once more; on confirmation the flow proceeds straight to the lookup "
         "(via _finish_after_identity) WITHOUT re-asking the already-known Member ID "
         "— turn-8 relationship prompt is the proof. Re-lookup matches → verified."
+    ),
+)
+
+verification_first_name_only_mismatch = Scenario(
+    name="verification_first_name_only_mismatch",
+    flow="pcp",
+    timeout_s=360,
+    retries=1,  # name re-confirmation involves LLM extraction
+    user_turns=[
+        "I need to find a primary care physician in my area.",
+        "emma",  # WRONG first name (on file: Emily)
+        "carter",  # correct last name
+        "yes correct",  # read-back #1 → "Emma Carter" confirmed
+        "m nine zero seven five zero three",  # correct Member ID
+        "April twelfth nineteen eighty-eight",  # correct dob
+        # lookup fails: last name + dob match, first name mismatches →
+        # MSG_REASK_FIRST_NAME, awaiting_slot="first_name". Member ID + dob retained.
+        "emily",  # corrected first name → fresh read-back of "Emily Carter"
+        "yes correct",  # confirm → straight to lookup (NO Member-ID re-ask)
+        "I'm calling for myself",  # relationship
+        "Primary Care Physician",
+        "yes that's correct",
+        "email please",
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no, that's everything",
+    ],
+    turn_expectations={
+        3: TurnExpectation(ai_contains=[r"E-M-M-A.*C-A-R-T-E-R"]),  # read-back #1
+        4: TurnExpectation(ai_contains=[r"member\s*id"], slot_awaiting="member_id"),
+        5: TurnExpectation(ai_contains=[r"(date of birth|birth\s*date|dob)"], slot_awaiting="dob"),
+        # Re-ask after the failed lookup: disclosing FIRST-NAME pool, awaiting first_name.
+        6: TurnExpectation(ai_contains=[pool_regex(MSG_REASK_FIRST_NAME)], slot_awaiting="first_name"),
+        7: TurnExpectation(ai_contains=[r"E-M-I-L-Y.*C-A-R-T-E-R"]),  # corrected read-back
+        8: TurnExpectation(ai_contains=[r"plan holder|dependent"]),  # relationship, not Member-ID
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "member_status_verify": True,
+            "first_name": "Emily",  # corrected
+            "last_name": "Carter",
+            "provider_list_sent": True,
+        },
+        transcript_contains=[r"E-M-M-A", r"E-M-I-L-Y"],
+        transcript_count={r"E-M-I-L-Y": 1},  # corrected first name read back exactly once
+    ),
+    notes=(
+        "First-name-only mismatch: wrong first name, correct last name + Member ID "
+        "+ DOB. Lookup returns member_id_found=True with first_name mismatched → only "
+        "the first name is re-asked (MSG_REASK_FIRST_NAME, awaiting_slot='first_name'); "
+        "Member ID and DOB are retained. name_confirmed resets (a name field changed) "
+        "and the cached caller_first_name is cleared; the corrected name is read back "
+        "once, then the flow proceeds straight to the lookup (no Member-ID re-ask) → "
+        "verified. Turn-8 relationship prompt is the proof."
+    ),
+)
+
+verification_name_mismatch_bare_no_at_readback = Scenario(
+    name="verification_name_mismatch_bare_no_at_readback",
+    flow="pcp",
+    timeout_s=420,
+    retries=2,  # exercises the name-correction sub-loop on top of the partial re-ask
+    user_turns=[
+        "I need to find a primary care physician in my area.",
+        "emily",
+        "carson",  # WRONG last name (on file: Carter)
+        "yes correct",  # read-back #1 → "Emily Carson"
+        "m nine zero seven five zero three",  # correct Member ID
+        "April twelfth nineteen eighty-eight",  # correct dob
+        # lookup fails: last name mismatches → MSG_REASK_LAST_NAME
+        "carson",  # caller restates the wrong name → read-back "Emily Carson"
+        "no",  # BARE NO at the read-back → agent asks for the correct name
+        "it's Emily Carter",  # correct name → read-back "Emily Carter"
+        "yes correct",  # confirm → straight to lookup → verified
+        "I'm calling for myself",  # relationship
+        "Primary Care Physician",
+        "yes that's correct",
+        "email please",
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no, that's everything",
+    ],
+    turn_expectations={
+        # Re-ask after the failed lookup: only the last name.
+        6: TurnExpectation(ai_contains=[pool_regex(MSG_REASK_LAST_NAME)], slot_awaiting="last_name"),
+        7: TurnExpectation(ai_contains=[r"E-M-I-L-Y.*C-A-R-S-O-N"]),  # read-back of restated wrong name
+        8: TurnExpectation(ai_contains=[pool_regex(NAME_CORRECTION_PROMPTS)]),  # after bare "no"
+        9: TurnExpectation(ai_contains=[r"E-M-I-L-Y.*C-A-R-T-E-R"]),  # corrected read-back
+        10: TurnExpectation(ai_contains=[r"plan holder|dependent"]),  # relationship
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "member_status_verify": True,
+            "first_name": "Emily",
+            "last_name": "Carter",  # corrected
+            "provider_list_sent": True,
+        },
+        transcript_contains=[r"C-A-R-S-O-N", r"C-A-R-T-E-R"],
+    ),
+    notes=(
+        "Name-mismatch re-ask plus a 'no' at the confirmation read-back. The last "
+        "name is re-asked (MSG_REASK_LAST_NAME); the caller restates the wrong name, "
+        "the read-back fires, and the caller says a bare 'no' → the name-correction "
+        "sub-loop asks for the correct name, reads it back, and only then confirms. "
+        "name_confirm_attempts (reset to 0 by the partial re-ask) must not exhaust on "
+        "a single rejection. On confirmation the flow proceeds to the lookup → "
+        "verified, with no Member-ID re-ask. retries=2: the nested name loop adds "
+        "extraction non-determinism."
+    ),
+)
+
+verification_multi_field_mismatch_generic = Scenario(
+    name="verification_multi_field_mismatch_generic",
+    flow="pcp",
+    timeout_s=420,
+    retries=2,
+    user_turns=[
+        "I need to find a primary care physician in my area.",
+        "emma",  # WRONG first name
+        "carson",  # WRONG last name
+        "yes correct",  # read-back #1 → "Emma Carson"
+        "m nine zero seven five zero three",  # correct Member ID
+        "April twelfth nineteen eighty-eight",  # correct dob
+        # lookup fails: first AND last mismatch (dob matches) → non-disclosing
+        # MSG_REASK_GENERIC, awaiting_slot="first_name". Member ID + dob retained.
+        "Emily Carter",  # full corrected name → read-back "Emily Carter"
+        "yes correct",  # confirm → straight to lookup → verified
+        "I'm calling for myself",  # relationship
+        "Primary Care Physician",
+        "yes that's correct",
+        "email please",
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no, that's everything",
+    ],
+    turn_expectations={
+        3: TurnExpectation(ai_contains=[r"E-M-M-A.*C-A-R-S-O-N"]),  # read-back #1
+        # Multi-field mismatch → the GENERIC (non-disclosing) pool, awaiting the
+        # first mismatched field in identity order.
+        6: TurnExpectation(ai_contains=[pool_regex(MSG_REASK_GENERIC)], slot_awaiting="first_name"),
+        7: TurnExpectation(ai_contains=[r"E-M-I-L-Y.*C-A-R-T-E-R"]),  # corrected read-back
+        8: TurnExpectation(ai_contains=[r"plan holder|dependent"]),  # relationship
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "member_status_verify": True,
+            "first_name": "Emily",
+            "last_name": "Carter",
+            "provider_list_sent": True,
+        },
+        transcript_contains=[r"E-M-M-A", r"E-M-I-L-Y"],
+    ),
+    notes=(
+        "Multiple identity fields wrong (first + last name) with a correct Member ID "
+        "+ DOB. The lookup reports two mismatches, so the agent uses the NON-disclosing "
+        "MSG_REASK_GENERIC (it does not enumerate every wrong field) and points "
+        "awaiting_slot at the first mismatched field. The caller restates the full "
+        "name; it is read back once and confirmed, then the flow proceeds to the "
+        "lookup → verified. retries=2: re-collecting two name fields from one "
+        "utterance adds extraction non-determinism."
     ),
 )
 
@@ -2161,11 +2333,14 @@ SCENARIOS: list[Scenario] = [
     member_id_exhaustion,  # 10
     dob_no_year_exhaustion,  # 11
     member_id_ambiguous_exhaustion,  # 12
-    # B2. Partial re-ask on identity mismatch (member found, one field wrong)
+    # B2. Partial re-ask on identity mismatch (member found, field(s) wrong)
     verification_dob_only_mismatch,  # 12a
     verification_last_name_only_mismatch,  # 12b
-    verification_member_id_not_found_restart,  # 12c
-    verification_repeated_dob_mismatch_escalates,  # 12d
+    verification_first_name_only_mismatch,  # 12c
+    verification_name_mismatch_bare_no_at_readback,  # 12d
+    verification_multi_field_mismatch_generic,  # 12e
+    verification_member_id_not_found_restart,  # 12f
+    verification_repeated_dob_mismatch_escalates,  # 12g
     # C. Guard escalations
     transfer_request,  # 13
     abuse,  # 14

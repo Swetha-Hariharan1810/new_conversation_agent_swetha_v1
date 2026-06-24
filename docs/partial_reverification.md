@@ -154,8 +154,27 @@ lookup fails (verified == False)
   - `test_partial_reask.py` — `_reask_message` selection and `_partial_reask` /
     `_full_restart` state (matched fields + Member ID preserved, only mismatches
     cleared, `awaiting_slot` points at the first mismatched field).
-- **Live E2E** (`tests/live_e2e/scenarios.py`): `verification_dob_only_mismatch`,
-  `verification_last_name_only_mismatch`, `verification_member_id_not_found_restart`,
-  `verification_repeated_dob_mismatch_escalates`. The harness gained
-  `Expected.transcript_count` to assert the spelled-name read-back appears
-  exactly once on the DOB-only path.
+- **Live E2E** (`tests/live_e2e/scenarios.py`, group B2):
+  - `verification_dob_only_mismatch` — DOB wrong; read-back appears once.
+  - `verification_last_name_only_mismatch` — last name wrong.
+  - `verification_first_name_only_mismatch` — first name wrong (clears cached
+    `caller_first_name`).
+  - `verification_name_mismatch_bare_no_at_readback` — name re-ask plus a bare
+    "no" at the confirmation read-back (name-correction sub-loop).
+  - `verification_multi_field_mismatch_generic` — first + last wrong → the
+    non-disclosing `MSG_REASK_GENERIC`.
+  - `verification_member_id_not_found_restart` — full restart path.
+  - `verification_repeated_dob_mismatch_escalates` — global cap → escalation.
+
+  The harness gained `Expected.transcript_count` to assert the spelled-name
+  read-back appears exactly the expected number of times.
+
+  Run the whole group (optionally as a stress test with `--repeat`):
+
+  ```bash
+  python -m tests.live_e2e.run_live_tests --repeat 10 --only \
+  verification_dob_only_mismatch,verification_last_name_only_mismatch,\
+  verification_first_name_only_mismatch,verification_name_mismatch_bare_no_at_readback,\
+  verification_multi_field_mismatch_generic,verification_member_id_not_found_restart,\
+  verification_repeated_dob_mismatch_escalates
+  ```
