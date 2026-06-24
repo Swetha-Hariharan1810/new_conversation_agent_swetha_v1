@@ -71,6 +71,9 @@ class Expected:
     final_state: dict = field(default_factory=dict)  # key → expected value or callable predicate
     last_ai_contains: list[str] = field(default_factory=list)  # regexes on the final AI message
     transcript_contains: list[str] = field(default_factory=list)  # regexes over all AI lines
+    # regex -> exact number of AI lines that must match (e.g. a spelled-name
+    # read-back that must appear exactly once across the whole transcript)
+    transcript_count: dict[str, int] = field(default_factory=dict)
     final_is_interrupt: bool | None = None  # assert state["is_interrupt"] at END
     max_turns: int = 35
 
@@ -329,6 +332,17 @@ def _check_value(key: str, expected: Any, actual: Any) -> Optional[str]:
     return None
 
 
+def _check_transcript_count(exp: Expected, recorder: RunRecorder) -> list[str]:
+    """Assert each transcript_count regex matches exactly N AI lines."""
+    ai_lines = [t["content"] for t in recorder.transcript if t["role"] == "ai"]
+    out: list[str] = []
+    for pattern, expected_n in exp.transcript_count.items():
+        actual_n = sum(1 for line in ai_lines if _matches(pattern, line))
+        if actual_n != expected_n:
+            out.append(f"transcript: {actual_n} AI line(s) match {pattern!r}, expected {expected_n}")
+    return out
+
+
 def evaluate(scenario: Scenario, recorder: RunRecorder, reached_end: bool) -> list[str]:
     """Evaluate Expected against the recorded run. Returns failure strings."""
 
@@ -391,6 +405,8 @@ def evaluate(scenario: Scenario, recorder: RunRecorder, reached_end: bool) -> li
     for pattern in exp.transcript_contains:
         if not _matches(pattern, ai_text):
             failures.append(f"no AI transcript line matches {pattern!r}")
+
+    failures.extend(_check_transcript_count(exp, recorder))
 
     # next_node END double-check for completed scenarios
     if exp.completed and state.get("next_node") not in _TERMINAL:

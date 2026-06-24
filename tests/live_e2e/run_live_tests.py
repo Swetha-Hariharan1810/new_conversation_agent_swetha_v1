@@ -4,6 +4,7 @@ run_live_tests.py — Canonical CLI entry point for the live E2E suite.
 Usage (from the repo root):
     python -m tests.live_e2e.run_live_tests
     python -m tests.live_e2e.run_live_tests --only pcp_happy_path_fax,claim_happy_path
+    python -m tests.live_e2e.run_live_tests --only verification_dob_only_mismatch --repeat 10
     python -m tests.live_e2e.run_live_tests --skip-mutating
     python -m tests.live_e2e.run_live_tests --results-dir /tmp/live_results
     python -m tests.live_e2e.run_live_tests --list
@@ -85,22 +86,8 @@ def _print_summary(results: list[ScenarioResult]) -> None:
                 print(f"  * {f}")
 
 
-async def _amain(args: argparse.Namespace) -> int:
-    results_dir = Path(args.results_dir)
-    scenarios = _select(args.only, args.skip_mutating)
-    if not scenarios:
-        print("Nothing to run.")
-        return 0
-
-    print(f"Running {len(scenarios)} scenario(s) sequentially against LIVE services.")
-    print("This makes real Azure OpenAI and Salesforce calls — expect cost and latency.\n")
-
-    try:
-        snapshot = await run_preflight(warm=True)
-    except PreflightError as exc:
-        print(f"\nPREFLIGHT FAILED — no scenarios were run.\n\n{exc}", file=sys.stderr)
-        return 2
-
+async def _run_all(scenarios: list[Scenario], results_dir: Path, snapshot) -> list[ScenarioResult]:
+    """Run the selected scenarios once, sequentially."""
     results: list[ScenarioResult] = []
     for scenario in scenarios:
         logger.info("=" * 70)
@@ -115,9 +102,66 @@ async def _amain(args: argparse.Namespace) -> int:
                 # Restore snapshotted SF contact fields even if the scenario failed.
                 await restore_contacts(snapshot)
         results.append(result)
+    return results
 
-    _print_summary(results)
-    return 0 if all(r.passed for r in results) else 1
+
+def _print_stress_aggregate(per_iter: list[list[ScenarioResult]]) -> None:
+    """Per-scenario pass count across N iterations (stress / flakiness view)."""
+    n = len(per_iter)
+    names = [r.name for r in per_iter[0]]
+    name_w = max((len(x) for x in names), default=8) + 2
+    header = f"{'scenario':<{name_w}}{'passed':<10}{'pass rate'}"
+    print("\n" + "=" * len(header))
+    print(f"STRESS AGGREGATE — {n} iterations")
+    print("=" * len(header))
+    print(header)
+    print("-" * len(header))
+    all_green = True
+    for name in names:
+        passes = sum(1 for it in per_iter for r in it if r.name == name and r.passed)
+        rate = passes / n
+        if passes != n:
+            all_green = False
+        flag = "" if passes == n else "  <-- FLAKY/FAIL"
+        print(f"{name:<{name_w}}{f'{passes}/{n}':<10}{rate:>6.0%}{flag}")
+    print("-" * len(header))
+    print("ALL GREEN across every iteration" if all_green else "NOT stable — see flagged scenarios above")
+
+
+async def _amain(args: argparse.Namespace) -> int:
+    results_dir = Path(args.results_dir)
+    scenarios = _select(args.only, args.skip_mutating)
+    if not scenarios:
+        print("Nothing to run.")
+        return 0
+
+    repeat = max(1, args.repeat)
+    print(f"Running {len(scenarios)} scenario(s) sequentially against LIVE services.")
+    if repeat > 1:
+        print(f"Stress mode: {repeat} iterations.")
+    print("This makes real Azure OpenAI and Salesforce calls — expect cost and latency.\n")
+
+    try:
+        snapshot = await run_preflight(warm=True)
+    except PreflightError as exc:
+        print(f"\nPREFLIGHT FAILED — no scenarios were run.\n\n{exc}", file=sys.stderr)
+        return 2
+
+    per_iter: list[list[ScenarioResult]] = []
+    overall_ok = True
+    for i in range(1, repeat + 1):
+        if repeat > 1:
+            print(f"\n########################  ITERATION {i}/{repeat}  ########################")
+        results = await _run_all(scenarios, results_dir, snapshot)
+        _print_summary(results)
+        per_iter.append(results)
+        if not all(r.passed for r in results):
+            overall_ok = False
+
+    if repeat > 1:
+        _print_stress_aggregate(per_iter)
+
+    return 0 if overall_ok else 1
 
 
 def main() -> None:
@@ -136,6 +180,14 @@ def main() -> None:
         "(pcp_zip_update, pcp_zip_inline_update, pcp_fax_update, "
         "pcp_email_update, claim_email_change_on_upload, "
         "email_change_loop_in_notification).",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Run the selected scenarios N times back-to-back (stress / flakiness "
+        "check). Prints a per-iteration summary plus an aggregate pass rate. Default 1.",
     )
     parser.add_argument(
         "--results-dir",

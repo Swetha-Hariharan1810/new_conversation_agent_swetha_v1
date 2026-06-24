@@ -318,6 +318,43 @@ class VerificationAgent(BaseAgent):
             return await self._handle_name_confirmation(state, messages, last_user)
 
         # Salesforce lookup
+        #
+        # ── Partial re-ask round-trip (wrong DOB only) ───────────────────────────
+        # Trace of the targeted re-ask path, e.g. caller's DOB is wrong but name +
+        # Member ID match:
+        #
+        #   Turn N (all four slots collected):
+        #     pipeline.collect() completes → lookup_and_verify() runs →
+        #     full match fails → lookup_member returns member_id_found=True with
+        #     field_matches={first_name:T, last_name:T, dob:F} →
+        #     handlers._partial_reask(mismatched=["dob"]) returns an interrupt that:
+        #       • clears ONLY dob (""); keeps first_name, last_name, member_id
+        #       • leaves name_confirmed=True untouched (no name field mismatched)
+        #       • sets awaiting_slot="dob" and verification_restart_index=len(msgs)
+        #       • asks MSG_REASK_DOB  ("…date of birth once more?")
+        #     member_status_verify is NOT set, so the loop stays open.
+        #
+        #   Turn N+1 (caller restates DOB):
+        #     • name gate (line ~136) skipped: name_confirmed is True
+        #     • both readback intercepts (lines ~260, ~316) skipped: name_confirmed True
+        #       → NO spelled-name read-back, NO name/Member-ID re-ask
+        #     • awaiting_slot="dob" gives the extractor the correct slot context
+        #     • pipeline.collect() skips the still-populated first_name / last_name /
+        #       member_id and collects only dob (first empty slot in identity order)
+        #     • member_status_verify still falsy → lookup_and_verify() runs AGAIN
+        #       with the corrected dob → fresh full match → _signal_verified().
+        # ─────────────────────────────────────────────────────────────────────────
+        return await self._finish_after_identity(state, collected, messages, call_intent, result)
+
+    async def _finish_after_identity(
+        self, state: State, collected: dict, messages: list, call_intent: str, decision
+    ) -> dict:
+        """Salesforce lookup → post-lookup slot → verified signal.
+
+        Shared by run()'s main path and _name_confirmed_proceed's all-slots-present
+        branch (name-only partial re-ask), so a corrected name flows straight to the
+        lookup instead of re-asking an already-known Member ID.
+        """
         if not state.get("member_status_verify"):
             member_record, interrupt = await lookup_and_verify(self, state, collected)
             if interrupt:
@@ -344,7 +381,7 @@ class VerificationAgent(BaseAgent):
             collected,
             call_intent,
             member_record,
-            result,
+            decision,
             self._claims_pipeline,
             self._provider_pipeline,
         ):
@@ -423,7 +460,7 @@ class VerificationAgent(BaseAgent):
         # ── OUTCOME 1: confirmed ─────────────────────────────────────────────
         if name_conf_raw == "yes":
             logger.info(LOG_NAME_CONFIRMED)
-            return self._name_confirmed_proceed(state)
+            return await self._name_confirmed_proceed(state, messages)
 
         # ── OUTCOME 2: inline correction ─────────────────────────────────────
         corrected_first = normalize_name(corrected_first_raw) if corrected_first_raw else ""
@@ -528,19 +565,24 @@ class VerificationAgent(BaseAgent):
         retry["awaiting_slot"] = _NAME_CORRECTION_SLOT
         return retry
 
-    def _name_confirmed_proceed(self, state: State) -> dict:
+    async def _name_confirmed_proceed(self, state: State, messages: list) -> dict:
         """
-        Mark the name confirmed and ask for the next identity slot directly.
+        Mark the name confirmed and continue identity collection.
 
-        The member's "yes" to the readback has already been consumed by THIS
-        turn. We must not re-enter run() with is_interrupt=False, because that
-        reprocesses the same stale "yes": run() would fire a second extraction
-        LLM call (now classified against member_id) and the pipeline would then
-        treat the "yes" as a non-answer, firing a recovery-message LLM call — so
-        the member hears a retry prompt instead of the clean member_id ask.
+        Normal first-time flow: member_id / dob are still empty, so deliver the
+        next-slot transition prompt and pause (is_interrupt=True) so the next
+        human turn is the real member_id/dob answer. We must not re-enter run()
+        with is_interrupt=False on this path, because that reprocesses the same
+        stale "yes": run() would fire a second extraction LLM call (classified
+        against member_id) and the pipeline would treat the "yes" as a non-answer,
+        firing a recovery-message LLM call — so the member hears a retry prompt
+        instead of the clean member_id ask.
 
-        Instead, deliver the next-slot transition prompt here and pause
-        (is_interrupt=True) so the next human turn is the real member_id answer.
+        Name-only partial re-ask: member_id AND dob were retained, so there is no
+        empty identity slot to ask. Re-asking would produce a spurious Member-ID
+        prompt, so instead proceed straight to the Salesforce lookup with the
+        corrected name. (No stale-"yes" hazard here: with every slot filled, the
+        pipeline has nothing to misclassify the "yes" against.)
         """
         from agent.responses.builder import build_transition_prompt
         from agent.slots.types import SlotType
@@ -554,16 +596,38 @@ class VerificationAgent(BaseAgent):
 
         ctx = ConversationContext.from_state(state)
         ctx.update_caller_name(first)
-        state = {**state, "conversation_context": ctx.to_dict()}
+        state = {
+            **state,
+            "first_name": first,
+            "last_name": last,
+            "name_confirmed": True,
+            "name_confirm_attempts": 0,
+            "conversation_context": ctx.to_dict(),
+        }
 
-        # Next identity slot to collect: member_id, then dob.
-        next_slot = next(
-            (s for s in IDENTITY_SLOT_ORDER if not str(state.get(s) or "").strip()),
-            "member_id",
-        )
+        # Next identity slot to collect (member_id, then dob), or None if every
+        # identity slot is already present (name-only partial re-ask).
+        next_slot = next((s for s in IDENTITY_SLOT_ORDER if not str(state.get(s) or "").strip()), None)
+
+        if next_slot is None:
+            # All identity slots present → re-run the lookup with the corrected
+            # name rather than re-asking an already-known slot.
+            collected = {k: (state.get(k) or "").strip() for k in IDENTITY_SLOT_ORDER}
+            call_intent = state.get("call_intent", "")
+            result = await self._finish_after_identity(state, collected, messages, call_intent, None)
+            # Persist the just-confirmed name on the RETURNED dict. On success
+            # _finish_after_identity returns the post-lookup interrupt
+            # (relationship / phone) or the COMPLETE signal — neither carries
+            # name_confirmed, so without this the gate would re-fire the read-back
+            # on the next (post-lookup) turn. If the lookup instead returned a
+            # re-ask that deliberately set name_confirmed (full restart, or a
+            # fresh name mismatch → False), respect that value.
+            if isinstance(result, dict) and "name_confirmed" not in result:
+                result["name_confirmed"] = True
+                result["name_confirm_attempts"] = 0
+            return result
+
         slot_type = SlotType.MEMBER_ID if next_slot == "member_id" else SlotType.DOB
-
-        ctx = ConversationContext.from_state(state)
         msg = build_transition_prompt(slot_type, ctx)
 
         result = self.ask_member(state, msg)

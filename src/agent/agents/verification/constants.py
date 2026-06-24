@@ -93,7 +93,54 @@ MSG_NAME_CONFIRM_EXHAUST = [
     "I wasn't able to verify the name after several attempts. Connecting you with a specialist now.",
 ]
 
+# =========================================================
+# Partial re-ask messages (targeted identity correction)
+# =========================================================
+# Delivered when the Member ID was found but one identity field didn't match.
+# Disclosing style (Phase 0 decision): name the single mismatched field so the
+# caller knows exactly what to restate. Used by lookup_and_verify's partial
+# re-ask path; matched fields and the Member ID are preserved.
+
+MSG_REASK_DOB = [
+    "Thank you. Everything matched except the date of birth — "
+    "could you tell me your date of birth once more?",
+    "I found your account, but the date of birth didn't quite match. "
+    "What is your date of birth?",
+    "Almost there — the only detail that didn't match was the date of birth. "
+    "Could you confirm your date of birth for me again?",
+]
+
+MSG_REASK_LAST_NAME = [
+    "Thank you. Everything matched except the last name — "
+    "could you give me your last name once more?",
+    "I found your account, but the last name didn't quite match. "
+    "Could you confirm your last name for me?",
+    "Almost there — the only detail that didn't match was the last name. "
+    "Could you spell your last name for me again?",
+]
+
+MSG_REASK_FIRST_NAME = [
+    "Thank you. Everything matched except the first name — "
+    "could you give me your first name once more?",
+    "I found your account, but the first name didn't quite match. "
+    "Could you confirm your first name for me?",
+    "Almost there — the only detail that didn't match was the first name. "
+    "Could you tell me your first name again?",
+]
+
+# Non-disclosing fallback: used when more than one field mismatched, so we don't
+# enumerate every wrong detail back to the caller.
+MSG_REASK_GENERIC = [
+    "Thank you. A couple of details didn't quite match — "
+    "could you confirm your name and date of birth for me again?",
+    "I found your account, but some of the details didn't match. "
+    "Let's recheck them — could you give me your name and date of birth once more?",
+    "We're almost there — a couple of details didn't line up. "
+    "Could you confirm your name and date of birth again?",
+]
+
 # ── New log labels ────────────────────────────────────────────────────────────
+LOG_PARTIAL_REASK = "VerificationAgent: partial re-ask — clearing only mismatched slots"
 LOG_NAME_READBACK = "VerificationAgent: name readback delivered"
 LOG_NAME_CONFIRMED = "VerificationAgent: name confirmed by member"
 LOG_NAME_CORRECTED = "VerificationAgent: name corrected by member"
