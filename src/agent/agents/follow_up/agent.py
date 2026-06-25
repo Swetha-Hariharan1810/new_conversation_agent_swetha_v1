@@ -16,12 +16,16 @@ Two escalation rules, both owned entirely by Python:
 
 from __future__ import annotations
 
+import re
+
 from agent.agents.follow_up.constants import (
     AGENT_NAME,
+    APPEAL_GRIEVANCE_KEYWORDS,
     BARE_AFFIRMATIONS,
     CLOSURE_KEYWORDS,
     FLOW_COMPLETE_FLAGS,
     INTAKE_INTENTS,
+    INTAKE_RESCREEN_INTENTS,
     LOG_ANSWERED,
     LOG_CANNOT_ANSWER,
     LOG_CLOSURE,
@@ -56,6 +60,29 @@ _FORBIDDEN_ANSWER_PHRASES = (
     "i can help you with",
     "i can help with",
 )
+
+# Whole-word match over the appeal/grievance keywords. Word boundaries keep
+# "appeal" from matching inside unrelated words and let each surface form
+# (appeal/appeals/appealing/…) match exactly the keyword listed.
+_APPEAL_GRIEVANCE_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(k) for k in sorted(APPEAL_GRIEVANCE_KEYWORDS)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_appeal_or_grievance(text: str) -> bool:
+    """True when the member's utterance mentions an appeal or grievance.
+
+    Appeals and grievances are out_of_scope topics, but the follow-up classifier
+    has no tag for them and its new_intent branch only fires on a cross-intent
+    switch — so mid-call they arrive as a plain `question`. This keyword gate
+    detects them directly so follow_up can reroute back through intake, which
+    classifies them out_of_scope and routes the caller to the appeals/grievance
+    team. Keyword-based by design: it must not depend on the LLM's follow_up tag.
+    """
+    if not text:
+        return False
+    return bool(_APPEAL_GRIEVANCE_RE.search(text))
 
 
 def _last_user_is_question(last_user: str) -> bool:
@@ -237,6 +264,16 @@ class FollowUpAgent(BaseAgent):
         follow_up_intent = extraction_result.follow_up_intent if extraction_result else FollowUpIntent.UNSURE
         answer = (extraction_result.answer or "").strip() if extraction_result else ""
 
+        # ── APPEAL / GRIEVANCE — keyword gate ────────────────────────────────
+        # Appeals/grievances are out_of_scope, but the follow-up classifier has no
+        # tag for them and new_intent only fires on cross-intent switches, so they
+        # surface here as a plain `question`. Detect them by keyword (not LLM tag)
+        # and reroute back through intake, whose out_of_scope screening hands the
+        # caller to the appeals/grievance team.
+        if _is_appeal_or_grievance(last_user):
+            logger.info("follow_up_agent: appeal/grievance keyword detected — rerouting through intake")
+            return self._reroute_through_intake(state, "claim_services")
+
         # ── DONE ─────────────────────────────────────────────────────────────
         if follow_up_intent == FollowUpIntent.DONE:
             logger.info(LOG_CLOSURE)
@@ -261,6 +298,12 @@ class FollowUpAgent(BaseAgent):
         if follow_up_intent == FollowUpIntent.NEW_INTENT:
             detected = (extraction_result.detected_intent or "").strip()
             if is_new_intake_intent(detected, state):
+                # Fresh intake intent. Most go straight to verification, but a few
+                # must pass back through intake first so its front-door screening
+                # (e.g. the unsupported-provider-type gate) re-runs before identity
+                # is re-collected.
+                if detected.lower() in INTAKE_RESCREEN_INTENTS:
+                    return self._reroute_through_intake(state, detected)
                 # Fresh intake intent → full reset + re-verify before the new flow.
                 return self._reroute_through_verification(state, detected)
             # Not a fresh intake intent (missing/unrecognised detected_intent, or a
@@ -345,6 +388,62 @@ class FollowUpAgent(BaseAgent):
         )
         updates = reset_for_new_intent(state, detected_intent)
         updates["next_node"] = AgentNode.VERIFICATION.value
+        updates["is_interrupt"] = False
+        updates["active_agent"] = self.AGENT_NAME
+        updates["metadata_events"] = []
+        updates["app_run_id"] = state.get("app_run_id", "")
+        return updates
+
+    def _reroute_through_intake(self, state: State, detected_intent: str) -> dict:
+        """
+        A fresh intake intent that must be re-screened was detected mid-follow-up.
+        Like ``_reroute_through_verification`` this fully resets the conversation,
+        but routes to the *intake* node instead of verification so intake re-applies
+        its front-door screening (e.g. the unsupported-provider-type gate) before
+        identity is re-collected.
+
+        ``call_intent`` is deliberately cleared here. ``reset_for_new_intent`` stages
+        the intent in ``call_intent``, but intake's entry guard
+        (``if state.get("call_intent")``) skips classification — and therefore
+        screening — whenever ``call_intent`` is set, routing straight to
+        verification. Leaving it populated would defeat the re-screen. With
+        ``call_intent`` empty, intake re-classifies the triggering utterance, runs
+        its screening, then sets ``call_intent`` itself and hands off to verification
+        exactly as on a first-time call.
+
+        ``pending_intent`` and ``reverify_bridge_pending`` — both meant for the
+        direct-to-verification path — are cleared for the same reason: intake owns
+        the bridge message, and the subsequent verification should behave as a
+        first-time verification routed by ``call_intent``.
+
+        The three overrides on top of ``reset_for_new_intent``:
+          * ``call_intent = ""``             — force intake to re-classify (the
+            entry-guard fix; a populated call_intent skips classify + screen).
+          * ``pending_intent = ""``          — take the normal first-time
+            intake → verification → orchestrator path; no mid-call-switch dispatch.
+          * ``reverify_bridge_pending = False`` — intake emits its own first-name
+            bridge after classifying, so don't have verification double-bridge.
+
+        Routing reuses the intake NODE rather than a bespoke edge: setting
+        ``next_node = intake_agent`` with ``is_interrupt = False`` runs intake in the
+        same super-step (no extra round-trip), and we inherit ``intake_routing``'s
+        existing escalate / verification-bridge / END dispatch for free. Intake's
+        greeting is skipped because ``messages`` is non-empty mid-call, so the
+        triggering utterance is the one it re-classifies.
+        """
+        logger.info(
+            LOG_NEW_INTENT,
+            extra={
+                "detected_intent": detected_intent,
+                "previous_intent": state.get("call_intent", ""),
+                "route": "intake_rescreen",
+            },
+        )
+        updates = reset_for_new_intent(state, detected_intent)
+        updates["call_intent"] = ""  # force intake to re-classify + re-screen
+        updates["pending_intent"] = ""  # intake → verification routes by call_intent
+        updates["reverify_bridge_pending"] = False  # intake delivers its own bridge
+        updates["next_node"] = AgentNode.INTAKE.value
         updates["is_interrupt"] = False
         updates["active_agent"] = self.AGENT_NAME
         updates["metadata_events"] = []

@@ -10,6 +10,27 @@ AGENT_NAME = "follow_up_agent"
 # Mirrors the routable service flows in intake.models.IntentTag.
 INTAKE_INTENTS: frozenset[str] = frozenset({"provider_services", "claim_services"})
 
+# Subset of INTAKE_INTENTS that must be handed back to the *intake* agent rather
+# than straight to verification, so intake re-applies its front-door screening
+# (e.g. the unsupported-provider-type gate that escalates before identity is ever
+# collected). Intents NOT listed here stay on the direct-to-verification path.
+#
+# claim_services is intentionally excluded: it has no unsupported-type gate at
+# intake, so re-screening would add nothing and only cost an extra intake hop.
+# Adding "claim_services" here is the ONLY change needed to re-screen claims too.
+INTAKE_RESCREEN_INTENTS: frozenset[str] = frozenset({"provider_services"})
+
+# Appeal / grievance keyword gate. Appeals and grievances are out_of_scope topics
+# (see extraction/intake.md) that intake routes to the appeals/grievance team. The
+# follow-up classifier has NO tag for them, and its new_intent branch only fires on
+# a cross-intent switch (provider ↔ claim) — so an appeal raised mid-call surfaces
+# as a plain `question`. This keyword set lets follow_up detect them directly and
+# reroute back through intake for out_of_scope screening, independent of the LLM
+# classification. Matched as whole words (word boundaries) to avoid false positives.
+APPEAL_GRIEVANCE_KEYWORDS: frozenset[str] = frozenset(
+    {"appeal", "appeals", "appealing", "appealed", "grievance", "grievances"}
+)
+
 # Per-intent "prior flow already completed" flags. Used so a same-intent
 # request (e.g. a second, distinct claim) qualifies as a fresh intake while a
 # same-intent clarification does not.
