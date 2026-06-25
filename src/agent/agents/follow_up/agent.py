@@ -16,8 +16,11 @@ Two escalation rules, both owned entirely by Python:
 
 from __future__ import annotations
 
+import re
+
 from agent.agents.follow_up.constants import (
     AGENT_NAME,
+    APPEAL_GRIEVANCE_KEYWORDS,
     BARE_AFFIRMATIONS,
     CLOSURE_KEYWORDS,
     FLOW_COMPLETE_FLAGS,
@@ -57,6 +60,29 @@ _FORBIDDEN_ANSWER_PHRASES = (
     "i can help you with",
     "i can help with",
 )
+
+# Whole-word match over the appeal/grievance keywords. Word boundaries keep
+# "appeal" from matching inside unrelated words and let each surface form
+# (appeal/appeals/appealing/…) match exactly the keyword listed.
+_APPEAL_GRIEVANCE_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(k) for k in sorted(APPEAL_GRIEVANCE_KEYWORDS)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_appeal_or_grievance(text: str) -> bool:
+    """True when the member's utterance mentions an appeal or grievance.
+
+    Appeals and grievances are out_of_scope topics, but the follow-up classifier
+    has no tag for them and its new_intent branch only fires on a cross-intent
+    switch — so mid-call they arrive as a plain `question`. This keyword gate
+    detects them directly so follow_up can reroute back through intake, which
+    classifies them out_of_scope and routes the caller to the appeals/grievance
+    team. Keyword-based by design: it must not depend on the LLM's follow_up tag.
+    """
+    if not text:
+        return False
+    return bool(_APPEAL_GRIEVANCE_RE.search(text))
 
 
 def _last_user_is_question(last_user: str) -> bool:
@@ -237,6 +263,16 @@ class FollowUpAgent(BaseAgent):
 
         follow_up_intent = extraction_result.follow_up_intent if extraction_result else FollowUpIntent.UNSURE
         answer = (extraction_result.answer or "").strip() if extraction_result else ""
+
+        # ── APPEAL / GRIEVANCE — keyword gate ────────────────────────────────
+        # Appeals/grievances are out_of_scope, but the follow-up classifier has no
+        # tag for them and new_intent only fires on cross-intent switches, so they
+        # surface here as a plain `question`. Detect them by keyword (not LLM tag)
+        # and reroute back through intake, whose out_of_scope screening hands the
+        # caller to the appeals/grievance team.
+        if _is_appeal_or_grievance(last_user):
+            logger.info("follow_up_agent: appeal/grievance keyword detected — rerouting through intake")
+            return self._reroute_through_intake(state, "claim_services")
 
         # ── DONE ─────────────────────────────────────────────────────────────
         if follow_up_intent == FollowUpIntent.DONE:
