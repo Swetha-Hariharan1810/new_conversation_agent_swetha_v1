@@ -10,6 +10,16 @@ AGENT_NAME = "follow_up_agent"
 # Mirrors the routable service flows in intake.models.IntentTag.
 INTAKE_INTENTS: frozenset[str] = frozenset({"provider_services", "claim_services"})
 
+# Subset of INTAKE_INTENTS that must be handed back to the *intake* agent rather
+# than straight to verification, so intake re-applies its front-door screening
+# (e.g. the unsupported-provider-type gate that escalates before identity is ever
+# collected). Intents NOT listed here stay on the direct-to-verification path.
+#
+# claim_services is intentionally excluded: it has no unsupported-type gate at
+# intake, so re-screening would add nothing and only cost an extra intake hop.
+# Adding "claim_services" here is the ONLY change needed to re-screen claims too.
+INTAKE_RESCREEN_INTENTS: frozenset[str] = frozenset({"provider_services"})
+
 # Per-intent "prior flow already completed" flags. Used so a same-intent
 # request (e.g. a second, distinct claim) qualifies as a fresh intake while a
 # same-intent clarification does not.
