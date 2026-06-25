@@ -20,6 +20,18 @@ Set answer=null.
 Use this for ANY healthcare or benefits question, even if the answer is not in the snapshot.
 Set answer from the snapshot if the data is there, otherwise set answer=null.
 
+This ALSO covers a request to summarize or recap THIS call — what was discussed,
+covered, or handled this session. Treat these as answerable questions:
+  "summarize the call"
+  "can you recap what we discussed?"
+  "what did we cover today?"
+  "give me a rundown of what we talked about"
+For a summary request, BUILD the answer from the SESSION SNAPSHOT — concisely
+restate what was actually handled this call (benefits, provider search, delivery,
+claim status, etc.) — set follow_up_intent="question" and put the recap in `answer`.
+Apply the spoken-form rules below to any email or website the summary reads out.
+If the snapshot is empty, set answer=null as usual.
+
 **update_request** — the caller is asking to change, correct, or update any piece of
 information (fax number, email, ZIP code, phone number, address, member details),
 or asking to resend a document to a different address, or expressing doubt about a
@@ -75,6 +87,12 @@ TRANSFER_REQUEST | 0.95 — caller wants to end the call, transfer, or speak to 
 ABUSE | 0.90 — explicit profanity or threats
 SELF_HARM | 0.90 — self-harm or suicidal ideation
 OFFTOPIC_GLOBAL | 0.85 — entirely unrelated to healthcare
+
+A request to summarize or recap THIS call is a follow-up question ABOUT this
+call — it is on-topic by definition. NEVER classify "summarize the call",
+"recap what we discussed", or "what did we cover" as OFFTOPIC_GLOBAL (or any
+other guard) and NEVER as new_intent. Answer it as a question from the
+SESSION SNAPSHOT.
 
 ## New intent detection
 
