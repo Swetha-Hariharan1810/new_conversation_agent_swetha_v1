@@ -379,6 +379,21 @@ class FollowUpAgent(BaseAgent):
         direct-to-verification path — are cleared for the same reason: intake owns
         the bridge message, and the subsequent verification should behave as a
         first-time verification routed by ``call_intent``.
+
+        The three overrides on top of ``reset_for_new_intent``:
+          * ``call_intent = ""``             — force intake to re-classify (the
+            entry-guard fix; a populated call_intent skips classify + screen).
+          * ``pending_intent = ""``          — take the normal first-time
+            intake → verification → orchestrator path; no mid-call-switch dispatch.
+          * ``reverify_bridge_pending = False`` — intake emits its own first-name
+            bridge after classifying, so don't have verification double-bridge.
+
+        Routing reuses the intake NODE rather than a bespoke edge: setting
+        ``next_node = intake_agent`` with ``is_interrupt = False`` runs intake in the
+        same super-step (no extra round-trip), and we inherit ``intake_routing``'s
+        existing escalate / verification-bridge / END dispatch for free. Intake's
+        greeting is skipped because ``messages`` is non-empty mid-call, so the
+        triggering utterance is the one it re-classifies.
         """
         logger.info(
             LOG_NEW_INTENT,
