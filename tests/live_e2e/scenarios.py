@@ -2607,6 +2607,209 @@ claim_then_pcp_new_intent = Scenario(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# M2. Follow-up RE-SCREEN through intake (front-door screening on a mid-call pivot)
+#
+# A fresh intake intent raised during follow-up is routed back through the
+# INTAKE node (not straight to verification) so intake re-applies its front-door
+# screening. Two triggers:
+#
+#   * provider_services is in follow_up.INTAKE_RESCREEN_INTENTS, so a new provider
+#     request re-runs intake's unsupported-provider-type gate. The payoff: an
+#     UNSUPPORTED specialty escalates at intake BEFORE any identity is
+#     re-collected (vs. the old direct-to-verification path that re-verified
+#     first). A SUPPORTED specialty re-classifies cleanly and completes.
+#   * Appeals / grievances are out_of_scope but the follow-up classifier has no
+#     tag for them, so follow_up._is_appeal_or_grievance() catches them by keyword
+#     and reroutes through intake, whose out_of_scope screening routes the caller
+#     to the right team and hard-ENDs.
+#
+# The decisive, LLM-independent fact in the escalate / out_of_scope cases is that
+# the member is NEVER re-verified — member_status_verify and first_name are falsy
+# at END (the pivot reset cleared them and screening fired before identity was
+# re-collected). That is what proves the re-screen ran through the intake node.
+#
+# ASSERTION NOTE: agent-side escalations (the unsupported-provider case) do not
+# surface a harvestable escalation reason or AgentCallTransfer event in this
+# codebase — signal_escalate and escalation_agent both emit metadata_events=[],
+# and the reason lives only in last_agent_signal, which escalation_agent
+# overwrites with a COMPLETE signal before the next graph pause. So these
+# scenarios assert on escalated (via the reference number escalation_agent
+# stamps), the staged pre-escalation message, the final AI text, and the
+# no-re-verification state — not on escalation_reason_contains / transfer_event.
+# The out_of_scope cases DO carry a top-level escalation_reason, so they assert it
+# the same way intake_out_of_scope_appeal does.
+# ──────────────────────────────────────────────────────────────────────────────
+
+followup_unsupported_provider_rescreen = Scenario(
+    name="followup_unsupported_provider_rescreen",
+    flow="pcp",
+    timeout_s=360,
+    retries=1,  # follow_up new_intent + intake unsupported-type classification are LLM-driven
+    user_turns=_PCP_TO_FOLLOW_UP
+    + [
+        # Follow-up phase: pivot to a brand-new UNSUPPORTED provider request.
+        # provider_services is a re-screen intent → _reroute_through_intake →
+        # intake re-classifies → provider_type_unsupported → escalates, all
+        # BEFORE any re-verification.
+        "Actually, I need to find an oncologist instead.",
+    ],
+    expect=Expected(
+        completed=True,  # reaches END via escalation_agent
+        escalated=True,  # escalation_agent stamps an escalation_reference_number
+        transfer_event=False,  # current code emits no AgentCallTransfer metadata event
+        final_is_interrupt=False,
+        final_state={
+            # DECISIVE: the unsupported type was rejected at intake's front door,
+            # before identity was re-collected. If either of these is truthy the
+            # re-screen wrongly went through verification first.
+            "member_status_verify": falsy,
+            "first_name": falsy,
+            # pending_intent is cleared on the intake re-screen path.
+            "pending_intent": falsy,
+            # The unsupported-type message is staged for escalation_agent.
+            "escalation_pre_message": contains("Orthopedic"),
+        },
+        # The member hears the specialty named plus the five supported types.
+        last_ai_contains=[
+            r"oncologist",
+            r"(Primary Care|Pediatrician|Cardiologist|Dermatologist|Orthopedic)",
+        ],
+    ),
+    notes=(
+        "Re-screen payoff. Emily completes the provider flow, then during follow-up "
+        "asks for an oncologist. follow_up classifies new_intent "
+        "(detected_intent=provider_services); is_new_intake_intent is True and "
+        "provider_services is in INTAKE_RESCREEN_INTENTS, so _reroute_through_intake "
+        "resets the call, CLEARS call_intent, and routes to the intake node. Intake "
+        "re-classifies the request as provider_type_unsupported and escalates "
+        "immediately — member_status_verify must be falsy because no re-verification "
+        "ran. retries=1: new_intent + unsupported-type classification are LLM-driven."
+    ),
+)
+
+followup_supported_provider_rescreen = Scenario(
+    name="followup_supported_provider_rescreen",
+    flow="pcp",
+    timeout_s=420,
+    retries=1,  # follow_up new_intent + provider/delivery slots are LLM-driven
+    user_turns=_PCP_TO_FOLLOW_UP
+    + [
+        # Follow-up phase: pivot to a brand-new SUPPORTED provider request
+        # (dermatologist is one of the five supported types). Re-screens through
+        # intake, re-classifies cleanly as provider_services, then completes.
+        "Actually, I also need to find a dermatologist.",
+        # Re-verification (provider slot order: first/last name → readback →
+        # member id → dob → relationship). Same caller, Emily M907503.
+        "emily",
+        "carter",
+        "yes correct",
+        "m nine zero seven five zero three",
+        "April twelfth nineteen eighty eight",
+        "I'm calling for myself",  # relationship
+        # Now in provider_search under the re-screened intent.
+        "Dermatologist",  # provider type
+        "yes that's correct",  # zip on file confirmed
+        "send it to my fax",  # delivery method
+        "yes that's correct",  # fax on file confirmed
+        "no thanks",  # decline benefits
+        "no thank you",  # decline Care Coach
+        "no, that's everything",  # close
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=False,  # supported type must NOT escalate
+        final_state={
+            # Re-verified after the pivot — verified again under the re-screened intent.
+            "member_status_verify": True,
+            "call_intent": "provider_services",
+            "provider_type": "Dermatologist",
+            "provider_list_sent": True,
+            # No mid-call-switch dispatch on the intake re-screen path.
+            "pending_intent": falsy,
+        },
+        # Proof of re-verification: identity is re-asked after the pivot.
+        transcript_contains=[r"first name"],
+    ),
+    notes=(
+        "Supported re-screen completes end to end. Emily completes the provider flow, "
+        "then during follow-up asks for a dermatologist (a supported specialty). "
+        "_reroute_through_intake resets the call and routes to intake, which "
+        "re-classifies provider_services, re-sets call_intent, and emits its own "
+        "first-name bridge. Emily re-verifies and the second provider flow completes "
+        "(fax delivery, declining benefits/Care-Coach). Proves the reset → intake "
+        "re-screen → verify → domain path is intact for the happy case. retries=1: "
+        "new_intent + provider_type/delivery_method extraction are LLM-driven."
+    ),
+)
+
+followup_appeal_rescreen = Scenario(
+    name="followup_appeal_rescreen",
+    flow="pcp",
+    retries=1,  # intake out_of_scope classification is the primary signal
+    user_turns=_PCP_TO_FOLLOW_UP
+    + [
+        # Follow-up phase: raise an appeal. The keyword gate fires regardless of
+        # the follow-up LLM tag and reroutes through intake → out_of_scope.
+        "Actually, I'd like to appeal a denial on my claim.",
+    ],
+    expect=Expected(
+        completed=True,  # graph ENDs directly via intake out_of_scope (no escalation_agent)
+        escalated=False,
+        transfer_event=False,
+        final_is_interrupt=False,
+        last_ai_contains=[r"appeal", r"1-\d{3}-\d{3}-\d{4}"],
+        final_state={
+            "escalation_reason": contains("outside covered workflows"),
+            # No re-verification — out_of_scope is decided at the front door.
+            "member_status_verify": falsy,
+            "first_name": falsy,
+        },
+    ),
+    notes=(
+        "Appeal raised in follow-up. follow_up._is_appeal_or_grievance() catches the "
+        "'appeal' keyword and calls _reroute_through_intake, which resets the call "
+        "and routes to intake. Intake classifies out_of_scope and routes the caller "
+        "to the appeals team (1-800-555-0105) with a hard END. member_status_verify "
+        "must be falsy — the request never reached re-verification. retries=1: the "
+        "intake out_of_scope classification is LLM-driven."
+    ),
+)
+
+followup_grievance_rescreen = Scenario(
+    name="followup_grievance_rescreen",
+    flow="pcp",
+    retries=1,
+    user_turns=_PCP_TO_FOLLOW_UP
+    + [
+        "Actually, I want to file a grievance about how my claim was handled.",
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        transfer_event=False,
+        final_is_interrupt=False,
+        # A team number is given; "grievance" is NOT in OUT_OF_SCOPE_KEYWORD_ROUTING,
+        # so it falls back to the default support team rather than a dedicated one.
+        last_ai_contains=[r"1-\d{3}-\d{3}-\d{4}"],
+        final_state={
+            "escalation_reason": contains("outside covered workflows"),
+            "member_status_verify": falsy,
+            "first_name": falsy,
+        },
+    ),
+    notes=(
+        "Grievance half of APPEAL_GRIEVANCE_KEYWORDS. The keyword gate reroutes "
+        "through intake → out_of_scope, hard END, no re-verification. Asserts the "
+        "out_of_scope OUTCOME (reason + a routed number), NOT a specific team, "
+        "because 'grievance' is not yet in OUT_OF_SCOPE_KEYWORD_ROUTING and therefore "
+        "falls back to the default support team — this scenario documents that gap "
+        "rather than masking it. retries=1: intake out_of_scope classification is "
+        "LLM-driven."
+    ),
+)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # K. Indirect-decline regression (delivery_management fax/email)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -2678,6 +2881,11 @@ SCENARIOS: list[Scenario] = [
     # M. New-intent mid-session (member pivots to a different service in follow-up)
     pcp_then_claim_new_intent,  # 31a — PCP -> claim new_intent (no re-verify)
     claim_then_pcp_new_intent,  # 31b — claim -> PCP new_intent (mutating)
+    # M2. Follow-up re-screen through intake (front-door screening on a mid-call pivot)
+    followup_unsupported_provider_rescreen,  # 31c — unsupported provider escalates pre-reverify
+    followup_supported_provider_rescreen,  # 31d — supported provider re-screen completes
+    followup_appeal_rescreen,  # 31e — appeal keyword → out_of_scope
+    followup_grievance_rescreen,  # 31f — grievance keyword → out_of_scope
     # G. Contact-change loop limits
     zip_change_loop_escalates,  # 32  (redefined: invalid-ZIP slot exhaustion)
     email_change_loop_in_notification,  # 33 (mutating)
