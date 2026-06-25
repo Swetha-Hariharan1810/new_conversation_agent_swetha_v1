@@ -22,6 +22,7 @@ from agent.agents.follow_up.constants import (
     CLOSURE_KEYWORDS,
     FLOW_COMPLETE_FLAGS,
     INTAKE_INTENTS,
+    INTAKE_RESCREEN_INTENTS,
     LOG_ANSWERED,
     LOG_CANNOT_ANSWER,
     LOG_CLOSURE,
@@ -261,6 +262,12 @@ class FollowUpAgent(BaseAgent):
         if follow_up_intent == FollowUpIntent.NEW_INTENT:
             detected = (extraction_result.detected_intent or "").strip()
             if is_new_intake_intent(detected, state):
+                # Fresh intake intent. Most go straight to verification, but a few
+                # must pass back through intake first so its front-door screening
+                # (e.g. the unsupported-provider-type gate) re-runs before identity
+                # is re-collected.
+                if detected.lower() in INTAKE_RESCREEN_INTENTS:
+                    return self._reroute_through_intake(state, detected)
                 # Fresh intake intent → full reset + re-verify before the new flow.
                 return self._reroute_through_verification(state, detected)
             # Not a fresh intake intent (missing/unrecognised detected_intent, or a
@@ -345,6 +352,47 @@ class FollowUpAgent(BaseAgent):
         )
         updates = reset_for_new_intent(state, detected_intent)
         updates["next_node"] = AgentNode.VERIFICATION.value
+        updates["is_interrupt"] = False
+        updates["active_agent"] = self.AGENT_NAME
+        updates["metadata_events"] = []
+        updates["app_run_id"] = state.get("app_run_id", "")
+        return updates
+
+    def _reroute_through_intake(self, state: State, detected_intent: str) -> dict:
+        """
+        A fresh intake intent that must be re-screened was detected mid-follow-up.
+        Like ``_reroute_through_verification`` this fully resets the conversation,
+        but routes to the *intake* node instead of verification so intake re-applies
+        its front-door screening (e.g. the unsupported-provider-type gate) before
+        identity is re-collected.
+
+        ``call_intent`` is deliberately cleared here. ``reset_for_new_intent`` stages
+        the intent in ``call_intent``, but intake's entry guard
+        (``if state.get("call_intent")``) skips classification — and therefore
+        screening — whenever ``call_intent`` is set, routing straight to
+        verification. Leaving it populated would defeat the re-screen. With
+        ``call_intent`` empty, intake re-classifies the triggering utterance, runs
+        its screening, then sets ``call_intent`` itself and hands off to verification
+        exactly as on a first-time call.
+
+        ``pending_intent`` and ``reverify_bridge_pending`` — both meant for the
+        direct-to-verification path — are cleared for the same reason: intake owns
+        the bridge message, and the subsequent verification should behave as a
+        first-time verification routed by ``call_intent``.
+        """
+        logger.info(
+            LOG_NEW_INTENT,
+            extra={
+                "detected_intent": detected_intent,
+                "previous_intent": state.get("call_intent", ""),
+                "route": "intake_rescreen",
+            },
+        )
+        updates = reset_for_new_intent(state, detected_intent)
+        updates["call_intent"] = ""  # force intake to re-classify + re-screen
+        updates["pending_intent"] = ""  # intake → verification routes by call_intent
+        updates["reverify_bridge_pending"] = False  # intake delivers its own bridge
+        updates["next_node"] = AgentNode.INTAKE.value
         updates["is_interrupt"] = False
         updates["active_agent"] = self.AGENT_NAME
         updates["metadata_events"] = []
