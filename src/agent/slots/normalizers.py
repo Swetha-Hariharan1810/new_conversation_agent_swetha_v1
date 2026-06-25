@@ -15,6 +15,7 @@ Rules:
 
 from __future__ import annotations
 
+import difflib
 import re
 from typing import Callable, Optional
 
@@ -186,6 +187,57 @@ _MONTH_NAMES: dict[str, int] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Fuzzy fallback for misspelled spoken number-words (defense in depth)
+# ---------------------------------------------------------------------------
+
+# The cutoff is deliberately TIGHT. Obvious DOB typos are corrected upstream in
+# the extraction prompt; this is only a safety net for the rare misspelling that
+# still reaches normalization. A tight threshold means only near-exact typos (a
+# doubled/dropped/transposed letter or two) are accepted — genuinely ambiguous or
+# garbled tokens score below it and return None, so real ambiguous input still
+# fails cleanly and neither the 8-digit ambiguity guard nor month matching is
+# loosened. 0.75 (rather than 0.80) is used because common double-letter typos
+# such as "twlevee" -> "twelve" only score ~0.77; anything materially looser
+# would start admitting unrelated words.
+_FUZZY_CUTOFF = 0.75
+
+
+def _closest_number_word(token: str, mapping: dict[str, int]) -> str | None:
+    """Return the closest valid number-word key for a misspelled token, or None.
+
+    Candidates come from difflib.get_close_matches with the tight _FUZZY_CUTOFF.
+    Among near-ties we prefer the candidate that shares the longest suffix with
+    the token: number-word typos almost always preserve the ordinal/cardinal
+    ending, so this resolves same-length neighbours correctly (e.g.
+    "thirtheeth" -> "thirtieth", not the raw-similarity winner "thirteenth").
+    """
+    candidates = difflib.get_close_matches(token, list(mapping), n=3, cutoff=_FUZZY_CUTOFF)
+    if not candidates:
+        return None
+
+    def _suffix_len(a: str, b: str) -> int:
+        n = 0
+        for ca, cb in zip(reversed(a), reversed(b)):
+            if ca != cb:
+                break
+            n += 1
+        return n
+
+    return max(
+        candidates,
+        key=lambda c: (_suffix_len(token, c), difflib.SequenceMatcher(None, token, c).ratio()),
+    )
+
+
+def _resolve_number_word(mapping: dict[str, int], token: str) -> int | None:
+    """Exact dictionary lookup with the tight fuzzy fallback above. Returns int or None."""
+    if token in mapping:
+        return mapping[token]
+    match = _closest_number_word(token, mapping)
+    return mapping[match] if match is not None else None
+
+
 def _parse_spoken_year(tokens: list[str]) -> int | None:
     """Convert spoken year tokens like ['nineteen', 'eighty', 'eight'] → 1988.
 
@@ -206,10 +258,14 @@ def _parse_spoken_year(tokens: list[str]) -> int | None:
     century = first_val * 100
     rest = tokens[1:]
     suffix = 0
+    # Tens and the leading century word stay EXACT on purpose: a cardinal unit
+    # like "eight" fuzzy-matches the tens word "eighty" (~0.91), so fuzzing the
+    # tens slot would corrupt years (e.g. "nineteen eight" -> 1980). Only the
+    # cardinal unit position gets the fuzzy fallback (e.g. "eigh" -> "eight").
     if len(rest) == 1:
-        suffix = _TENS_WORDS.get(rest[0]) or _BASIC_NUMS.get(rest[0]) or 0
+        suffix = _TENS_WORDS.get(rest[0]) or _resolve_number_word(_BASIC_NUMS, rest[0]) or 0
     elif len(rest) >= 2:
-        suffix = _TENS_WORDS.get(rest[0], 0) + _BASIC_NUMS.get(rest[1], 0)
+        suffix = _TENS_WORDS.get(rest[0], 0) + (_resolve_number_word(_BASIC_NUMS, rest[1]) or 0)
     return century + suffix
 
 
@@ -295,6 +351,12 @@ def _spoken_date_to_mdy(text: str) -> str | None:
                     unit_card = _BASIC_NUMS.get(nxt)
                     if unit_card is not None and 1 <= unit_card <= 9 and i + 2 < len(words_without_month):
                         unit = unit_card
+                if unit is None:
+                    # fuzzy fallback for a misspelled unit-ordinal, e.g.
+                    # "twenty fith" → "twenty fifth" → 25
+                    fz_unit = _closest_number_word(nxt, _UNIT_ORDINALS)
+                    if fz_unit is not None:
+                        unit = _UNIT_ORDINALS[fz_unit]
                 if unit is not None:
                     candidate = _TENS_WORDS[w] + unit
                     if 1 <= candidate <= 31:
@@ -317,6 +379,21 @@ def _spoken_date_to_mdy(text: str) -> str | None:
             card = _BASIC_NUMS.get(w)
             if card is not None and 1 <= card <= 31 and i + 1 < len(words_without_month):
                 day_num = card
+                i += 1
+                continue
+            # Fuzzy fallback (defense in depth): a single token may be a
+            # misspelled number-word that exact lookup missed. Try ordinal
+            # then cardinal with the tight cutoff before treating it as a
+            # non-day token. Ordinal is tried first so an ordinal typo never
+            # collapses onto a cardinal neighbour.
+            fz_ord = _resolve_number_word(_ORDINAL_TO_NUM, w)
+            if fz_ord is not None and 1 <= fz_ord <= 31:
+                day_num = fz_ord
+                i += 1
+                continue
+            fz_card = _resolve_number_word(_BASIC_NUMS, w)
+            if fz_card is not None and 1 <= fz_card <= 31 and i + 1 < len(words_without_month):
+                day_num = fz_card
                 i += 1
                 continue
         remaining.append(w)

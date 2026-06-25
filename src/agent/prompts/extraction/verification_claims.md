@@ -46,12 +46,22 @@ FIELDS
                 with two cleanup rules applied before returning:
 
                 1. STRIP filler words "of" and "the" from the phrase.
-                2. CORRECT obvious misspellings of ordinal words only
-                   (e.g. "twelfeeth" → "twelfth"). No other conversions allowed.
+                2. CORRECT obvious misspellings of spoken number-words —
+                   ordinal day words (e.g. "twelfeeth" → "twelfth",
+                   "thirtheeth" → "thirtieth"), cardinal day words
+                   (e.g. "twlevee" → "twelve"), AND year words
+                   (e.g. "eighty-eigh" → "eighty eight"). Fix only the
+                   spelling; do NOT change the number the caller said.
 
-                Caller must state the year — never assume it. If the agent
-                re-asks for the year and caller responds with a full date,
-                extract it — do not treat as ambiguous.
+                HARD RULES (always apply):
+                - Caller must state the year — never assume it.
+                - NEVER invent or pad digits/words the caller did not say.
+                  Correcting an obvious typo of a word the caller DID say is
+                  NOT the same as inventing a missing value: if a part is
+                  genuinely missing or unintelligible, mark ambiguous instead
+                  of guessing.
+                - If the agent re-asks for the year and caller responds with a
+                  full date, extract it — do not treat as ambiguous.
 
                 ✓  "june fourth nineteen sixty"
                      → {"dob": "june fourth nineteen sixty"}
@@ -59,6 +69,12 @@ FIELDS
                      → {"dob": "thirtieth july nineteen seventy seven"}
                 ✓  "twelfeeth of april nineteen eighty eight"
                      → {"dob": "twelfth april nineteen eighty eight"}
+                ✓  "april twlevee nineteen eighty eight"
+                     → {"dob": "april twelfth nineteen eighty eight"}
+                ✓  "the thirtheeth of july nineteen seventy seven"
+                     → {"dob": "thirtieth july nineteen seventy seven"}
+                ✓  "june fourth nineteen eighty-eigh"
+                     → {"dob": "june fourth nineteen eighty eight"}
                 ✗  "april twelfth" → ambiguous (no year stated)
 
                 The system converts to date format after extraction.
