@@ -1,0 +1,54 @@
+{
+  "id": "MULTI-UNSUPPORTED-MIDFLOW",
+  "title": "Out-of-scope question injected on a slot turn, invisible to the schema — silently re-asked",
+  "defect": "Same context-retention defect: an out-of-scope side question with no guard signal and no extractable slot is dropped.",
+  "source": "Phase 0 multi-intent surface (unsupported question on a delivery confirmation turn)",
+  "driver": "delivery_management_agent",
+  "schema": "worker",
+  "summary": [
+    "While confirming the fax number, the member asks an out-of-scope question (copay).",
+    "The LLM-1 decode yields no yes/no and no guard (an empty WorkerResult), so the",
+    "fax-confirmation branch sees neither a confirmation nor a replacement and simply",
+    "re-reads the same fax number. The question is never classified or answered — a soft",
+    "silent drop. This is a KNOWN FAILURE: 'must be classified and given a spoken outcome,",
+    "never dropped' is not satisfied when the side intent is invisible to the schema."
+  ],
+  "initial_state": {
+    "messages": [
+      {"role": "assistant", "content": "The fax number we have on file is 415-555-3299. Is this correct?"}
+    ],
+    "member_status_verify": true,
+    "member_id": "M714598",
+    "first_name": "Daniel",
+    "last_name": "Reed",
+    "call_intent": "provider_services",
+    "active_agent": "delivery_management_agent",
+    "provider_type": "Pediatrician",
+    "zip_code": "94107",
+    "zip_code_used": "94107",
+    "fax": "415-555-3299",
+    "email": "",
+    "delivery_method": "fax",
+    "awaiting_slot": "fax_confirmed",
+    "slot_attempts": {},
+    "is_interrupt": true,
+    "app_run_id": "golden-unsupported-midflow"
+  },
+  "turns": [
+    {
+      "user": "Wait — what's the copay for a specialist visit?",
+      "extraction": {},
+      "note": "Empty WorkerResult: no guard, no extracted slot — the question is invisible to the agent.",
+      "expected_behavior_target": "Classify the out-of-scope question and give a spoken outcome (answer or steer-back), then return to the fax confirmation.",
+      "actual_behavior_today": "No yes/no detected; the agent re-reads the same fax number and never addresses the copay question."
+    }
+  ],
+  "known_failures": [
+    {
+      "id": "F1",
+      "severity": "medium",
+      "description": "An out-of-scope question invisible to the schema is silently re-asked rather than classified and answered.",
+      "baseline_assertion": "After the turn, awaiting_slot=='fax_confirmed' (unchanged), the reply re-reads the fax number, never mentions 'copay', and no provider list is dispatched."
+    }
+  ]
+}

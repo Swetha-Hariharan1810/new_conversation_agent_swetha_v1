@@ -1,0 +1,61 @@
+{
+  "id": "MULTI-VERIFY-CORRECTION",
+  "title": "Mid-verification — caller answers a slot and corrects an already-confirmed identity field in the same breath",
+  "defect": "Same context-retention defect during identity verification: an answer + a correction in one turn drops the correction.",
+  "source": "Phase 0 multi-intent surface (verification stage)",
+  "driver": "_collect_slot",
+  "schema": "worker",
+  "summary": [
+    "The caller is on the date-of-birth slot. They give their DOB and, in the same",
+    "utterance, correct their already-confirmed Member ID ('wait, my member ID was wrong').",
+    "WorkerResult CAN represent this (extracted=DOB, corrections={member_id}), but the",
+    "per-turn collector (_collect_slot) confirms the awaited slot on the valid-extraction",
+    "path and returns BEFORE the corrections are ever inspected — so the member_id",
+    "correction is silently dropped even though the data was present.",
+    "Driven directly against _collect_slot (the load-bearing per-turn collector) rather",
+    "than the full verification agent, to keep the surface hermetic and unambiguous."
+  ],
+  "collector_probe": {
+    "awaiting_slot": "dob",
+    "slot": {
+      "name": "dob",
+      "normalizer": "normalize_dob",
+      "validator": "validate_dob",
+      "slot_type": "DOB"
+    },
+    "pre_extracted": "09/03/1985",
+    "decision": {
+      "extracted": {"dob": "09/03/1985"},
+      "corrections": {"member_id": "M999999"},
+      "event_type": "corrected"
+    },
+    "state": {
+      "awaiting_slot": "dob",
+      "member_status_verify": false,
+      "first_name": "Daniel",
+      "last_name": "Reed",
+      "member_id": "M714598",
+      "slot_attempts": {"member_id": {"attempt_count": 1, "confirmed": true, "last_value": "M714598"}}
+    }
+  },
+  "turns": [
+    {
+      "user": "September third, nineteen eighty-five — wait, my member ID was wrong, it's M999999.",
+      "extraction": {
+        "extracted": {"dob": "09/03/1985"},
+        "corrections": {"member_id": "M999999"},
+        "event_type": "corrected"
+      },
+      "expected_behavior_target": "Confirm DOB AND acknowledge/apply the Member ID correction.",
+      "actual_behavior_today": "DOB confirmed; the member_id correction is ignored entirely (no ack, no slot change)."
+    }
+  ],
+  "known_failures": [
+    {
+      "id": "F1",
+      "severity": "high",
+      "description": "A correction bundled with a valid slot answer is dropped on the valid-extraction path.",
+      "baseline_assertion": "_collect_slot returns (dob, None): DOB confirmed, no interrupt; the member_id correction produced no slot action (member_id slot still holds the old value, not M999999)."
+    }
+  ]
+}

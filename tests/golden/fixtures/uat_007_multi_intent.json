@@ -1,0 +1,68 @@
+{
+  "id": "UAT-007",
+  "title": "Context Retention — member states two intents at once at the delivery step",
+  "defect": "When the member says two things at once, the VA handles one and silently drops the other.",
+  "source": "pending_action_items_Context_Retension.docx (UAT-007 call log)",
+  "driver": "delivery_management_agent",
+  "schema": "worker",
+  "summary": [
+    "Faithful reduction of the UAT-007 call log to the exact turn where the defect fires.",
+    "Agent asks 'fax or email?'. Member answers the delivery method AND asks to update",
+    "their ZIP in the same breath. The single-intent WorkerResult schema can only carry",
+    "the delivery_method, so the ZIP-update request is invisible to the agent and is",
+    "never acknowledged or actioned. The member then confirms the fax and the provider",
+    "list is dispatched against the disputed ZIP (94107) that the member tried to change."
+  ],
+  "initial_state": {
+    "messages": [
+      {"role": "assistant", "content": "Your in-network provider list is ready. Would you like it sent by fax or email?"}
+    ],
+    "member_status_verify": true,
+    "member_id": "M714598",
+    "first_name": "Daniel",
+    "last_name": "Reed",
+    "relationship": "plan_holder",
+    "call_intent": "provider_services",
+    "active_agent": "delivery_management_agent",
+    "provider_type": "Pediatrician",
+    "zip_code": "94107",
+    "zip_code_used": "94107",
+    "zip_code_updated": false,
+    "fax": "415-555-3299",
+    "email": "",
+    "delivery_method": "",
+    "awaiting_slot": "",
+    "slot_attempts": {},
+    "is_interrupt": true,
+    "app_run_id": "golden-uat-007"
+  },
+  "turns": [
+    {
+      "user": "Fax, but I need to update my ZIP code.",
+      "extraction": {"extracted": {"delivery_method": "fax"}},
+      "note": "The ZIP-update request is NOT representable in WorkerResult — only delivery_method is captured.",
+      "expected_behavior_target": "Acknowledge BOTH: capture delivery_method=fax AND hold/return to the ZIP-update request.",
+      "actual_behavior_today": "Captures delivery_method=fax, asks to confirm the fax on file, never mentions the ZIP."
+    },
+    {
+      "user": "Yes.",
+      "extraction": {"extracted": {"fax_confirmed": "yes"}},
+      "expected_behavior_target": "Provider list dispatched against the CORRECTED ZIP (or the member is re-asked for it first).",
+      "actual_behavior_today": "Provider list dispatched against the stale, disputed ZIP 94107; ZIP never updated."
+    }
+  ],
+  "known_failures": [
+    {
+      "id": "F1",
+      "severity": "unacceptable",
+      "description": "The ZIP-update request is never acknowledged (silent drop).",
+      "baseline_assertion": "After turn 0 the agent's reply mentions the fax on file but never the ZIP, and no update_zip_code tool call is made for the entire run."
+    },
+    {
+      "id": "F2",
+      "severity": "high",
+      "description": "The provider list is dispatched on the disputed ZIP (94107).",
+      "baseline_assertion": "dispatch_provider_list is called exactly once with zip_code == '94107'; state.zip_code is still '94107' at end."
+    }
+  ]
+}

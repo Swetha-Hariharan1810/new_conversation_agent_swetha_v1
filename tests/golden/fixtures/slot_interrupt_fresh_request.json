@@ -1,0 +1,51 @@
+{
+  "id": "MULTI-PROVIDER-SIDEQ",
+  "title": "Slot-collection interrupt — caller answers provider_type AND asks for something this agent does not own",
+  "defect": "Same context-retention defect, earlier in the call: a fresh in-scope request bundled with a slot answer is dropped.",
+  "source": "Phase 0 multi-intent surface (proves the defect is conversation-wide, not delivery-only)",
+  "driver": "provider_search_agent",
+  "schema": "worker",
+  "summary": [
+    "provider_search asks 'what type of provider?'. The member answers (pediatrician) and,",
+    "in the same utterance, asks a benefits question (deductible) that provider_search does",
+    "not own. WorkerResult carries only provider_type, so the benefits question is invisible.",
+    "The agent advances to ZIP confirmation and the in-scope side request is never handed",
+    "off to benefits_agent nor acknowledged."
+  ],
+  "initial_state": {
+    "messages": [
+      {"role": "assistant", "content": "What type of provider are you looking for?"}
+    ],
+    "member_status_verify": true,
+    "member_id": "M714598",
+    "first_name": "Daniel",
+    "last_name": "Reed",
+    "relationship": "plan_holder",
+    "call_intent": "provider_services",
+    "active_agent": "provider_search_agent",
+    "provider_type": "",
+    "zip_code": "94107",
+    "zip_code_used": "",
+    "awaiting_slot": "provider_type",
+    "slot_attempts": {},
+    "is_interrupt": true,
+    "app_run_id": "golden-provider-sideq"
+  },
+  "turns": [
+    {
+      "user": "I'm looking for a pediatrician — also, what's my deductible?",
+      "extraction": {"extracted": {"provider_type": "pediatrician"}},
+      "note": "The deductible question (owned by benefits_agent) is not representable in WorkerResult.",
+      "expected_behavior_target": "Capture provider_type=Pediatrician AND queue/answer the deductible question.",
+      "actual_behavior_today": "Captures provider_type, advances to ZIP confirmation, never mentions the deductible."
+    }
+  ],
+  "known_failures": [
+    {
+      "id": "F1",
+      "severity": "high",
+      "description": "A fresh in-scope request bundled with a slot answer is dropped — no acknowledgement, no hand-off.",
+      "baseline_assertion": "After the turn, awaiting_slot=='zip_confirmed', provider_type=='Pediatrician', and the agent reply mentions the ZIP but never 'deductible'."
+    }
+  ]
+}
