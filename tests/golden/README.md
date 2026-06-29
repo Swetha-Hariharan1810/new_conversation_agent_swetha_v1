@@ -42,6 +42,24 @@ disputed → redirect to `provider_search_agent`). Focused unit tests live in
 `test_phase1_stale_delivery.py`. F1 (the silent drop) is intentionally still
 open — that is Phase 3.
 
+## Phase 2 — dropped-request metric (observability only)
+
+`src/agent/orchestration/observability.py` adds a deterministic, PII-safe
+secondary-request detector (`detect_secondary_request` — a conjunction/clause +
+redirect/imperative heuristic, zero model cost) and an `observe_dropped_requests`
+decorator on the `delivery_management` and `provider_search` nodes. Per
+multi-intent turn it emits one structured `dropped_request` metric event
+(`logger.info("multi_intent_turn", extra={"metric": "dropped_request",
+"outcome": "actioned"|"parked"|"dropped", ...})`) recording the PII-safe
+utterance *shape*, and increments `State.dropped_request_count` only when the
+secondary was dropped.
+
+No behavior change: the decorator runs the node unchanged and only adds the
+counter field + a log line. The golden harness surfaces the count via
+`RunRecord.dropped_request_count`, so `test_uat_007_dropped_request_metric_fires`
+shows a **non-zero** count today; Phase 3 will drive it to zero. Unit tests live
+in `test_phase2_dropped_metric.py`.
+
 ## How it stays deterministic (no secrets, no network)
 
 `driver.py` replaces the two external seams every agent touches:

@@ -40,6 +40,7 @@ from agent.core.agent import BaseAgent
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
 from agent.orchestration.invalidation import is_dirty, owner_of
+from agent.orchestration.observability import observe_dropped_requests
 from agent.slots.normalizers import normalize_email, normalize_fax_number, normalize_yes_no
 from agent.slots.validators import validate_email, validate_fax_number
 from agent.state import State
@@ -533,6 +534,7 @@ class DeliveryManagementAgent(BaseAgent):
         }
 
 
+@observe_dropped_requests
 async def delivery_management_agent(state: State) -> dict:
     logger.info(LOG_ENTERED, extra={"call_intent": state.get("call_intent", "")})
     return await DeliveryManagementAgent.from_state(state).execute(state)

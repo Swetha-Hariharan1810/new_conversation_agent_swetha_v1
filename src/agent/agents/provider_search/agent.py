@@ -37,6 +37,7 @@ from agent.core.agent import BaseAgent
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
 from agent.orchestration.invalidation import clear_dirty, mark_dirty
+from agent.orchestration.observability import observe_dropped_requests
 from agent.slots.normalizers import normalize_provider_type, normalize_yes_no, normalize_zip_code
 from agent.slots.validators import validate_zip_code
 from agent.state import State
@@ -306,6 +307,7 @@ class ProviderSearchAgent(BaseAgent):
         return result
 
 
+@observe_dropped_requests
 async def provider_search_agent(state: State) -> dict:
     logger.info(LOG_ENTERED, extra={"call_intent": state.get("call_intent", "")})
     return await ProviderSearchAgent.from_state(state).execute(state)

@@ -241,6 +241,11 @@ class RunRecord:
     def latencies_ms(self) -> list[float]:
         return [round(t.wall_clock_s * 1000, 2) for t in self.turns]
 
+    @property
+    def dropped_request_count(self) -> int:
+        """Phase 2 metric: dropped multi-intent secondary requests this run."""
+        return int(self.final_state.get("dropped_request_count") or 0)
+
     def last_ai(self) -> str:
         return self.turns[-1].ai if self.turns else ""
 
