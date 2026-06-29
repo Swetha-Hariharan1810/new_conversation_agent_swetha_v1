@@ -36,6 +36,7 @@ from agent.conversation.context import ConversationContext
 from agent.core.agent import BaseAgent
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
+from agent.orchestration.invalidation import clear_dirty, mark_dirty
 from agent.slots.normalizers import normalize_provider_type, normalize_yes_no, normalize_zip_code
 from agent.slots.validators import validate_zip_code
 from agent.state import State
@@ -211,21 +212,27 @@ class ProviderSearchAgent(BaseAgent):
                     done["zip_code"] = normalized
                     done["zip_code_updated"] = True
                     return done
-                # Provided ZIP was invalid — ask for a proper one
+                # Provided ZIP was invalid — ask for a proper one. The ZIP is now
+                # disputed and unresolved, so any derived provider_list is stale.
                 ask_result = self.ask_member(state, ZIP_UPDATE_PROMPT)
                 ask_result["awaiting_slot"] = "zip_code"
                 ask_result["provider_type"] = provider_type
                 ask_result["zip_code"] = zip_on_file
+                ask_result["dirty_artifacts"] = mark_dirty(state.get("dirty_artifacts"), "zip_code")
                 return ask_result
 
             if zip_conf == "yes":
                 logger.info(LOG_ZIP_CONFIRMED, extra={"zip_code": zip_on_file})
                 return self._signal_done(state, provider_type, zip_on_file)
             if zip_conf == "no":
+                # Member disputed the ZIP on file and has not yet given a new one:
+                # mark the dependent provider_list stale so it cannot be dispatched
+                # on the disputed value before the new ZIP is resolved.
                 ask_result = self.ask_member(state, ZIP_UPDATE_PROMPT)
                 ask_result["awaiting_slot"] = "zip_code"
                 ask_result["provider_type"] = provider_type
                 ask_result["zip_code"] = zip_on_file
+                ask_result["dirty_artifacts"] = mark_dirty(state.get("dirty_artifacts"), "zip_code")
                 return ask_result
 
             # No clear yes/no — retry or exhaust
@@ -291,6 +298,11 @@ class ProviderSearchAgent(BaseAgent):
         result["provider_type"] = provider_type
         result["zip_code"] = zip_code_used
         result["zip_code_used"] = zip_code_used
+        # The ZIP is now resolved/confirmed and the list is (re)built against it,
+        # so the provider_list is no longer stale. Clearing here covers every
+        # path into delivery (fresh confirm, inline update, re-resolution after a
+        # dispute), keeping the deterministic delivery gate accurate.
+        result["dirty_artifacts"] = clear_dirty(state.get("dirty_artifacts"), "provider_list")
         return result
 
 

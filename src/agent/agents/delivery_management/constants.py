@@ -80,6 +80,17 @@ EMAIL_UPDATE_PROMPTS = [
     "Sure — what email address should we use?",
 ]
 
+# ── Stale-delivery guard (Phase 1) ─────────────────────────────────────────────
+# Shown when the provider_list is stale because the member's ZIP is disputed and
+# not yet re-resolved. The agent refuses to dispatch and redirects to the ZIP
+# owner (provider_search) to collect a current ZIP before rebuilding the list.
+MSG_ZIP_DISPUTED_REDIRECT = [
+    "Before I send that list, let's make sure it's for the right area. "
+    "What is your current 5-digit ZIP code?",
+    "I want to send the right list — let's update your ZIP first. "
+    "What is your current 5-digit ZIP code?",
+]
+
 # ── Escalation messages ───────────────────────────────────────────────────────
 
 MSG_CONTACT_EXHAUST = [

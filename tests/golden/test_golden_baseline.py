@@ -22,10 +22,8 @@ import re
 import pytest
 
 import tests.golden  # noqa: F401 — ensures src/ is on sys.path
-
 from tests.golden.driver import (
     build_result,
-    deterministic_env,
     load_fixture,
     run_fixture,
 )
@@ -42,37 +40,38 @@ def _signal(state: dict) -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def test_uat_007_zip_request_silently_dropped_and_dispatched_on_disputed_zip():
+async def test_uat_007_zip_disputed_blocks_dispatch_but_request_still_silently_dropped():
+    """Phase 1: F2 is CLOSED (no dispatch on a disputed ZIP); F1 is still OPEN
+    (the ZIP-update request is silently dropped — that is Phase 3)."""
     fixture = load_fixture("uat_007_multi_intent")
     run = await run_fixture(fixture)
 
     turn0 = run.turns[0]
     turn1 = run.turns[1]
 
-    # ── F1: the ZIP-update request is never acknowledged (silent drop) ──────────
-    # The member said "Fax, but I need to update my ZIP code." The reply confirms
-    # the fax and never mentions the ZIP.
+    # ── F1 (STILL OPEN): the ZIP-update request is never acknowledged ───────────
+    # The member said "Fax, but I need to update my ZIP code." Turn 0's reply
+    # confirms the fax and never mentions the ZIP. PHASE-FLIP: Phase 3.
     assert turn0.awaiting_slot == "fax_confirmed"
     assert run.final_state.get("delivery_method") == "fax"
     assert not re.search(r"zip", turn0.ai, re.IGNORECASE), (
-        f"F1 regressed (good!) — ZIP acknowledged at turn 0: {turn0.ai!r}"
-    )
-    assert run.recorder.count("update_zip_code") == 0, (
-        "F1 regressed (good!) — a ZIP update was actioned; baseline expects none."
+        f"F1 fixed early? — ZIP acknowledged at turn 0 (that's Phase 3): {turn0.ai!r}"
     )
 
-    # ── F2: the provider list is dispatched on the disputed ZIP (94107) ─────────
-    dispatches = run.recorder.for_tool("dispatch_provider_list")
-    assert len(dispatches) == 1, f"expected exactly one dispatch, got {dispatches!r}"
-    assert dispatches[0]["zip_code"] == "94107", (
-        "F2 regressed (good!) — dispatched on a ZIP other than the disputed 94107."
+    # ── F2 (CLOSED in Phase 1): delivery on the disputed ZIP is impossible ──────
+    # The stale-delivery gate refuses to dispatch and redirects to the ZIP owner.
+    assert run.recorder.count("dispatch_provider_list") == 0, (
+        "F2 regressed — a provider list was dispatched while the ZIP was disputed."
     )
-    assert dispatches[0]["delivery_method"] == "fax"
-    assert run.final_state.get("zip_code") == "94107"  # never updated
-    assert run.final_state.get("provider_list_sent") is True
-    assert turn1.awaiting_slot == "benefits_response"
+    assert turn1.awaiting_slot == "zip_code"
+    assert run.final_state.get("next_node") == "provider_search_agent"
+    assert re.search(r"zip", turn1.ai, re.IGNORECASE), (
+        f"expected a redirect asking for the current ZIP, got {turn1.ai!r}"
+    )
+    assert not run.final_state.get("provider_list_sent")
+    assert run.final_state.get("zip_code") == "94107"  # unchanged and NOT dispatched
 
-    # Latency probe produced a wall-clock number for every turn.
+    # Latency probe produced a wall-clock number for every turn (no new LLM call).
     assert len(run.latencies_ms) == 2
     assert all(ms >= 0 for ms in run.latencies_ms)
 

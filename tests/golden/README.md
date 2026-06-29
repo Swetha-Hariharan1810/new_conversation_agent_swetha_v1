@@ -21,8 +21,26 @@ so the fixtures pin it at several points, not just at delivery:
 
 UAT-007's two known failures are asserted explicitly:
 
-- **F1** — the ZIP-update request is never acknowledged (silent drop).
-- **F2** — the provider list is dispatched on the disputed ZIP (`94107`).
+- **F1** — the ZIP-update request is never acknowledged (silent drop). *Still open — Phase 3.*
+- **F2** — the provider list is dispatched on the disputed ZIP (`94107`). **Closed in Phase 1.**
+
+## Phase 1 — deterministic stale-delivery guard (zero model cost)
+
+`src/agent/orchestration/invalidation.py` adds a pure-Python dependency registry
+(`INVALIDATION_MAP`, `INTENT_OWNER_REGISTRY`, `artifacts_invalidated_by`, plus
+`mark_dirty`/`clear_dirty`/`is_dirty`) and State gains `dirty_artifacts`.
+
+- **provider_search** marks `provider_list` dirty when the ZIP is disputed
+  (decline / invalid) and clears it once a valid ZIP is resolved (`_signal_done`).
+- **delivery_management** gates `_proceed_to_dispatch`: if `provider_list` is
+  dirty it **refuses to dispatch** and redirects to the ZIP owner. The gate reads
+  ONLY `dirty_artifacts` — so delivery on a disputed ZIP is impossible regardless
+  of how the turn is classified. No new LLM call (latency unchanged).
+
+The UAT-007 golden assertion #2 is flipped accordingly (no dispatch while
+disputed → redirect to `provider_search_agent`). Focused unit tests live in
+`test_phase1_stale_delivery.py`. F1 (the silent drop) is intentionally still
+open — that is Phase 3.
 
 ## How it stays deterministic (no secrets, no network)
 

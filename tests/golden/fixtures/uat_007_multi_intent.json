@@ -10,8 +10,17 @@
     "Agent asks 'fax or email?'. Member answers the delivery method AND asks to update",
     "their ZIP in the same breath. The single-intent WorkerResult schema can only carry",
     "the delivery_method, so the ZIP-update request is invisible to the agent and is",
-    "never acknowledged or actioned. The member then confirms the fax and the provider",
-    "list is dispatched against the disputed ZIP (94107) that the member tried to change."
+    "never acknowledged or actioned (failure F1 — still open, Phase 3).",
+    "PHASE 1: with the depended-on ZIP disputed, provider_list is marked stale",
+    "(dirty_artifacts) and the deterministic delivery gate REFUSES to dispatch on it,",
+    "redirecting to the ZIP owner instead — so F2 (dispatch on disputed ZIP) is closed."
+  ],
+  "phase1_note": [
+    "dirty_artifacts.provider_list models that the member's ZIP is disputed/unresolved",
+    "when they reach delivery. In the live flow the ZIP owner (provider_search) sets this",
+    "flag; UAT-007's drop-at-delivery registration of the dispute is Phase 3. Phase 1's",
+    "guarantee is that the gate reads ONLY dirty_artifacts, so delivery on a disputed ZIP",
+    "is impossible regardless of how the turn is classified."
   ],
   "initial_state": {
     "messages": [
@@ -28,6 +37,7 @@
     "zip_code": "94107",
     "zip_code_used": "94107",
     "zip_code_updated": false,
+    "dirty_artifacts": {"provider_list": true},
     "fax": "415-555-3299",
     "email": "",
     "delivery_method": "",
@@ -48,21 +58,23 @@
       "user": "Yes.",
       "extraction": {"extracted": {"fax_confirmed": "yes"}},
       "expected_behavior_target": "Provider list dispatched against the CORRECTED ZIP (or the member is re-asked for it first).",
-      "actual_behavior_today": "Provider list dispatched against the stale, disputed ZIP 94107; ZIP never updated."
+      "phase1_behavior": "Dispatch REFUSED while provider_list is stale; agent redirects to provider_search to re-resolve the ZIP. No dispatch occurs."
     }
   ],
   "known_failures": [
     {
       "id": "F1",
       "severity": "unacceptable",
+      "status": "open (Phase 3)",
       "description": "The ZIP-update request is never acknowledged (silent drop).",
       "baseline_assertion": "After turn 0 the agent's reply mentions the fax on file but never the ZIP, and no update_zip_code tool call is made for the entire run."
     },
     {
       "id": "F2",
       "severity": "high",
+      "status": "closed (Phase 1 deterministic stale-delivery gate)",
       "description": "The provider list is dispatched on the disputed ZIP (94107).",
-      "baseline_assertion": "dispatch_provider_list is called exactly once with zip_code == '94107'; state.zip_code is still '94107' at end."
+      "baseline_assertion": "PHASE 1: dispatch_provider_list is NEVER called while provider_list is dirty; the agent redirects to the ZIP owner (next_node=provider_search_agent, awaiting_slot=zip_code) and state.zip_code stays '94107' (unchanged, NOT dispatched)."
     }
   ]
 }
