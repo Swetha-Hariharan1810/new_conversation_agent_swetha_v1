@@ -85,6 +85,21 @@ def detect_secondary_request(utterance: str | None) -> bool:
     return bool(_PIVOT_RE.search(text) or _REDIRECT_RE.search(text))
 
 
+def matched_span(utterance: str | None) -> str:
+    """Return a verbatim substring of the utterance that triggered secondary
+    detection (redirect cue preferred, else the pivot word), or "". Guaranteed
+    to be a substring of ``utterance`` — used to build TurnPlan.verbatim_span
+    deterministically. PII-safe: a short cue phrase, never the whole utterance."""
+    text = (utterance or "").strip()
+    m = _REDIRECT_RE.search(text)
+    if m:
+        return m.group(0)
+    m = _PIVOT_RE.search(text)
+    if m:
+        return m.group(1)
+    return ""
+
+
 def secondary_target(utterance: str | None) -> str:
     """Best-effort guess of which field the secondary request concerns (or "")."""
     text = (utterance or "").lower()

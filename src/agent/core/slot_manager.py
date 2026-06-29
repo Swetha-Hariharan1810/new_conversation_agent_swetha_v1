@@ -306,6 +306,27 @@ class SlotManagerMixin:
         slot = self.get_slot(slot_name)
 
         # ------------------------------------------------------------------
+        # Phase 3A: shadow-mode understanding decode + resolver.
+        # Runs the single resolver on every slot-collection turn in every agent
+        # and LOGS its decision. The live path below is unchanged — this never
+        # affects routing or responses. No-op unless a shadow decoder is
+        # installed (production default is off). Guarded so it can never break
+        # a live turn.
+        # ------------------------------------------------------------------
+        try:
+            from agent.orchestration.shadow import run_shadow
+
+            run_shadow(
+                state,
+                utterance=_last_user_msg(messages),
+                awaiting_slot=state.get("awaiting_slot") or slot_name,
+                decision=decision,
+                agent_name=getattr(self, "AGENT_NAME", ""),
+            )
+        except Exception:  # observability must never break a turn
+            self.logger.debug("shadow resolver run failed", exc_info=True)
+
+        # ------------------------------------------------------------------
         # 2. LLM pre-extracted a candidate value
         # ------------------------------------------------------------------
         if pre_extracted:

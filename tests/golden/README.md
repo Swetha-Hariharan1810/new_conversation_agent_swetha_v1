@@ -60,6 +60,37 @@ counter field + a log line. The golden harness surfaces the count via
 shows a **non-zero** count today; Phase 3 will drive it to zero. Unit tests live
 in `test_phase2_dropped_metric.py`.
 
+## Phase 3A — TurnPlan schema + resolver, shadow mode (no behavior change)
+
+The core of the rebuild, landed in shadow first:
+
+- **Schema** (`src/agent/llm/schema.py`): `TurnPlan` (+ `SecondaryIntent`,
+  `Correction`, `SecondaryIntentType`) — the multi-intent understanding decode,
+  generalizing the `FollowUpResult` single-decode pattern. No free-text field.
+- **Resolver** (`src/agent/orchestration/resolver.py`): pure Python, no LLM. Given
+  a `TurnPlan` + `State` it validates `slot_answer` against the existing
+  normalizer+validator, drops secondaries whose `verbatim_span` isn't in the
+  utterance or whose `owner` doesn't resolve, rejects unresolved corrections,
+  applies precedence (`safety > invalidating_correction > current-step completion
+  > parked independents > closure`), enqueues independents, flips
+  `dirty_artifacts` via `invalidation.py`, sets a rewind target, and selects one
+  speech act from a **closed set** (`re_ask | clarify | correction_ack |
+  unsupported_decline | multi_intent_ack | open_redirect`). Low-confidence /
+  absent-span / unknown → `clarify`/`open_redirect` (ask, never act). Returns
+  `ResolverOutcome(speech_act, state_updates, rewind_target, parked, dirty)`.
+- **Shadow** (`src/agent/orchestration/shadow.py`): installed at the shared
+  `_collect_slot` chokepoint so the single resolver runs on every slot turn in
+  every agent and **only logs** (`turnplan_shadow`). The decoder is pluggable;
+  the production default is **off** (no-op, zero cost) until the LLM decode lands
+  in 3B. Tests use `heuristic_decoder`, which recovers the dropped multi-intent
+  shape deterministically from the raw utterance + WorkerResult.
+
+Tests: `test_phase3a_resolver.py` (exhaustive — precedence, span-drop,
+owner-rejection, dirty-flag, speech-act selection) and `test_phase3a_shadow.py`
+(the single resolver catches the UAT-007 ZIP request at the delivery chokepoint
+and the independent at the provider_search chokepoint, the redirect requests
+resolve to an actionable plan, and the live path is byte-for-byte unchanged).
+
 ## How it stays deterministic (no secrets, no network)
 
 `driver.py` replaces the two external seams every agent touches:
