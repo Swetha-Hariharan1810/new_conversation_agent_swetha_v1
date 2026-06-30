@@ -320,6 +320,8 @@ class SlotManagerMixin:
                 attempt=slot.attempt_count,
                 slot_value=slot_value if invalidating else None,
             )
+            if outcome.declined:  # co-occurring unsupported request → decline in-line
+                msg = f"{msg} {turn_acts.render_unsupported_decline(attempt=slot.attempt_count)}"
             interrupt = self.ask_member_with_context(state, msg, ctx)
             for k, v in (outcome.state_updates or {}).items():
                 interrupt[k] = v
@@ -342,6 +344,8 @@ class SlotManagerMixin:
         # ── multi_intent_ack — park independent(s) + speak the ack ──────────────
         if outcome.speech_act == MULTI_INTENT_ACK and outcome.parked:
             ack = turn_acts.render_multi_intent_ack(outcome.parked, attempt=slot.attempt_count)
+            if outcome.declined:  # co-occurring unsupported request → decline in-line
+                ack = f"{ack} {turn_acts.render_unsupported_decline(attempt=slot.attempt_count)}"
             msg = ack if slot_answered else f"{ack} {turn_acts.render_re_ask(slot_label=label)}"
             extra = {}
             if "intent_queue" in (outcome.state_updates or {}):

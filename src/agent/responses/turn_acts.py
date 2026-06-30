@@ -61,6 +61,7 @@ _CORRECTION_ACK_WITH_SLOT = [
 _CORRECTION_ACK_FIX_ONLY = [
     "Got it — let's update your {field_label} first. What's your {ask_label}?",
     "Sure, I'll get your {field_label} corrected. What's your {ask_label}?",
+    "Okay — let's fix your {field_label}. What's your {ask_label}?",
 ]
 
 _RE_ASK = [
@@ -72,16 +73,19 @@ _RE_ASK = [
 _CLARIFY = [
     "I want to make sure I get this right — could you say your {slot_label} once more?",
     "Just to confirm, could you repeat your {slot_label}?",
+    "Sorry, one more time — what's your {slot_label}?",
 ]
 
 _UNSUPPORTED_DECLINE = [
     "I'm not able to help with that one here, but I can keep going with what we were doing.",
     "That's outside what I can take care of on this call, but let's continue.",
+    "I can't assist with that part here, but we can carry on with what we were doing.",
 ]
 
 _OPEN_REDIRECT = [
     "I'm not able to help with that one here. Is there anything else I can help you with?",
     "That's not something I can do on this call — what else can I help you with?",
+    "I can't take care of that one here. Is there something else I can help with?",
 ]
 
 # Multi-intent acknowledgement: confirm we heard the parked request(s) and that
@@ -95,6 +99,7 @@ _MULTI_ACK = [
 _MULTI_ACK_WITH_REBUILD = [
     "Got it — I'll take care of {parked} too. First, let me {rebuilding}.",
     "Sure — I've noted {parked}. Before that, let me {rebuilding}.",
+    "Absolutely — I'll handle {parked} as well. First, let me {rebuilding}.",
 ]
 
 # Human-readable labels per owning agent, for the multi-intent acknowledgement.

@@ -182,6 +182,36 @@ retirement of follow_up's `FollowUpResult` Q&A classifier onto a
 that must be verified against the live suite (`tests/live_e2e`, which needs Azure
 + Salesforce creds) — recommended as the final hardening pass.
 
+## Residual-risk verification + Section-11 scenarios
+
+Residual risks are nailed down by deterministic tests:
+
+- **Intra-enum misclassification (S6)** — even if the decode mislabels the ZIP
+  correction as an in-scope independent, the Phase 1 gate (reads ONLY
+  `dirty_artifacts`) still blocks delivery. Degrades to worse-UX (parked, not
+  rewound), never to an unsafe delivery.
+- **Span / owner hallucination (S7)** — a secondary whose `verbatim_span` is
+  absent from the utterance, or whose `owner` isn't in the registry, is dropped
+  before it can reach the member.
+- **Template variation ceiling** (`test_residual_risk.py`) — every speech-act has
+  ≥3 phrasings, so rotation never repeats within a 3-attempt collection loop.
+- **Contract change cost / isolation** — the TurnPlan understanding decode has its
+  own LLM tier (`get_understanding_llm`, +headroom over the extractor) and is
+  dormant by default; per-agent slot extraction is untouched, so single-intent
+  flows are unchanged (proven by the decode-off vs decode-on comparison).
+
+`test_scenarios_s1_s8.py` implements the Section-11 scenarios deterministically
+(S1 canonical UAT-007 end-to-end; S2 mid-verification correction; S3 parked +
+drained independent; S4 safety/transfer precedence; S5 quad-intent precedence +
+in-line decline; S6/S7 safety net; S8 single-intent regression + one decode per
+turn). The **live (real-graph)** counterparts are
+`tests/live_e2e/test_multi_intent_scenarios.py` (tagged `live`; authored against
+the preflight-verified Emily fixture — swap the verify prefix for a Daniel Reed /
+M714598 fixture to run literally as UAT-007).
+
+**CI**: `ci.yml` runs `uv run pytest tests/golden` on every PR — so the S6/S7
+safety net (and the whole deterministic suite) can never regress.
+
 ## How it stays deterministic (no secrets, no network)
 
 `driver.py` replaces the two external seams every agent touches:

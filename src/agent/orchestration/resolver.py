@@ -91,6 +91,10 @@ class ResolverOutcome:
     rewind_target: Optional[str] = None  # owner/agent to return to for an invalidating correction
     parked: list = field(default_factory=list)  # resolved owners of independents enqueued
     dirty: dict = field(default_factory=dict)  # dirty_artifacts delta
+    # Unsupported/out-of-scope secondaries that co-occurred with a winning act.
+    # They get a decline appended to the dominant act's speech, so a multi-intent
+    # turn never silently drops an unanswerable request (S5).
+    declined: list = field(default_factory=list)
 
     def to_log_dict(self) -> dict:
         """PII-safe summary for shadow logging (no verbatim spans)."""
@@ -99,6 +103,7 @@ class ResolverOutcome:
             "rewind_target": self.rewind_target,
             "parked": list(self.parked),
             "dirty": [k for k, v in self.dirty.items() if v],
+            "declined": list(self.declined),
             "state_update_keys": sorted(self.state_updates.keys()),
         }
 
@@ -244,6 +249,10 @@ def resolve_turn(plan: TurnPlan, state: dict, *, utterance: str) -> ResolverOutc
         if derived:
             inv_field, inv_owner = derived, own
 
+    # Unsupported/out-of-scope survivors are declined alongside the winning act
+    # (so a multi-intent turn never silently drops an unanswerable request).
+    declined = [si.type.value for si in unsupported]
+
     if inv_field:
         updates: dict = {}
         if slot_ok:
@@ -253,7 +262,9 @@ def resolve_turn(plan: TurnPlan, state: dict, *, utterance: str) -> ResolverOutc
         parked, queue = _park(independents, state)
         if parked:
             updates["intent_queue"] = queue
-        return ResolverOutcome(CORRECTION_ACK, updates, rewind_target=inv_owner, parked=parked, dirty=dirty)
+        return ResolverOutcome(
+            CORRECTION_ACK, updates, rewind_target=inv_owner, parked=parked, dirty=dirty, declined=declined
+        )
 
     # (d) Non-invalidating correction — acknowledge + rewind to its owner.
     if correction is not None:
@@ -263,7 +274,9 @@ def resolve_turn(plan: TurnPlan, state: dict, *, utterance: str) -> ResolverOutc
         parked, queue = _park(independents, state)
         if parked:
             updates["intent_queue"] = queue
-        return ResolverOutcome(CORRECTION_ACK, updates, rewind_target=correction_owner, parked=parked)
+        return ResolverOutcome(
+            CORRECTION_ACK, updates, rewind_target=correction_owner, parked=parked, declined=declined
+        )
 
     # (e) Current-step completion (slot answered cleanly).
     if slot_ok:
@@ -271,7 +284,7 @@ def resolve_turn(plan: TurnPlan, state: dict, *, utterance: str) -> ResolverOutc
         if independents:
             parked, queue = _park(independents, state)
             updates["intent_queue"] = queue
-            return ResolverOutcome(MULTI_INTENT_ACK, updates, parked=parked)
+            return ResolverOutcome(MULTI_INTENT_ACK, updates, parked=parked, declined=declined)
         if unsupported:
             return ResolverOutcome(UNSUPPORTED_DECLINE, updates)
         # Clean single-intent answer — nothing for the resolver to add; proceed.
@@ -280,7 +293,7 @@ def resolve_turn(plan: TurnPlan, state: dict, *, utterance: str) -> ResolverOutc
     # (f) Slot NOT answered.
     if independents:
         parked, queue = _park(independents, state)
-        return ResolverOutcome(MULTI_INTENT_ACK, {"intent_queue": queue}, parked=parked)
+        return ResolverOutcome(MULTI_INTENT_ACK, {"intent_queue": queue}, parked=parked, declined=declined)
     if unsupported:
         return ResolverOutcome(UNSUPPORTED_DECLINE)
     if dropped_for_span or dropped_for_owner:
