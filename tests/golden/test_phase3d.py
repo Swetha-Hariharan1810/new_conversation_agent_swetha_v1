@@ -52,7 +52,9 @@ def test_registry_registers_every_agent_and_owner():
     assert owner_of("notification_method") == "notification_setup_agent"
     assert owner_of("provider_list") == "delivery_management_agent"
 
-    assert INVALIDATION_MAP == {"zip_code": ["provider_list"]}
+    assert INVALIDATION_MAP["zip_code"] == ["provider_list"]
+    # Claim-flow parity: a disputed reference invalidates its claim artifacts.
+    assert set(INVALIDATION_MAP["reference_number"]) == {"upload_link", "personal_guide_outreach"}
     # The scattered owner maps now derive from one source.
     assert INTENT_OWNER_REGISTRY["provider_list"] == "delivery_management_agent"
 

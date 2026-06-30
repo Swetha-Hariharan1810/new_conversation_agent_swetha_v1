@@ -35,6 +35,7 @@ from agent.agents.records_coordination.constants import (
     MSG_GUIDE_SCHEDULED,
     MSG_NOTIFICATION_BRIDGE,
     MSG_PERSONAL_GUIDE_OFFER,
+    MSG_REFERENCE_DISPUTED_REDIRECT,
     MSG_UPLOAD_OFFER,
     MSG_UPLOAD_SENT,
 )
@@ -44,6 +45,7 @@ from agent.conversation.context import ConversationContext
 from agent.core.agent import BaseAgent
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
+from agent.orchestration.invalidation import is_dirty, owner_of
 from agent.slots.normalizers import normalize_email, normalize_yes_no
 from agent.slots.validators import validate_email
 from agent.state import State
@@ -360,11 +362,33 @@ class RecordsCoordinationAgent(BaseAgent):
         result["awaiting_slot"] = "personal_guide_consent"
         return result
 
+    def _redirect_to_resolve_reference(self, state: State) -> dict:
+        """Refuse a claim action on a disputed reference number and hand back to
+        the reference owner (claim_adjustment) to re-resolve it before acting.
+
+        The claim-flow analog of delivery's _redirect_to_resolve_zip: reads only
+        dirty_artifacts, so it is safe regardless of how the dispute was
+        classified. Clears reference_number + claim_status so claim_adjustment
+        re-collects and re-looks-up the corrected reference.
+        """
+        result = self.ask_member(state, pick(MSG_REFERENCE_DISPUTED_REDIRECT))
+        result["next_node"] = owner_of("reference_number") or "claim_adjustment_agent"
+        result["awaiting_slot"] = "reference_number"
+        result["reference_number"] = ""  # force re-collection
+        result["claim_status"] = ""  # force re-lookup against the corrected reference
+        return result
+
     async def _send_link_and_proceed(self, state: State, email: str) -> dict:
         """
         Dispatch the upload link to email, then offer Personal Guide outreach.
         Corresponds to Branch A (and the B flow that goes through upload).
         """
+        # Stale-reference guard: never send an upload link keyed on a disputed
+        # claim reference number. Unconditional w.r.t. classification.
+        if is_dirty(state.get("dirty_artifacts"), "upload_link"):
+            logger.info("records_coordination_agent: upload link blocked — reference disputed")
+            return self._redirect_to_resolve_reference(state)
+
         if fail := await dispatch_upload_link(self, state, email):
             return fail
 
@@ -389,6 +413,12 @@ class RecordsCoordinationAgent(BaseAgent):
         Trigger Personal Guide workflow and transition to Notification Setup.
         Corresponds to Branch C completion.
         """
+        # Stale-reference guard: never trigger provider outreach on a disputed
+        # claim reference number.
+        if is_dirty(state.get("dirty_artifacts"), "personal_guide_outreach"):
+            logger.info("records_coordination_agent: Personal Guide blocked — reference disputed")
+            return self._redirect_to_resolve_reference(state)
+
         if fail := await dispatch_personal_guide(self, state):
             return fail
 

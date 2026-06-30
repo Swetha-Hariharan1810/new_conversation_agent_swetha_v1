@@ -47,11 +47,18 @@ AGENT_SLOTS: dict[str, list[str]] = {
 # Each agent → downstream artifact(s) it produces/sends.
 AGENT_ARTIFACTS: dict[str, list[str]] = {
     "delivery_management_agent": ["provider_list"],
+    # Claim flow: the upload link and the Personal Guide outreach are both keyed
+    # on the claim reference number, so they are invalidated if it is disputed.
+    "records_coordination_agent": ["upload_link", "personal_guide_outreach"],
 }
 
 # Upstream owner-field → downstream artifact(s) invalidated when it is disputed.
 INVALIDATION_EDGES: dict[str, list[str]] = {
     "zip_code": ["provider_list"],
+    # A disputed claim reference number must not be acted on (send link / trigger
+    # provider outreach) until it is re-resolved — the claim-flow analog of the
+    # stale-delivery guard.
+    "reference_number": ["upload_link", "personal_guide_outreach"],
 }
 
 ALL_AGENTS: frozenset[str] = frozenset(AGENT_SLOTS)

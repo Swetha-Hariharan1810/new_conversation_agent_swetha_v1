@@ -149,7 +149,13 @@ class FakeTool:
 # Storage tools that the targeted agents reach for, by attribute name on
 # ``agent.storage.tools``. Patched as module attributes so the handlers'
 # lazy ``from agent.storage.tools import X`` picks up the fake.
-_PATCHED_TOOLS = ("dispatch_provider_list", "update_member_contact", "update_zip_code")
+_PATCHED_TOOLS = (
+    "dispatch_provider_list",
+    "update_member_contact",
+    "update_zip_code",
+    "send_claim_upload_link",
+    "trigger_claim_personal_guide",
+)
 
 # LLM getter sites — patched where they are *used* (each agent module imports the
 # getter by value), so the source ``agent.llm.config`` indirection is bypassed.
@@ -268,6 +274,14 @@ def _agent_callable(name: str) -> Callable:
         from agent.agents.follow_up.agent import follow_up_agent
 
         return follow_up_agent
+    if name == "records_coordination_agent":
+        from agent.agents.records_coordination.agent import records_coordination_agent
+
+        return records_coordination_agent
+    if name == "claim_adjustment_agent":
+        from agent.agents.claim_adjustment.agent import claim_adjustment_agent
+
+        return claim_adjustment_agent
     raise ValueError(f"golden driver: unknown agent {name!r}")
 
 

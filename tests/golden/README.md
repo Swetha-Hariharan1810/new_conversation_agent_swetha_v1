@@ -212,6 +212,27 @@ M714598 fixture to run literally as UAT-007).
 **CI**: `ci.yml` runs `uv run pytest tests/golden` on every PR — so the S6/S7
 safety net (and the whole deterministic suite) can never regress.
 
+## Claim-flow parity (stale-reference guard)
+
+The provider flow refuses to deliver a provider list on a disputed ZIP (Phase 1).
+The claim flow has the same shape: `send_claim_upload_link` and
+`trigger_claim_personal_guide` are both keyed on the claim **reference number**,
+so the registry now records `reference_number → [upload_link,
+personal_guide_outreach]` and `records_coordination._send_link_and_proceed` /
+`_trigger_guide_and_proceed` carry a deterministic dirty gate (claim-flow analog
+of `_proceed_to_dispatch`): if the reference is disputed they refuse and route
+back to `claim_adjustment` to re-resolve it, which clears the flag once the
+reference is re-looked-up. `test_claim_flow_guard.py` proves the gate holds
+regardless of classification (the S6 analog), the resolver flips the right
+artifacts on a reference correction, and the action proceeds when clean.
+
+Caveat (same as delivery's inline branches): the three claim agents
+(claim_adjustment, records_coordination, notification_setup) collect their slots
+**inline**, not through the shared `_collect_slot` chokepoint, so they do not yet
+inherit the resolver's acknowledgement/parking. The safety-critical gate is wired;
+the full chokepoint migration of the claim agents is the per-agent activation to
+verify against the live suite.
+
 ## How it stays deterministic (no secrets, no network)
 
 `driver.py` replaces the two external seams every agent touches:

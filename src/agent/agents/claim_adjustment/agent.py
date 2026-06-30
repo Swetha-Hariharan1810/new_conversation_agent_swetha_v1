@@ -34,6 +34,7 @@ from agent.conversation.context import ConversationContext
 from agent.core.agent import BaseAgent
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
+from agent.orchestration.invalidation import clear_dirty
 from agent.slots.normalizers import normalize_reference_number
 from agent.slots.validators import validate_reference_number
 from agent.state import State
@@ -198,6 +199,12 @@ class ClaimAdjustmentAgent(BaseAgent):
 
             logger.info(LOG_STATUS_REPORTED)
 
+            # The reference number is freshly resolved and looked up, so any
+            # claim artifacts that were stale on a disputed reference are clean
+            # again (clears the stale-reference guard before records/notification).
+            _clean = clear_dirty(state.get("dirty_artifacts"), "upload_link")
+            _clean = clear_dirty(_clean, "personal_guide_outreach")
+
             status_msg = random.choice(STATUS_REPORT_TEMPLATES).format(
                 status=claim_status,
                 last_update_date=last_update_date,
@@ -213,6 +220,7 @@ class ClaimAdjustmentAgent(BaseAgent):
                 result["records_required"] = True
                 result["next_node"] = "records_coordination_agent"
                 result["awaiting_slot"] = ""
+                result["dirty_artifacts"] = _clean
                 return result
             else:
                 result = self.ask_member(state, status_msg)
@@ -222,6 +230,7 @@ class ClaimAdjustmentAgent(BaseAgent):
                 result["records_required"] = False
                 result["next_node"] = "notification_setup_agent"
                 result["awaiting_slot"] = ""
+                result["dirty_artifacts"] = _clean
                 return result
 
         # ── PHASE 4: signal_complete — both sub-agents already ran ─────────────
