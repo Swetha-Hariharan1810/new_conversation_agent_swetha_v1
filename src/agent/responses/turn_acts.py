@@ -62,6 +62,37 @@ _UNSUPPORTED_DECLINE = [
     "That's outside what I can take care of on this call, but let's continue.",
 ]
 
+_OPEN_REDIRECT = [
+    "I'm not able to help with that one here. Is there anything else I can help you with?",
+    "That's not something I can do on this call — what else can I help you with?",
+]
+
+# Multi-intent acknowledgement: confirm we heard the parked request(s) and that
+# they will be handled, optionally noting what is being rebuilt/finished first.
+_MULTI_ACK = [
+    "Got it — I'll help with {parked} as well. Let's keep going and I'll come right back to it.",
+    "Sure — I've noted {parked} too, and I'll take care of it in a moment.",
+    "Absolutely — I'll get to {parked} as well; let me finish this first.",
+]
+
+_MULTI_ACK_WITH_REBUILD = [
+    "Got it — I'll take care of {parked} too. First, let me {rebuilding}.",
+    "Sure — I've noted {parked}. Before that, let me {rebuilding}.",
+]
+
+# Human-readable labels per owning agent, for the multi-intent acknowledgement.
+OWNER_LABELS: dict[str, str] = {
+    "verification_agent": "verifying your account",
+    "provider_search_agent": "your provider search",
+    "delivery_management_agent": "your delivery details",
+    "benefits_agent": "your benefits question",
+    "care_wellness_agent": "the wellness program",
+    "claim_adjustment_agent": "your claim",
+    "records_coordination_agent": "your records",
+    "notification_setup_agent": "your notification preferences",
+    "follow_up_agent": "your other question",
+}
+
 
 def _rotate(pool: list[str], attempt: int) -> str:
     """Deterministic rotation by attempt count."""
@@ -103,3 +134,41 @@ def render_clarify(*, slot_label: str, attempt: int = 0) -> str:
 
 def render_unsupported_decline(*, attempt: int = 0) -> str:
     return _rotate(_UNSUPPORTED_DECLINE, attempt)
+
+
+def render_open_redirect(*, attempt: int = 0) -> str:
+    return _rotate(_OPEN_REDIRECT, attempt)
+
+
+def owner_label(owner: str) -> str:
+    return OWNER_LABELS.get(owner, "that")
+
+
+def _join_labels(labels: list[str]) -> str:
+    """Order-preserving dedup + natural-language join."""
+    seen: list[str] = []
+    for label in labels:
+        if label not in seen:
+            seen.append(label)
+    if not seen:
+        return "that"
+    if len(seen) == 1:
+        return seen[0]
+    if len(seen) == 2:
+        return f"{seen[0]} and {seen[1]}"
+    return ", ".join(seen[:-1]) + f", and {seen[-1]}"
+
+
+def render_multi_intent_ack(
+    parked_owners: list[str],
+    *,
+    rebuilding: str | None = None,
+    attempt: int = 0,
+) -> str:
+    """Acknowledge parked secondary intent(s), keyed on the resolver's structured
+    outcome. ``parked_owners`` are resolved agent names; ``rebuilding`` is an
+    optional human phrase for the dependent action being completed first."""
+    parked = _join_labels([owner_label(o) for o in parked_owners])
+    if rebuilding:
+        return _rotate(_MULTI_ACK_WITH_REBUILD, attempt).format(parked=parked, rebuilding=rebuilding)
+    return _rotate(_MULTI_ACK, attempt).format(parked=parked)

@@ -142,6 +142,11 @@ def classify_secondary_outcome(state: dict, updates: dict, *, target: str) -> st
     if newly_parked:
         return "parked"
 
+    # A secondary enqueued for later (resolver multi_intent_ack) is parked, not dropped.
+    new_queue = updates.get("intent_queue")
+    if new_queue is not None and len(new_queue) > len(state.get("intent_queue") or []):
+        return "parked"
+
     if target and target in updates:
         new_val = (updates.get(target) or "")
         old_val = (state.get(target) or "")

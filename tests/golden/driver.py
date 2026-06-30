@@ -326,3 +326,59 @@ async def run_fixture(fixture: dict, *, print_latency: bool = True) -> RunRecord
 
     record.final_state = state
     return record
+
+
+async def run_conversation(
+    initial_state: dict,
+    turns: list[dict],
+    *,
+    fixture_id: str = "conversation",
+    print_latency: bool = True,
+) -> RunRecord:
+    """Drive a multi-agent conversation deterministically, following ``next_node``.
+
+    Each turn is handled by the agent the graph would route to: the agent named in
+    ``turn['agent']`` if given, else ``state['next_node']`` set by the previous
+    turn's interrupt (these golden hops are all interrupt-based, one agent per
+    turn). Lets the UAT-007 round-trip (delivery → provider_search → delivery) be
+    exercised end-to-end without the compiled graph or a checkpointer.
+    """
+    fake_llm = FakeLLM()
+    record = RunRecord(fixture_id=fixture_id, agent="(multi-agent)")
+    state = dict(initial_state)
+
+    with deterministic_env(fake_llm, record.recorder):
+        for i, turn in enumerate(turns):
+            user = turn["user"]
+            state = merge_state(
+                state, {"messages": {"role": "user", "content": user}, "is_interrupt": False}
+            )
+            agent_name = turn.get("agent") or state.get("next_node") or initial_state.get("active_agent")
+            agent = _agent_callable(agent_name)
+            fake_llm.enqueue(build_result(turn.get("extraction"), schema=turn.get("schema", "worker")))
+
+            t0 = time.perf_counter()
+            updates = await agent(state)
+            dt = time.perf_counter() - t0
+
+            state = merge_state(state, updates)
+            ai = _last_ai(state.get("messages", []))
+            record.turns.append(
+                TurnRecord(
+                    index=i,
+                    user=user,
+                    ai=ai,
+                    awaiting_slot=state.get("awaiting_slot", ""),
+                    wall_clock_s=dt,
+                    updates=updates,
+                )
+            )
+            if print_latency:
+                print(
+                    f"[golden-latency] {fixture_id} turn {i} "
+                    f"({agent_name}) wall_clock={dt * 1000:.1f}ms "
+                    f"awaiting_slot={state.get('awaiting_slot', '')!r}"
+                )
+
+    record.final_state = state
+    return record

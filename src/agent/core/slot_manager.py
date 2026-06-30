@@ -250,10 +250,10 @@ class SlotManagerMixin:
         )
 
     # -------------------------------------------------------------------------
-    # Phase 3B: live application of an invalidating-correction TurnPlan
+    # Phase 3B/3C: live application of a resolver outcome on a slot-answered turn
     # -------------------------------------------------------------------------
 
-    def _apply_invalidating_correction(
+    def _apply_resolver_outcome(
         self,
         state: State,
         ctx: ConversationContext,
@@ -262,53 +262,94 @@ class SlotManagerMixin:
         plan,
         outcome,
     ) -> Optional[dict]:
-        """Build the live interrupt for an invalidating-correction turn, or None.
+        """Build the live interrupt for an actionable resolver outcome, or None.
 
-        Fires only when the resolver returned a ``correction_ack`` that flips a
-        dirty artifact (an invalidating correction) with a rewind target. The
-        slot answer is already confirmed by the caller; here we emit a templated
-        acknowledgement of BOTH the slot answer and the correction, mark the
-        dependent artifact dirty, and route to the corrected value's owner to
-        re-resolve it (the existing Phase 1 gate then prevents any delivery on the
-        stale value). Pure routing + templated text — no generative surface.
+        Runs after the awaiting slot's answer is confirmed. Handles, with templated
+        speech (no generative surface):
+
+          * correction_ack (invalidating)  — Phase 3B: mark the dependent artifact
+            dirty and route to the corrected value's owner to re-resolve it; the
+            templated ack covers BOTH the slot answer and the correction.
+          * multi_intent_ack               — Phase 3C: enqueue the parked
+            independent(s) and speak a templated acknowledgement so nothing is
+            silently dropped; the agent continues the primary flow next turn.
+          * unsupported_decline / open_redirect — Phase 3C: give the unanswerable
+            side-question a spoken outcome (decline / ask-only); never act on it.
+
+        Returns None for clean answers, non-invalidating corrections, and
+        re_ask/clarify so the existing collector logic is preserved.
         """
-        from agent.orchestration.resolver import CORRECTION_ACK
+        from agent.orchestration.resolver import (
+            CORRECTION_ACK,
+            MULTI_INTENT_ACK,
+            OPEN_REDIRECT,
+            UNSUPPORTED_DECLINE,
+        )
         from agent.responses import turn_acts
 
-        if outcome is None or outcome.speech_act != CORRECTION_ACK:
+        if outcome is None:
             return None
-        if not outcome.dirty or not any(outcome.dirty.values()):
-            return None  # not an *invalidating* correction
-        rewind = outcome.rewind_target
-        if not rewind:
-            return None
-
-        # The corrected field: prefer the structured correction, else fall back.
-        field = ""
-        if plan is not None and getattr(plan, "correction", None):
-            field = plan.correction.field
-        if not field:
-            return None
-
         slot = self.get_slot(slot_name)
-        msg = turn_acts.render_correction_ack(
-            field=field, attempt=slot.attempt_count, slot_value=slot_value
-        )
-        interrupt = self.ask_member_with_context(state, msg, ctx)
-        # Apply the resolver's proposed state updates (dirty flip + slot value).
-        for k, v in (outcome.state_updates or {}).items():
-            interrupt[k] = v
-        # Route to the owner to re-resolve the corrected value before delivery.
-        interrupt["next_node"] = rewind
-        interrupt["awaiting_slot"] = field
-        interrupt["is_interrupt"] = True
-        if field == "zip_code":
-            interrupt["zip_code_used"] = ""  # force provider_search to re-resolve
-        self.logger.info(
-            "slot_manager: invalidating correction applied live",
-            extra={"slot": slot_name, "corrected_field": field, "rewind": rewind},
-        )
-        return interrupt
+
+        # ── correction_ack: only the *invalidating* case is live (Phase 3B) ─────
+        if outcome.speech_act == CORRECTION_ACK:
+            if not outcome.dirty or not any(outcome.dirty.values()):
+                return None  # non-invalidating correction is deferred (Phase 3D)
+            rewind = outcome.rewind_target
+            field = plan.correction.field if (plan and getattr(plan, "correction", None)) else ""
+            if not rewind or not field:
+                return None
+            msg = turn_acts.render_correction_ack(
+                field=field, attempt=slot.attempt_count, slot_value=slot_value
+            )
+            interrupt = self.ask_member_with_context(state, msg, ctx)
+            for k, v in (outcome.state_updates or {}).items():
+                interrupt[k] = v
+            interrupt["next_node"] = rewind
+            interrupt["awaiting_slot"] = field
+            interrupt["is_interrupt"] = True
+            if field == "zip_code":
+                interrupt["zip_code_used"] = ""  # force provider_search to re-resolve
+            self.logger.info(
+                "slot_manager: invalidating correction applied live",
+                extra={"slot": slot_name, "corrected_field": field, "rewind": rewind},
+            )
+            return interrupt
+
+        # ── multi_intent_ack: park the independent(s) + speak the ack ───────────
+        if outcome.speech_act == MULTI_INTENT_ACK and outcome.parked:
+            msg = turn_acts.render_multi_intent_ack(outcome.parked, attempt=slot.attempt_count)
+            interrupt = self.ask_member_with_context(state, msg, ctx)
+            # Persist the enqueued parked intents so they are drained later.
+            if "intent_queue" in (outcome.state_updates or {}):
+                interrupt["intent_queue"] = outcome.state_updates["intent_queue"]
+            # Slot is answered; clear awaiting so the agent resumes the primary
+            # flow on the next turn (no per-parked-intent fan-out this turn).
+            interrupt["awaiting_slot"] = ""
+            interrupt["is_interrupt"] = True
+            self.logger.info(
+                "slot_manager: multi-intent acknowledged",
+                extra={"slot": slot_name, "parked": list(outcome.parked)},
+            )
+            return interrupt
+
+        # ── unsupported / open redirect: spoken outcome, never act ──────────────
+        if outcome.speech_act in (UNSUPPORTED_DECLINE, OPEN_REDIRECT):
+            msg = (
+                turn_acts.render_unsupported_decline(attempt=slot.attempt_count)
+                if outcome.speech_act == UNSUPPORTED_DECLINE
+                else turn_acts.render_open_redirect(attempt=slot.attempt_count)
+            )
+            interrupt = self.ask_member_with_context(state, msg, ctx)
+            interrupt["awaiting_slot"] = ""  # slot answered; resume primary flow next turn
+            interrupt["is_interrupt"] = True
+            self.logger.info(
+                "slot_manager: side-question given spoken outcome",
+                extra={"slot": slot_name, "speech_act": outcome.speech_act},
+            )
+            return interrupt
+
+        return None
 
     # -------------------------------------------------------------------------
     # Per-turn slot collector — with contextual response generation
@@ -406,15 +447,15 @@ class SlotManagerMixin:
                         ctx.update_caller_name(normalized)
                     self._pending_ambiguous_resets.add(slot_name)
 
-                    # ── Phase 3B: invalidating-correction case goes LIVE ──────
+                    # ── Phase 3B/3C: resolver outcome goes LIVE ───────────────
                     # The member answered the awaiting slot AND, in the same
-                    # utterance, disputed a depended-on value (e.g. UAT-007:
-                    # "Fax, but I need to update my ZIP code"). Accept the
-                    # validated slot answer, acknowledge BOTH, mark the dependent
-                    # artifact dirty, and route to the value's owner to re-resolve
-                    # it before delivery. The resolver supersedes the ad-hoc
-                    # follow-up handling for this multi-intent case only.
-                    live = self._apply_invalidating_correction(
+                    # utterance, said something else. Apply the resolver's
+                    # templated outcome so nothing is silently dropped:
+                    #   * invalidating correction (UAT-007 ZIP) → ack both, mark
+                    #     dirty, route to the owner to re-resolve before delivery;
+                    #   * in-scope independent → acknowledge + park for draining;
+                    #   * out-of-scope / unsupported → spoken decline / redirect.
+                    live = self._apply_resolver_outcome(
                         state, ctx, slot_name, normalized, _turn_plan, _turn_outcome
                     )
                     if live is not None:

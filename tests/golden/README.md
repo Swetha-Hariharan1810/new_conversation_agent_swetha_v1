@@ -115,6 +115,36 @@ F1 (Phase 3B) and F2 (Phase 1) both closed. Tests: `test_phase3b_live.py`
 (templates + live UAT-007 + single-intent regression) plus the flipped
 assertions in `test_golden_baseline.py` and `test_phase2_dropped_metric.py`.
 
+## Phase 3C — multi-intent acknowledgement (template-first) + open redirect
+
+- **Templates** (`turn_acts.py`): `render_multi_intent_ack` (keyed on the
+  resolver's parked owners, with an optional "rebuilding" phrase) and
+  `render_open_redirect`, plus an `OWNER_LABELS` map. Deterministic rotation,
+  zero generative surface.
+- **Evaluation → keep templates, NO model call.** `test_phase3c.py` proves the
+  templates reliably cover every UAT-007 combinatoric at the resolver→render
+  level (the fax-redirect phrasings, "send another fax + benefits later", the
+  invalidating-ZIP ack, and the out-of-scope decline/redirect). Because coverage
+  is reliable, the plan-constrained generation fallback is **not** added; it
+  remains the documented escape hatch (fed the validated `TurnPlan` only, never
+  the raw utterance) if reliability ever degrades.
+- **Live wiring**: `_apply_resolver_outcome` (generalized from 3B) now also acts
+  on `multi_intent_ack` (acknowledge + enqueue the parked intent for draining —
+  no per-parked-intent fan-out this turn) and on `unsupported_decline` /
+  `open_redirect` (a spoken outcome for an unanswerable side-question; never
+  acts). The Phase 2 metric counts these as `parked`, not `dropped`.
+- **End-to-end** (`run_conversation`, a new multi-agent driver that follows
+  `next_node`): the UAT-007 ZIP detour runs delivery → provider_search →
+  delivery. Every member turn gets a spoken outcome, the ZIP is re-resolved
+  (`update_zip_code(94110)`), and the list is dispatched exactly once on the
+  **re-resolved** ZIP (`94110`), never the disputed `94107`; `dropped_request_count`
+  is 0 and per-turn latency stays within a deterministic budget.
+
+Note: the UAT-007 fax-redirect turns that arrive on delivery's *inline* yes/no
+branches (benefits_response, fax_confirmed) are covered at the resolver+template
+level now; wiring those non-`_collect_slot` branches onto the resolver is part of
+Phase 3D (roll the live path across every agent).
+
 ## How it stays deterministic (no secrets, no network)
 
 `driver.py` replaces the two external seams every agent touches:

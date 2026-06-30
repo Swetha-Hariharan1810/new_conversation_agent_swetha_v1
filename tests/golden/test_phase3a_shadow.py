@@ -122,9 +122,9 @@ async def test_shadow_catches_independent_on_provider_search():
     assert acks, f"resolver did not multi-intent-ack: {[vars(e) for e in events]}"
     assert any("benefits_agent" in (getattr(e, "parked", []) or []) for e in acks)
 
-    # Live behavior unchanged: provider_type captured, advanced to ZIP confirm.
+    # Phase 3C: the independent is now acted live — acknowledged and parked.
     assert run.final_state.get("provider_type") == "Pediatrician"
-    assert run.turns[0].awaiting_slot == "zip_confirmed"
+    assert "benefits_agent" in (run.final_state.get("intent_queue") or [])
 
 
 # ── shadow does not change behavior anywhere ─────────────────────────────────

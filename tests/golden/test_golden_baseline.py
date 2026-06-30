@@ -77,20 +77,21 @@ async def test_uat_007_zip_request_acknowledged_and_routed():
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def test_provider_search_fresh_request_dropped():
+async def test_provider_search_fresh_request_acknowledged():
+    """Phase 3C: the bundled in-scope request (a benefits question) is no longer
+    dropped — it is acknowledged and parked for draining, while the slot answer is
+    accepted. The drop is gone."""
     fixture = load_fixture("slot_interrupt_fresh_request")
     run = await run_fixture(fixture)
 
     turn0 = run.turns[0]
-    # provider_type captured; agent advanced to ZIP confirmation.
+    # Slot answer accepted.
     assert run.final_state.get("provider_type") == "Pediatrician"
-    assert turn0.awaiting_slot == "zip_confirmed"
-    # The bundled in-scope benefits question was dropped — never acknowledged.
-    assert not re.search(r"deductible", turn0.ai, re.IGNORECASE), (
-        f"F1 regressed (good!) — deductible question acknowledged: {turn0.ai!r}"
-    )
-    # The agent reply is the ZIP confirmation (mentions the ZIP on file).
-    assert re.search(r"94107", turn0.ai), f"expected ZIP confirmation prompt, got {turn0.ai!r}"
+    # Secondary acknowledged (multi-intent ack mentions the benefits question)...
+    assert re.search(r"benefits", turn0.ai, re.IGNORECASE), f"benefits not acknowledged: {turn0.ai!r}"
+    # ...and parked for draining (enqueued), not dropped.
+    assert "benefits_agent" in (run.final_state.get("intent_queue") or [])
+    assert run.dropped_request_count == 0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
