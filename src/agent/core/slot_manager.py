@@ -27,7 +27,11 @@ from agent.responses.builder import (
 from agent.responses.static import build_slot_exhausted_message
 from agent.slots.types import SlotType
 from agent.state import State
-from agent.utils import _last_user_msg, detect_cannot_provide
+from agent.utils import _last_user_msg, detect_cannot_provide, detect_stalling
+
+# Max consecutive "give me a moment" turns acknowledged before a stall is treated
+# as a normal non-answer (bounds a runaway stall without burning real attempts).
+MAX_STALLS = 5
 
 # ── Empathetic "cannot provide" escalation message ────────────────────────────
 # Slot-aware: {slot_label} is filled at runtime from the SlotType label.
@@ -556,6 +560,33 @@ class SlotManagerMixin:
         # ------------------------------------------------------------------
         if state.get("awaiting_slot") == slot_name:
             from agent.llm.schema import EventType
+
+            # ── STALLING: caller asked for time — acknowledge ONLY ────────────
+            # Pure acknowledgement ("take your time"): do NOT re-prompt the slot
+            # and do NOT count a failed attempt. The slot stays pending.
+            # EventType.STALLING is the primary signal; detect_stalling() is the
+            # deterministic regex fallback when the LLM mislabels it. A dedicated
+            # counter bounds a runaway stall so it cannot loop forever.
+            _stall_user = _last_user_msg(messages)
+            _evt = getattr(decision, "event_type", None)
+            _is_stalling = (
+                _evt is not None and _evt.value == EventType.STALLING.value
+            ) or detect_stalling(_stall_user)
+            if _is_stalling:
+                stall = self.get_slot(f"{slot_name}#stall")
+                if stall.attempt_count < MAX_STALLS:
+                    from agent.responses import turn_acts
+
+                    stall.record_attempt(None, success=False)  # bound runaway stalls only
+                    msg = turn_acts.render_stalling_ack(attempt=stall.attempt_count)
+                    interrupt = self.ask_member_with_context(state, msg, ctx)
+                    interrupt["awaiting_slot"] = slot_name  # still waiting; no real-slot failure
+                    self.logger.info(
+                        "_collect_slot: stalling acknowledged (no retry counted)",
+                        extra={"slot": slot_name, "stall_count": stall.attempt_count},
+                    )
+                    return None, interrupt
+                # Too many stalls — fall through to normal non-answer handling.
 
             # ── Phase 3D: resolver outcome on a NON-answered slot turn ─────────
             # The member didn't answer the slot but raised a resolver-owned side

@@ -9,6 +9,10 @@ class EventType(str, Enum):
     ANSWERED_WITH_FOLLOWUP = "answered_with_followup"
     CORRECTED = "corrected"
     AMBIGUOUS = "ambiguous"
+    # Caller asked for time ("give me a few seconds", "let me grab that") — they
+    # have NOT declined and have NOT answered. Acknowledge and wait; never count a
+    # failed slot attempt or re-prompt the slot question.
+    STALLING = "stalling"
     NONE = "none"
 
 

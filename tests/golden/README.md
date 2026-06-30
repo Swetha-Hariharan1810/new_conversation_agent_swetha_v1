@@ -233,6 +233,20 @@ inherit the resolver's acknowledgement/parking. The safety-critical gate is wire
 the full chokepoint migration of the claim agents is the per-agent activation to
 verify against the live suite.
 
+## Stalling — "give me a few seconds" (EventType.STALLING)
+
+When the caller asks for time mid-collection, the agent now acknowledges ONLY
+("take your time") — it never re-prompts the slot question and never counts a
+failed attempt, so a string of stalls can't escalate (the UAT bug where three
+"give me a few seconds" turns exhausted Member ID and transferred the caller).
+
+`EventType.STALLING` is the primary signal (extraction headers emit it);
+`agent.utils.detect_stalling` is the deterministic regex fallback when the LLM
+mislabels it; `turn_acts.render_stalling_ack` is the pure (no-slot) ack. Handled
+at the shared `_collect_slot` chokepoint, so every pipeline agent inherits it. A
+dedicated per-slot stall counter (`MAX_STALLS`) bounds a runaway stall — past the
+cap it falls through to normal non-answer handling. Tests: `test_stalling.py`.
+
 ## How it stays deterministic (no secrets, no network)
 
 `driver.py` replaces the two external seams every agent touches:

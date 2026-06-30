@@ -88,6 +88,15 @@ _OPEN_REDIRECT = [
     "I can't take care of that one here. Is there something else I can help with?",
 ]
 
+# Caller asked for time — acknowledge ONLY. Never re-ask the slot here (the slot
+# stays pending), and never count a retry attempt against it.
+_STALLING_ACK = [
+    "Of course — take your time.",
+    "No problem, take your time.",
+    "Sure, no rush at all.",
+    "Take your time, I'm here when you're ready.",
+]
+
 # Multi-intent acknowledgement: confirm we heard the parked request(s) and that
 # they will be handled, optionally noting what is being rebuilt/finished first.
 _MULTI_ACK = [
@@ -160,6 +169,11 @@ def render_unsupported_decline(*, attempt: int = 0) -> str:
 
 def render_open_redirect(*, attempt: int = 0) -> str:
     return _rotate(_OPEN_REDIRECT, attempt)
+
+
+def render_stalling_ack(*, attempt: int = 0) -> str:
+    """Acknowledge a request for time. No slot label, no question — pure ack."""
+    return _rotate(_STALLING_ACK, attempt)
 
 
 def owner_label(owner: str) -> str:

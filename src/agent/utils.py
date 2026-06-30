@@ -408,6 +408,46 @@ _CANNOT_PROVIDE_PATTERNS: list = [
 ]
 
 
+_STALLING_PATTERNS: list = [
+    _re.compile(p, _re.IGNORECASE)
+    for p in [
+        # "give me a (few) second(s)/minute/moment"
+        r"\bgive\s+me\s+(?:a\s+)?(?:few\s+|couple\s+(?:of\s+)?)?(seconds?|secs?|minutes?|mins?|moments?)\b",
+        r"\bjust\s+(?:a\s+)?(seconds?|secs?|minutes?|mins?|moments?)\b",
+        r"\b(one|a)\s+(second|sec|minute|min|moment)\b",
+        # "hold on / hang on / bear with me"
+        r"\b(hold|hang)\s+on\b",
+        r"\bbear\s+with\s+me\b",
+        # "let me (just) get/grab/find/check/look/pull up/see/dig"
+        r"\blet\s+me\s+(?:just\s+)?(get|grab|find|check|look|pull\s+up|see|dig|locate|fetch)\b",
+        r"\bi'?m\s+(just\s+)?(grabbing|getting|finding|looking|checking|pulling)\b",
+        # "give me a moment to ..."
+        r"\bgive\s+me\s+a\s+moment\b",
+        r"\bjust\s+a\s+(sec|second|moment|minute)\b",
+    ]
+]
+
+
+def detect_stalling(text: str | None) -> bool:
+    """Return True when the caller is asking for time rather than answering or
+    declining — e.g. "give me a few seconds", "hold on", "let me grab that".
+
+    Used as the deterministic fallback for ``EventType.STALLING`` so that a
+    stall is acknowledged ("take your time") WITHOUT re-prompting the slot or
+    burning a retry attempt, even if the extraction LLM mislabels it.
+
+    Returns False for declines (detect_cannot_provide handles those) and for
+    normal answers/confirmations.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    # A decline ("I don't have it") is not a stall.
+    if detect_cannot_provide(stripped):
+        return False
+    return any(pat.search(stripped) for pat in _STALLING_PATTERNS)
+
+
 def detect_cannot_provide(text: str | None) -> bool:
     """
     Return True when the caller is explicitly stating they cannot or do not
