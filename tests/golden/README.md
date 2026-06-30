@@ -91,6 +91,30 @@ owner-rejection, dirty-flag, speech-act selection) and `test_phase3a_shadow.py`
 and the independent at the provider_search chokepoint, the redirect requests
 resolve to an actionable plan, and the live path is byte-for-byte unchanged).
 
+## Phase 3B — promote the invalidating-correction path live + closed templates
+
+- **Closed-set templates** (`src/agent/responses/turn_acts.py`): several phrasings
+  per speech-act (`re_ask`, `clarify`, `correction_ack`, `unsupported_decline`),
+  rotated deterministically by attempt count, filled only with resolver-validated
+  values. Zero generative surface.
+- **Live promotion** (`_collect_slot`): the understanding decode is now installed
+  by default (`shadow.heuristic_decoder`; clearable as a kill-switch). On a slot
+  turn where the member answers AND fires an *invalidating correction* (UAT-007:
+  "Fax, but I need to update my ZIP code"), the resolver now ACTS: it accepts the
+  validated slot answer, marks `provider_list` dirty (Phase 1's gate then forbids
+  delivery), sets the rewind target, and emits a templated `correction_ack` that
+  acknowledges **both** the fax and the ZIP-update — then routes to
+  `provider_search` (awaiting `zip_code`) to re-resolve before delivery. Every
+  other resolver outcome stays shadow-only, so single-intent and other flows are
+  unchanged (the `ANSWERED_WITH_FOLLOWUP` path is preserved).
+
+**UAT-007 assertion #1 is flipped:** the ZIP request is acknowledged in the same
+turn and `dropped_request_count` for that turn is **0** (the Phase 2 metric now
+records it as `parked`, not `dropped`). The fixture's `resolved_failures` records
+F1 (Phase 3B) and F2 (Phase 1) both closed. Tests: `test_phase3b_live.py`
+(templates + live UAT-007 + single-intent regression) plus the flipped
+assertions in `test_golden_baseline.py` and `test_phase2_dropped_metric.py`.
+
 ## How it stays deterministic (no secrets, no network)
 
 `driver.py` replaces the two external seams every agent touches:

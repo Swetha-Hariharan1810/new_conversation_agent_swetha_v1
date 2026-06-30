@@ -40,40 +40,36 @@ def _signal(state: dict) -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def test_uat_007_zip_disputed_blocks_dispatch_but_request_still_silently_dropped():
-    """Phase 1: F2 is CLOSED (no dispatch on a disputed ZIP); F1 is still OPEN
-    (the ZIP-update request is silently dropped — that is Phase 3)."""
+async def test_uat_007_zip_request_acknowledged_and_routed():
+    """Phase 3B: F1 is CLOSED — the ZIP-update request is acknowledged in the SAME
+    turn the member says 'Fax, but I need to update my ZIP code', and the call
+    routes to update the ZIP and rebuild before delivery. F2 stays closed."""
     fixture = load_fixture("uat_007_multi_intent")
     run = await run_fixture(fixture)
 
     turn0 = run.turns[0]
-    turn1 = run.turns[1]
 
-    # ── F1 (STILL OPEN): the ZIP-update request is never acknowledged ───────────
-    # The member said "Fax, but I need to update my ZIP code." Turn 0's reply
-    # confirms the fax and never mentions the ZIP. PHASE-FLIP: Phase 3.
-    assert turn0.awaiting_slot == "fax_confirmed"
+    # ── F1 CLOSED: both intents acknowledged in one templated reply ─────────────
+    assert re.search(r"zip", turn0.ai, re.IGNORECASE), f"ZIP not acknowledged: {turn0.ai!r}"
+    assert re.search(r"fax", turn0.ai, re.IGNORECASE), f"fax answer not acknowledged: {turn0.ai!r}"
+
+    # Slot answer accepted (not dropped) and routed to the ZIP owner to re-resolve.
     assert run.final_state.get("delivery_method") == "fax"
-    assert not re.search(r"zip", turn0.ai, re.IGNORECASE), (
-        f"F1 fixed early? — ZIP acknowledged at turn 0 (that's Phase 3): {turn0.ai!r}"
-    )
-
-    # ── F2 (CLOSED in Phase 1): delivery on the disputed ZIP is impossible ──────
-    # The stale-delivery gate refuses to dispatch and redirects to the ZIP owner.
-    assert run.recorder.count("dispatch_provider_list") == 0, (
-        "F2 regressed — a provider list was dispatched while the ZIP was disputed."
-    )
-    assert turn1.awaiting_slot == "zip_code"
     assert run.final_state.get("next_node") == "provider_search_agent"
-    assert re.search(r"zip", turn1.ai, re.IGNORECASE), (
-        f"expected a redirect asking for the current ZIP, got {turn1.ai!r}"
-    )
-    assert not run.final_state.get("provider_list_sent")
-    assert run.final_state.get("zip_code") == "94107"  # unchanged and NOT dispatched
+    assert turn0.awaiting_slot == "zip_code"
+    assert run.final_state.get("dirty_artifacts", {}).get("provider_list") is True
 
-    # Latency probe produced a wall-clock number for every turn (no new LLM call).
-    assert len(run.latencies_ms) == 2
-    assert all(ms >= 0 for ms in run.latencies_ms)
+    # ── F2 stays closed: nothing dispatched on the disputed ZIP ─────────────────
+    assert run.recorder.count("dispatch_provider_list") == 0
+    assert not run.final_state.get("provider_list_sent")
+
+    # The silent drop is gone.
+    assert run.dropped_request_count == 0
+
+    # One understanding decode; per-turn wall-clock stays within a generous
+    # deterministic budget (real budget asserted in Phase 4).
+    assert len(run.latencies_ms) == 1
+    assert run.latencies_ms[0] < 250
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -243,8 +239,9 @@ def test_fixture_is_well_formed(fixture_name):
     assert fixture["title"]
     assert fixture["driver"]
     assert "turns" in fixture and fixture["turns"]
-    # known_failures must be present (possibly empty for the GREEN control case).
-    assert "known_failures" in fixture
+    # A failure ledger must be present: open defects (known_failures) and/or
+    # closed ones (resolved_failures, once a phase fixes them).
+    assert "known_failures" in fixture or "resolved_failures" in fixture
     # Every scripted extraction must build into a valid structured result.
     for turn in fixture["turns"]:
         build_result(turn.get("extraction"), schema=fixture.get("schema", "worker"))

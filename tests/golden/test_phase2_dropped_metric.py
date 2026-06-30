@@ -140,24 +140,29 @@ def test_classify_outcome_parked_actioned_dropped():
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def test_uat_007_dropped_request_metric_fires():
+async def test_uat_007_secondary_now_handled_not_dropped():
+    """Phase 3B flip: the UAT-007 ZIP request is no longer dropped — the resolver
+    handles it (parked: provider_list marked stale, routed to re-resolve), so the
+    metric records 'parked' and the dropped count for the turn is 0."""
     from tests.golden.driver import load_fixture
 
     fixture = load_fixture("uat_007_multi_intent")
     with capture_metric_logs() as records:
         run = await run_fixture(fixture)
 
-    # Non-zero dropped-request count surfaced by the harness (turn 0: the ZIP
-    # request bundled with "fax" is dropped).
-    assert run.dropped_request_count >= 1
+    # The silent drop is gone.
+    assert run.dropped_request_count == 0
+    assert _dropped_events(records) == []
 
-    # The structured dropped_request event was emitted with a dropped outcome.
-    dropped = _dropped_events(records)
-    assert dropped, "expected at least one dropped_request metric event"
-    assert any(getattr(r, "target", "") == "zip_code" for r in dropped)
+    # The secondary is now classified as handled (parked), not dropped.
+    parked = [
+        r
+        for r in records
+        if getattr(r, "metric", None) == "dropped_request" and getattr(r, "outcome", None) == "parked"
+    ]
+    assert parked, "expected the secondary to be recorded as parked (handled)"
 
-    # NO behavior change vs Phase 1: still no dispatch on the disputed ZIP, still
-    # redirected to the ZIP owner.
+    # And nothing was dispatched on the disputed ZIP; the call routed to re-resolve.
     assert run.recorder.count("dispatch_provider_list") == 0
     assert run.final_state.get("next_node") == "provider_search_agent"
 

@@ -250,6 +250,67 @@ class SlotManagerMixin:
         )
 
     # -------------------------------------------------------------------------
+    # Phase 3B: live application of an invalidating-correction TurnPlan
+    # -------------------------------------------------------------------------
+
+    def _apply_invalidating_correction(
+        self,
+        state: State,
+        ctx: ConversationContext,
+        slot_name: str,
+        slot_value: str,
+        plan,
+        outcome,
+    ) -> Optional[dict]:
+        """Build the live interrupt for an invalidating-correction turn, or None.
+
+        Fires only when the resolver returned a ``correction_ack`` that flips a
+        dirty artifact (an invalidating correction) with a rewind target. The
+        slot answer is already confirmed by the caller; here we emit a templated
+        acknowledgement of BOTH the slot answer and the correction, mark the
+        dependent artifact dirty, and route to the corrected value's owner to
+        re-resolve it (the existing Phase 1 gate then prevents any delivery on the
+        stale value). Pure routing + templated text — no generative surface.
+        """
+        from agent.orchestration.resolver import CORRECTION_ACK
+        from agent.responses import turn_acts
+
+        if outcome is None or outcome.speech_act != CORRECTION_ACK:
+            return None
+        if not outcome.dirty or not any(outcome.dirty.values()):
+            return None  # not an *invalidating* correction
+        rewind = outcome.rewind_target
+        if not rewind:
+            return None
+
+        # The corrected field: prefer the structured correction, else fall back.
+        field = ""
+        if plan is not None and getattr(plan, "correction", None):
+            field = plan.correction.field
+        if not field:
+            return None
+
+        slot = self.get_slot(slot_name)
+        msg = turn_acts.render_correction_ack(
+            field=field, attempt=slot.attempt_count, slot_value=slot_value
+        )
+        interrupt = self.ask_member_with_context(state, msg, ctx)
+        # Apply the resolver's proposed state updates (dirty flip + slot value).
+        for k, v in (outcome.state_updates or {}).items():
+            interrupt[k] = v
+        # Route to the owner to re-resolve the corrected value before delivery.
+        interrupt["next_node"] = rewind
+        interrupt["awaiting_slot"] = field
+        interrupt["is_interrupt"] = True
+        if field == "zip_code":
+            interrupt["zip_code_used"] = ""  # force provider_search to re-resolve
+        self.logger.info(
+            "slot_manager: invalidating correction applied live",
+            extra={"slot": slot_name, "corrected_field": field, "rewind": rewind},
+        )
+        return interrupt
+
+    # -------------------------------------------------------------------------
     # Per-turn slot collector — with contextual response generation
     # -------------------------------------------------------------------------
 
@@ -306,17 +367,20 @@ class SlotManagerMixin:
         slot = self.get_slot(slot_name)
 
         # ------------------------------------------------------------------
-        # Phase 3A: shadow-mode understanding decode + resolver.
+        # Phase 3A/3B: shared understanding decode + resolver.
         # Runs the single resolver on every slot-collection turn in every agent
-        # and LOGS its decision. The live path below is unchanged — this never
-        # affects routing or responses. No-op unless a shadow decoder is
-        # installed (production default is off). Guarded so it can never break
-        # a live turn.
+        # and LOGS its decision. Phase 3B ACTS on exactly one outcome — the
+        # invalidating-correction case (handled below, after the slot answer is
+        # confirmed); every other outcome remains shadow-only, so single-intent
+        # and all other flows are unchanged. No-op unless a decoder is installed.
+        # Guarded so it can never break a live turn.
         # ------------------------------------------------------------------
+        _turn_plan = None
+        _turn_outcome = None
         try:
-            from agent.orchestration.shadow import run_shadow
+            from agent.orchestration.shadow import decode_and_resolve
 
-            run_shadow(
+            _turn_plan, _turn_outcome = decode_and_resolve(
                 state,
                 utterance=_last_user_msg(messages),
                 awaiting_slot=state.get("awaiting_slot") or slot_name,
@@ -324,7 +388,7 @@ class SlotManagerMixin:
                 agent_name=getattr(self, "AGENT_NAME", ""),
             )
         except Exception:  # observability must never break a turn
-            self.logger.debug("shadow resolver run failed", exc_info=True)
+            self.logger.debug("understanding decode/resolve failed", exc_info=True)
 
         # ------------------------------------------------------------------
         # 2. LLM pre-extracted a candidate value
@@ -341,6 +405,20 @@ class SlotManagerMixin:
                     if slot_name == "first_name":
                         ctx.update_caller_name(normalized)
                     self._pending_ambiguous_resets.add(slot_name)
+
+                    # ── Phase 3B: invalidating-correction case goes LIVE ──────
+                    # The member answered the awaiting slot AND, in the same
+                    # utterance, disputed a depended-on value (e.g. UAT-007:
+                    # "Fax, but I need to update my ZIP code"). Accept the
+                    # validated slot answer, acknowledge BOTH, mark the dependent
+                    # artifact dirty, and route to the value's owner to re-resolve
+                    # it before delivery. The resolver supersedes the ad-hoc
+                    # follow-up handling for this multi-intent case only.
+                    live = self._apply_invalidating_correction(
+                        state, ctx, slot_name, normalized, _turn_plan, _turn_outcome
+                    )
+                    if live is not None:
+                        return normalized, live
 
                     # Check whether caller also said something that needs addressing.
                     # Import here to avoid circular imports at module level.

@@ -32,20 +32,21 @@ class _ListHandler(logging.Handler):
 
 @contextmanager
 def shadow_logs(decoder=heuristic_decoder):
-    """Enable the shadow decoder and capture its log records; always restore."""
+    """Install the decoder and capture its log records; restore prior decoder."""
     from agent.orchestration import shadow as shadow_mod
 
     lg = logging.getLogger("agent.orchestration.shadow")
     handler = _ListHandler()
     handler.setLevel(logging.DEBUG)
     prev_level = lg.level
+    prev_decoder = shadow_mod.get_shadow_decoder()
     lg.setLevel(logging.DEBUG)
     lg.addHandler(handler)
     shadow_mod.set_shadow_decoder(decoder)
     try:
         yield handler.records
     finally:
-        shadow_mod.set_shadow_decoder(None)
+        shadow_mod.set_shadow_decoder(prev_decoder)
         lg.removeHandler(handler)
         lg.setLevel(prev_level)
 
@@ -54,11 +55,19 @@ def _shadow_events(records):
     return [r for r in records if getattr(r, "metric", None) == "turnplan_shadow"]
 
 
-# ── default off ──────────────────────────────────────────────────────────────
+# ── promoted by default + kill switch ────────────────────────────────────────
 
 
-async def test_shadow_is_off_by_default():
-    # No decoder installed in a clean process → shadow is a no-op.
+async def test_understanding_decode_installed_by_default():
+    # Phase 3B promotes the deterministic decode: installed by default (the
+    # conftest autouse fixture pins it, mirroring import-time default).
+    assert get_shadow_decoder() is heuristic_decoder
+
+
+async def test_decoder_kill_switch_disables_live_and_shadow():
+    # Clearing the decoder reverts to pre-3B behavior: no shadow log AND no live
+    # invalidating-correction handling (the slot is collected and the agent asks
+    # to confirm the fax, never routing to the ZIP owner).
     clear_shadow_decoder()
     assert get_shadow_decoder() is None
 
@@ -66,10 +75,14 @@ async def test_shadow_is_off_by_default():
     lg = logging.getLogger("agent.orchestration.shadow")
     lg.addHandler(handler)
     try:
-        await run_fixture(load_fixture("uat_007_multi_intent"), print_latency=False)
+        run = await run_fixture(load_fixture("uat_007_multi_intent"), print_latency=False)
     finally:
         lg.removeHandler(handler)
+
     assert _shadow_events(handler.records) == []
+    # Live invalidating handling is OFF → old single-intent collection path.
+    assert run.turns[0].awaiting_slot == "fax_confirmed"
+    assert run.final_state.get("next_node") != "provider_search_agent"
 
 
 # ── catches the UAT-007 ZIP request at the delivery chokepoint ───────────────
@@ -117,15 +130,41 @@ async def test_shadow_catches_independent_on_provider_search():
 # ── shadow does not change behavior anywhere ─────────────────────────────────
 
 
-async def test_shadow_does_not_change_behavior():
-    """Run UAT-007 with shadow OFF then ON; the live-behavior fields match."""
-    off = await run_fixture(load_fixture("uat_007_multi_intent"), print_latency=False)
-    with shadow_logs():
-        on = await run_fixture(load_fixture("uat_007_multi_intent"), print_latency=False)
+def _clean_single_intent_fixture():
+    return {
+        "id": "UNIT-CLEAN-SINGLE",
+        "driver": "provider_search_agent",
+        "initial_state": {
+            "messages": [{"role": "assistant", "content": "What type of provider are you looking for?"}],
+            "member_status_verify": True,
+            "member_id": "M714598",
+            "call_intent": "provider_services",
+            "active_agent": "provider_search_agent",
+            "provider_type": "",
+            "zip_code": "94107",
+            "zip_code_used": "",
+            "awaiting_slot": "provider_type",
+            "dirty_artifacts": {},
+            "slot_attempts": {},
+            "is_interrupt": True,
+            "app_run_id": "unit-clean",
+        },
+        "turns": [{"user": "Pediatrician", "extraction": {"extracted": {"provider_type": "pediatrician"}}}],
+    }
 
-    for key in ("next_node", "awaiting_slot", "delivery_method", "zip_code", "provider_list_sent"):
-        assert off.final_state.get(key) == on.final_state.get(key), f"shadow changed {key}"
-    assert off.recorder.count("dispatch_provider_list") == on.recorder.count("dispatch_provider_list") == 0
+
+async def test_non_invalidating_turn_unchanged_by_decode():
+    """Only the invalidating-correction case is promoted live in 3B. A clean
+    single-intent turn must behave identically with the decode ON vs OFF."""
+    from agent.orchestration import shadow as shadow_mod
+
+    shadow_mod.set_shadow_decoder(None)
+    off = await run_fixture(_clean_single_intent_fixture(), print_latency=False)
+    shadow_mod.set_shadow_decoder(heuristic_decoder)
+    on = await run_fixture(_clean_single_intent_fixture(), print_latency=False)
+
+    for key in ("next_node", "awaiting_slot", "provider_type", "zip_code"):
+        assert off.final_state.get(key) == on.final_state.get(key), f"decode changed {key}"
 
 
 # ── resolver would catch the later 'send it to another fax' redirects ────────

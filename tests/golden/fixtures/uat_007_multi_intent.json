@@ -9,18 +9,18 @@
     "Faithful reduction of the UAT-007 call log to the exact turn where the defect fires.",
     "Agent asks 'fax or email?'. Member answers the delivery method AND asks to update",
     "their ZIP in the same breath. The single-intent WorkerResult schema can only carry",
-    "the delivery_method, so the ZIP-update request is invisible to the agent and is",
-    "never acknowledged or actioned (failure F1 — still open, Phase 3).",
-    "PHASE 1: with the depended-on ZIP disputed, provider_list is marked stale",
-    "(dirty_artifacts) and the deterministic delivery gate REFUSES to dispatch on it,",
-    "redirecting to the ZIP owner instead — so F2 (dispatch on disputed ZIP) is closed."
+    "the delivery_method.",
+    "PHASE 3B: the understanding decode recovers the dropped ZIP request from the raw",
+    "utterance; the resolver accepts the validated slot answer (fax), marks provider_list",
+    "stale, acknowledges BOTH the fax and the ZIP-update in one templated reply, and routes",
+    "to the ZIP owner (provider_search) to re-resolve the ZIP before delivery. The Phase 1",
+    "gate still guarantees no dispatch can occur on the disputed ZIP."
   ],
-  "phase1_note": [
-    "dirty_artifacts.provider_list models that the member's ZIP is disputed/unresolved",
-    "when they reach delivery. In the live flow the ZIP owner (provider_search) sets this",
-    "flag; UAT-007's drop-at-delivery registration of the dispute is Phase 3. Phase 1's",
-    "guarantee is that the gate reads ONLY dirty_artifacts, so delivery on a disputed ZIP",
-    "is impossible regardless of how the turn is classified."
+  "phase_history": [
+    "Phase 0: both F1 (silent ZIP drop) and F2 (dispatch on disputed ZIP) demonstrated.",
+    "Phase 1: F2 closed by the deterministic stale-delivery gate.",
+    "Phase 3B: F1 closed — the ZIP request is acknowledged in the SAME turn and the call",
+    "routes to update the ZIP and rebuild before delivery; dropped_request_count → 0."
   ],
   "initial_state": {
     "messages": [
@@ -37,7 +37,7 @@
     "zip_code": "94107",
     "zip_code_used": "94107",
     "zip_code_updated": false,
-    "dirty_artifacts": {"provider_list": true},
+    "dirty_artifacts": {},
     "fax": "415-555-3299",
     "email": "",
     "delivery_method": "",
@@ -50,31 +50,25 @@
     {
       "user": "Fax, but I need to update my ZIP code.",
       "extraction": {"extracted": {"delivery_method": "fax"}},
-      "note": "The ZIP-update request is NOT representable in WorkerResult — only delivery_method is captured.",
-      "expected_behavior_target": "Acknowledge BOTH: capture delivery_method=fax AND hold/return to the ZIP-update request.",
-      "actual_behavior_today": "Captures delivery_method=fax, asks to confirm the fax on file, never mentions the ZIP."
-    },
-    {
-      "user": "Yes.",
-      "extraction": {"extracted": {"fax_confirmed": "yes"}},
-      "expected_behavior_target": "Provider list dispatched against the CORRECTED ZIP (or the member is re-asked for it first).",
-      "phase1_behavior": "Dispatch REFUSED while provider_list is stale; agent redirects to provider_search to re-resolve the ZIP. No dispatch occurs."
+      "note": "The ZIP-update request is NOT representable in WorkerResult — only delivery_method is captured; the understanding decode recovers it from the raw utterance.",
+      "expected_behavior_target": "Acknowledge BOTH: capture delivery_method=fax AND act on the ZIP-update request.",
+      "phase3b_behavior": "delivery_method=fax accepted; correction_ack acknowledges the fax AND the ZIP update; provider_list marked dirty; routes to provider_search (awaiting zip_code) to re-resolve before delivery; nothing dispatched; dropped_request_count for this turn = 0."
     }
   ],
-  "known_failures": [
+  "resolved_failures": [
     {
       "id": "F1",
       "severity": "unacceptable",
-      "status": "open (Phase 3)",
-      "description": "The ZIP-update request is never acknowledged (silent drop).",
-      "baseline_assertion": "After turn 0 the agent's reply mentions the fax on file but never the ZIP, and no update_zip_code tool call is made for the entire run."
+      "status": "closed (Phase 3B — TurnPlan capture + acknowledgement)",
+      "description": "The ZIP-update request was never acknowledged (silent drop).",
+      "assertion": "The turn-0 reply acknowledges BOTH the fax and the ZIP update; the call routes to provider_search (awaiting_slot=zip_code) to re-resolve the ZIP; dropped_request_count == 0."
     },
     {
       "id": "F2",
       "severity": "high",
       "status": "closed (Phase 1 deterministic stale-delivery gate)",
-      "description": "The provider list is dispatched on the disputed ZIP (94107).",
-      "baseline_assertion": "PHASE 1: dispatch_provider_list is NEVER called while provider_list is dirty; the agent redirects to the ZIP owner (next_node=provider_search_agent, awaiting_slot=zip_code) and state.zip_code stays '94107' (unchanged, NOT dispatched)."
+      "description": "The provider list was dispatched on the disputed ZIP (94107).",
+      "assertion": "dispatch_provider_list is never called while provider_list is dirty; the ZIP is re-resolved before any delivery."
     }
   ]
 }

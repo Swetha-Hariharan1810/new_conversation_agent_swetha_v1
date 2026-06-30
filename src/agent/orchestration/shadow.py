@@ -45,7 +45,12 @@ logger = get_logger(__name__)
 # Decoder: (state, utterance, decision) -> TurnPlan | None
 Decoder = Callable[[dict, str, Any], Optional[TurnPlan]]
 
-_decoder: Optional[Decoder] = None
+# Phase 3B promotes the understanding decode to LIVE for the invalidating-
+# correction case, so the deterministic decoder is installed by default. It can
+# be swapped for the LLM decode later, or cleared (kill-switch) via
+# clear_shadow_decoder(). When a decoder is installed the resolver also runs in
+# shadow (logs) on every other slot turn.
+_decoder: Optional[Decoder] = None  # set at module end once heuristic_decoder is defined
 
 
 def set_shadow_decoder(decoder: Optional[Decoder]) -> None:
@@ -150,26 +155,28 @@ def heuristic_decoder(state: dict, utterance: str, decision: Any) -> Optional[Tu
 # ── Runner ─────────────────────────────────────────────────────────────────────
 
 
-def run_shadow(
+def decode_and_resolve(
     state: dict,
     *,
     utterance: str,
     awaiting_slot: str,
     decision: Any = None,
     agent_name: str = "",
-) -> Optional[ResolverOutcome]:
-    """Run the understanding decode + resolver in shadow and log the decision.
+) -> tuple[Optional[TurnPlan], Optional[ResolverOutcome]]:
+    """Run the understanding decode + resolver once and log the decision.
 
-    Returns the ResolverOutcome (for tests) or None when no decoder is installed
-    or there is nothing to plan. NEVER mutates the live turn.
+    Returns (plan, outcome), or (None, None) when no decoder is installed or there
+    is nothing to plan. Logging only — callers decide whether to ACT on the
+    outcome (Phase 3B acts on the invalidating-correction case; everything else
+    remains shadow). NEVER mutates the live turn itself.
     """
     decoder = _decoder
     if decoder is None:
-        return None
+        return (None, None)
 
     plan = decoder(state, utterance, decision)
     if plan is None:
-        return None
+        return (None, None)
 
     outcome = resolve_turn(plan, {**state, "awaiting_slot": awaiting_slot}, utterance=utterance)
 
@@ -184,4 +191,27 @@ def run_shadow(
             **outcome.to_log_dict(),
         },
     )
+    return (plan, outcome)
+
+
+def run_shadow(
+    state: dict,
+    *,
+    utterance: str,
+    awaiting_slot: str,
+    decision: Any = None,
+    agent_name: str = "",
+) -> Optional[ResolverOutcome]:
+    """Backwards-compatible wrapper returning just the ResolverOutcome."""
+    _plan, outcome = decode_and_resolve(
+        state,
+        utterance=utterance,
+        awaiting_slot=awaiting_slot,
+        decision=decision,
+        agent_name=agent_name,
+    )
     return outcome
+
+
+# Promote the deterministic understanding decode to live by default (Phase 3B).
+_decoder = heuristic_decoder
