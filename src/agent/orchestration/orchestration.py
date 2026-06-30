@@ -11,9 +11,10 @@ from typing import Optional
 
 from pydantic import BaseModel
 
+from agent.core.signal import AgentSignal, AgentStatus
 from agent.llm.config import get_routing_llm
 from agent.logger import get_logger
-from agent.orchestration.fast_path import get_fast_path_route
+from agent.orchestration.fast_path import drain_next_intent, get_fast_path_route
 from agent.orchestration.safeguards import apply_safeguards
 from agent.state import State
 from agent.utils import _last_user_msg, build_system_prompt
@@ -91,6 +92,15 @@ class Orchestrator:
                 "is_interrupt": False,
                 "orchestrator_reasoning": f"fast-path → {fast_route}",
             }
+
+        # Phase 3D: when the current step has completed and there is no
+        # deterministic next step, drain any parked secondary intent (an
+        # acknowledged in-scope request) to its owner before considering closure.
+        signal = AgentSignal.from_state_dict(state.get("last_agent_signal") or {})
+        if signal.status == AgentStatus.COMPLETE and not signal.closure_requested:
+            if drain := drain_next_intent(state):
+                logger.info("orchestrator: draining parked intent", extra={"route": drain["next_node"]})
+                return {**drain, "orchestrator_reasoning": f"drain parked intent → {drain['next_node']}"}
 
         utterance = _last_user_msg(list(state.get("messages") or []))
 

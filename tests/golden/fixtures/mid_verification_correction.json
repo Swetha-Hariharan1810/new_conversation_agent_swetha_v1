@@ -50,12 +50,13 @@
       "actual_behavior_today": "DOB confirmed; the member_id correction is ignored entirely (no ack, no slot change)."
     }
   ],
-  "known_failures": [
+  "resolved_failures": [
     {
       "id": "F1",
       "severity": "high",
-      "description": "A correction bundled with a valid slot answer is dropped on the valid-extraction path.",
-      "baseline_assertion": "_collect_slot returns (dob, None): DOB confirmed, no interrupt; the member_id correction produced no slot action (member_id slot still holds the old value, not M999999)."
+      "status": "closed (Phase 3D — resolver rolled across the shared chokepoint)",
+      "description": "A correction bundled with a valid slot answer was dropped on the valid-extraction path.",
+      "assertion": "_collect_slot confirms the DOB AND returns a correction_ack interrupt that acknowledges the Member ID correction and rewinds to its owner (next_node=verification_agent, awaiting_slot=member_id)."
     }
   ]
 }

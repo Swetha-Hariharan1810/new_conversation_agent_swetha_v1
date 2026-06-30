@@ -145,6 +145,43 @@ branches (benefits_response, fax_confirmed) are covered at the resolver+template
 level now; wiring those non-`_collect_slot` branches onto the resolver is part of
 Phase 3D (roll the live path across every agent).
 
+## Phase 3D — roll the live path across every agent
+
+- **Conversation-wide registry** (`src/agent/orchestration/registry.py`): one
+  source of truth for `AGENT_SLOTS`, `SLOT_OWNERS`, `AGENT_ARTIFACTS`, and the
+  `INVALIDATION_EDGES`. Every agent's slots/owners/artifacts are registered;
+  `invalidation.py` (`INTENT_OWNER_REGISTRY`, `INVALIDATION_MAP`), the resolver's
+  `KNOWN_AGENTS`, and the decoder's field-owner lookup now all derive from it.
+- **Cross-agent roll**: the live application (`_apply_resolver_outcome`) now also
+  runs on **non-answered** slot turns and handles **non-invalidating
+  corrections** (rewind to the field's owner), so every agent that shares
+  `_collect_slot` inherits: a correction is acknowledged + rewound, an
+  out-of-scope/unsupported side-question gets a spoken outcome (then the slot is
+  re-asked), and a fresh in-scope request is parked + acknowledged.
+- **Draining** (`drain_next_intent`, wired into the orchestrator): a parked
+  in-scope request is drained to its owner one-per-turn on a later completion —
+  so an acknowledged side request is actually served, with no fan-out.
+- **follow_up migration**: `_resolve_cross_domain_side_request` routes follow_up's
+  multi-intent handling through the shared decode + resolver for genuine
+  cross-domain action requests (parked + acknowledged), while leaving the Q&A it
+  can answer itself to its existing path.
+
+**Conversation-wide Phase 0 cases now pass** (`test_phase3d.py` + flipped
+`test_mid_verification_correction_*`): mid-verification correction acknowledged +
+rewound; out-of-scope on an arbitrary slot turn gets a spoken outcome; a fresh
+in-scope request is parked, acknowledged, and drained on a later turn.
+**Regression gate**: full golden suite green and **exactly one understanding
+decode per slot turn** (asserted — no per-parked-intent fan-out).
+
+Scope note: the deterministic golden suite verifies the shared infrastructure
+every agent inherits and the chokepoint-routed flows end-to-end. Turning the
+live path on *inside* each LLM/Salesforce-heavy agent's bespoke branches
+(verification's `apply_corrections`, delivery's inline yes/no, the full
+retirement of follow_up's `FollowUpResult` Q&A classifier onto a
+`TurnPlan` + plan-constrained answer step) is the deliberate per-agent activation
+that must be verified against the live suite (`tests/live_e2e`, which needs Azure
++ Salesforce creds) — recommended as the final hardening pass.
+
 ## How it stays deterministic (no secrets, no network)
 
 `driver.py` replaces the two external seams every agent touches:

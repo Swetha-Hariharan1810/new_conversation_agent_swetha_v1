@@ -19,17 +19,13 @@ Extending it:
 
 from __future__ import annotations
 
-# Upstream owner-field → downstream artifact(s) it invalidates when disputed.
-INVALIDATION_MAP: dict[str, list[str]] = {
-    "zip_code": ["provider_list"],
-}
-
-# Each owner field / derived artifact → the agent responsible for (re)resolving it.
-# Used to redirect the caller to the right owner when an artifact is stale.
-INTENT_OWNER_REGISTRY: dict[str, str] = {
-    "zip_code": "provider_search_agent",
-    "provider_list": "delivery_management_agent",
-}
+# Phase 3D: these maps are now derived from the conversation-wide registry
+# (agent.orchestration.registry), the single source of truth for owners and
+# invalidation edges. Re-exported here so existing importers are unchanged.
+from agent.orchestration.registry import (  # noqa: F401
+    INTENT_OWNER_REGISTRY,
+    INVALIDATION_MAP,
+)
 
 
 def artifacts_invalidated_by(field: str) -> list[str]:

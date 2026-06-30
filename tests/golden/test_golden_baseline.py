@@ -99,7 +99,10 @@ async def test_provider_search_fresh_request_acknowledged():
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def test_mid_verification_correction_dropped():
+async def test_mid_verification_correction_acknowledged_and_rewound():
+    """Phase 3D: a correction bundled with a slot answer is no longer dropped on
+    the valid-extraction path — the DOB is confirmed, the Member ID correction is
+    acknowledged, and the turn rewinds to the corrected value's owner."""
     fixture = load_fixture("mid_verification_correction")
     probe = fixture["collector_probe"]
 
@@ -131,7 +134,6 @@ async def test_mid_verification_correction_dropped():
         {"role": "user", "content": fixture["turns"][0]["user"]},
     ]
 
-    fake_recorder_unused = None  # collector path touches no storage tools
     value, interrupt = await agent._collect_slot(
         dict(probe["state"]),
         config,
@@ -140,17 +142,14 @@ async def test_mid_verification_correction_dropped():
         decision=decision,
     )
 
-    # DOB confirmed cleanly...
+    # DOB confirmed...
     assert value == "09/03/1985"
-    assert interrupt is None
-    # ...but the bundled member_id CORRECTION was dropped: the collector never
-    # touched the member_id slot (no acknowledgement, no new value applied).
-    member_id_slot = agent._slots.get("member_id")
-    assert member_id_slot is None or member_id_slot.last_value != "M999999", (
-        "F1 regressed (good!) — the member_id correction was applied; baseline drops it."
-    )
-    assert "member_id" not in agent._newly_confirmed
-    assert fake_recorder_unused is None
+    # ...AND the Member ID correction is acknowledged and rewound to its owner.
+    assert interrupt is not None
+    assert interrupt["awaiting_slot"] == "member_id"
+    assert interrupt["next_node"] == "verification_agent"
+    ack = interrupt["messages"]["content"] if isinstance(interrupt.get("messages"), dict) else ""
+    assert re.search(r"member id", ack, re.IGNORECASE), f"correction not acknowledged: {ack!r}"
 
 
 # ──────────────────────────────────────────────────────────────────────────────

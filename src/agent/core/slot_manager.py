@@ -258,26 +258,32 @@ class SlotManagerMixin:
         state: State,
         ctx: ConversationContext,
         slot_name: str,
-        slot_value: str,
+        slot_value: Optional[str],
         plan,
         outcome,
+        *,
+        slot_answered: bool = True,
+        slot_label: Optional[str] = None,
     ) -> Optional[dict]:
         """Build the live interrupt for an actionable resolver outcome, or None.
 
-        Runs after the awaiting slot's answer is confirmed. Handles, with templated
-        speech (no generative surface):
+        Runs at the shared chokepoint for every agent (Phase 3D), both when the
+        awaiting slot was answered AND when it was not (``slot_answered``). Handles,
+        with templated speech (no generative surface):
 
-          * correction_ack (invalidating)  — Phase 3B: mark the dependent artifact
-            dirty and route to the corrected value's owner to re-resolve it; the
-            templated ack covers BOTH the slot answer and the correction.
-          * multi_intent_ack               — Phase 3C: enqueue the parked
-            independent(s) and speak a templated acknowledgement so nothing is
-            silently dropped; the agent continues the primary flow next turn.
-          * unsupported_decline / open_redirect — Phase 3C: give the unanswerable
-            side-question a spoken outcome (decline / ask-only); never act on it.
+          * correction_ack — accept the answer (if any), acknowledge the
+            correction, and route to the corrected value's owner to re-resolve it.
+            Invalidating corrections also flip the dependent artifact dirty (Phase
+            1's gate then blocks delivery). Only applied when the slot was answered;
+            a bare correction with no answer uses the existing CORRECTED path.
+          * multi_intent_ack — enqueue the parked independent(s) for draining and
+            speak a templated acknowledgement (no per-parked-intent fan-out).
+          * unsupported_decline / open_redirect — give the unanswerable side
+            question a spoken outcome; never act on it.
 
-        Returns None for clean answers, non-invalidating corrections, and
-        re_ask/clarify so the existing collector logic is preserved.
+        When the slot was NOT answered, the spoken outcome is followed by a re-ask
+        of the same slot (awaiting kept), so the primary collection continues.
+        Returns None for clean answers and re_ask/clarify (existing logic).
         """
         from agent.orchestration.resolver import (
             CORRECTION_ACK,
@@ -290,64 +296,75 @@ class SlotManagerMixin:
         if outcome is None:
             return None
         slot = self.get_slot(slot_name)
+        label = slot_label or slot_name.replace("_", " ")
 
-        # ── correction_ack: only the *invalidating* case is live (Phase 3B) ─────
+        def _finish(msg: str, *, extra_updates: dict | None = None, keep_slot: bool) -> dict:
+            interrupt = self.ask_member_with_context(state, msg, ctx)
+            for k, v in (extra_updates or {}).items():
+                interrupt[k] = v
+            interrupt["awaiting_slot"] = slot_name if keep_slot else ""
+            interrupt["is_interrupt"] = True
+            return interrupt
+
+        # ── correction_ack — only when the slot was answered (else CORRECTED path)
         if outcome.speech_act == CORRECTION_ACK:
-            if not outcome.dirty or not any(outcome.dirty.values()):
-                return None  # non-invalidating correction is deferred (Phase 3D)
+            if not slot_answered:
+                return None
             rewind = outcome.rewind_target
             field = plan.correction.field if (plan and getattr(plan, "correction", None)) else ""
             if not rewind or not field:
                 return None
+            invalidating = bool(outcome.dirty and any(outcome.dirty.values()))
             msg = turn_acts.render_correction_ack(
-                field=field, attempt=slot.attempt_count, slot_value=slot_value
+                field=field,
+                attempt=slot.attempt_count,
+                slot_value=slot_value if invalidating else None,
             )
             interrupt = self.ask_member_with_context(state, msg, ctx)
             for k, v in (outcome.state_updates or {}).items():
                 interrupt[k] = v
-            interrupt["next_node"] = rewind
+            interrupt["next_node"] = rewind  # rewind to the corrected value's owner
             interrupt["awaiting_slot"] = field
             interrupt["is_interrupt"] = True
             if field == "zip_code":
                 interrupt["zip_code_used"] = ""  # force provider_search to re-resolve
             self.logger.info(
-                "slot_manager: invalidating correction applied live",
-                extra={"slot": slot_name, "corrected_field": field, "rewind": rewind},
+                "slot_manager: correction applied live",
+                extra={
+                    "slot": slot_name,
+                    "corrected_field": field,
+                    "rewind": rewind,
+                    "invalidating": invalidating,
+                },
             )
             return interrupt
 
-        # ── multi_intent_ack: park the independent(s) + speak the ack ───────────
+        # ── multi_intent_ack — park independent(s) + speak the ack ──────────────
         if outcome.speech_act == MULTI_INTENT_ACK and outcome.parked:
-            msg = turn_acts.render_multi_intent_ack(outcome.parked, attempt=slot.attempt_count)
-            interrupt = self.ask_member_with_context(state, msg, ctx)
-            # Persist the enqueued parked intents so they are drained later.
+            ack = turn_acts.render_multi_intent_ack(outcome.parked, attempt=slot.attempt_count)
+            msg = ack if slot_answered else f"{ack} {turn_acts.render_re_ask(slot_label=label)}"
+            extra = {}
             if "intent_queue" in (outcome.state_updates or {}):
-                interrupt["intent_queue"] = outcome.state_updates["intent_queue"]
-            # Slot is answered; clear awaiting so the agent resumes the primary
-            # flow on the next turn (no per-parked-intent fan-out this turn).
-            interrupt["awaiting_slot"] = ""
-            interrupt["is_interrupt"] = True
+                extra["intent_queue"] = outcome.state_updates["intent_queue"]
             self.logger.info(
                 "slot_manager: multi-intent acknowledged",
                 extra={"slot": slot_name, "parked": list(outcome.parked)},
             )
-            return interrupt
+            return _finish(msg, extra_updates=extra, keep_slot=not slot_answered)
 
-        # ── unsupported / open redirect: spoken outcome, never act ──────────────
+        # ── unsupported / open redirect — spoken outcome, never act ─────────────
         if outcome.speech_act in (UNSUPPORTED_DECLINE, OPEN_REDIRECT):
-            msg = (
+            base = (
                 turn_acts.render_unsupported_decline(attempt=slot.attempt_count)
                 if outcome.speech_act == UNSUPPORTED_DECLINE
                 else turn_acts.render_open_redirect(attempt=slot.attempt_count)
             )
-            interrupt = self.ask_member_with_context(state, msg, ctx)
-            interrupt["awaiting_slot"] = ""  # slot answered; resume primary flow next turn
-            interrupt["is_interrupt"] = True
+            msg = base if slot_answered else f"{base} {turn_acts.render_re_ask(slot_label=label)}"
             self.logger.info(
                 "slot_manager: side-question given spoken outcome",
                 extra={"slot": slot_name, "speech_act": outcome.speech_act},
             )
-            return interrupt
+            return _finish(msg, keep_slot=not slot_answered)
 
         return None
 
@@ -456,7 +473,14 @@ class SlotManagerMixin:
                     #   * in-scope independent → acknowledge + park for draining;
                     #   * out-of-scope / unsupported → spoken decline / redirect.
                     live = self._apply_resolver_outcome(
-                        state, ctx, slot_name, normalized, _turn_plan, _turn_outcome
+                        state,
+                        ctx,
+                        slot_name,
+                        normalized,
+                        _turn_plan,
+                        _turn_outcome,
+                        slot_answered=True,
+                        slot_label=slot_label,
                     )
                     if live is not None:
                         return normalized, live
@@ -528,6 +552,24 @@ class SlotManagerMixin:
         # ------------------------------------------------------------------
         if state.get("awaiting_slot") == slot_name:
             from agent.llm.schema import EventType
+
+            # ── Phase 3D: resolver outcome on a NON-answered slot turn ─────────
+            # The member didn't answer the slot but raised a resolver-owned side
+            # request (an independent to park, or an out-of-scope/unsupported
+            # question). Give it a spoken outcome, then re-ask the slot. Corrections
+            # with no answer fall through to the existing CORRECTED path below.
+            live = self._apply_resolver_outcome(
+                state,
+                ctx,
+                slot_name,
+                None,
+                _turn_plan,
+                _turn_outcome,
+                slot_answered=False,
+                slot_label=slot_label,
+            )
+            if live is not None:
+                return None, live
 
             event_type = getattr(decision, "event_type", None)
             event_value = event_type.value if event_type is not None else EventType.ANSWERED.value

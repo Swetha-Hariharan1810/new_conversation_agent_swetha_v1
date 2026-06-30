@@ -69,21 +69,11 @@ def get_shadow_decoder() -> Optional[Decoder]:
 
 # ── Default deterministic decoder (no LLM) ─────────────────────────────────────
 
-# Which agent owns a corrected identity/contact field, for correction routing.
-_FIELD_OWNERS = {
-    "zip_code": "provider_search_agent",
-    "fax": "delivery_management_agent",
-    "email": "delivery_management_agent",
-    "first_name": "verification_agent",
-    "last_name": "verification_agent",
-    "member_id": "verification_agent",
-    "dob": "verification_agent",
-    "phone_number": "verification_agent",
-}
-
 
 def _owner_for_field(field: str) -> str:
-    return owner_of(field) or _FIELD_OWNERS.get(field, "")
+    # Owner comes from the conversation-wide registry (Phase 3D). phone_number is
+    # an alias for the phone_confirmed/phone slots' owner.
+    return owner_of(field) or owner_of("phone" if field == "phone_number" else field) or ""
 
 
 def heuristic_decoder(state: dict, utterance: str, decision: Any) -> Optional[TurnPlan]:

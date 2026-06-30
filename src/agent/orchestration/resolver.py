@@ -34,6 +34,7 @@ from agent.orchestration.invalidation import (
     mark_dirty,
     owner_of,
 )
+from agent.orchestration.registry import ALL_AGENTS
 from agent.slots import normalizers as _N
 from agent.slots import validators as _V
 
@@ -52,24 +53,10 @@ SPEECH_ACTS = frozenset(
 # Below this, the decode is too uncertain to act on — ask instead.
 CONFIDENCE_THRESHOLD = 0.5
 
-# Known routable agents. Mirrors orchestration.AgentNode values; kept local so the
-# resolver stays a leaf module (no import of the LLM-bearing orchestration graph).
-KNOWN_AGENTS = frozenset(
-    {
-        "intake_agent",
-        "verification_agent",
-        "escalation_agent",
-        "closure_agent",
-        "provider_search_agent",
-        "delivery_management_agent",
-        "benefits_agent",
-        "care_wellness_agent",
-        "follow_up_agent",
-        "claim_adjustment_agent",
-        "records_coordination_agent",
-        "notification_setup_agent",
-    }
-)
+# Known routable agents — sourced from the conversation-wide registry (Phase 3D),
+# plus the two non-slot terminals (intake/escalation/closure) the resolver may
+# route to. Kept as a leaf import (registry has no heavy deps).
+KNOWN_AGENTS = ALL_AGENTS | {"intake_agent", "escalation_agent", "closure_agent"}
 
 # slot name → (normalizer, validator), reusing the existing deterministic functions.
 SLOT_SPEC = {

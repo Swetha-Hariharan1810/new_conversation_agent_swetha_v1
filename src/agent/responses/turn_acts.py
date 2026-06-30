@@ -20,6 +20,15 @@ FIELD_LABELS: dict[str, str] = {
     "fax": "fax number",
     "email": "email address",
     "phone_number": "phone number",
+    "phone": "phone number",
+    "member_id": "Member ID",
+    "dob": "date of birth",
+    "first_name": "first name",
+    "last_name": "last name",
+    "relationship": "plan relationship",
+    "provider_type": "provider type",
+    "delivery_method": "delivery method",
+    "reference_number": "reference number",
 }
 
 # What to ask for when re-collecting a corrected field at its owner.
@@ -28,6 +37,14 @@ FIELD_ASK_LABELS: dict[str, str] = {
     "fax": "correct fax number",
     "email": "correct email address",
     "phone_number": "correct phone number",
+    "phone": "correct phone number",
+    "member_id": "correct Member ID",
+    "dob": "correct date of birth",
+    "first_name": "correct first name",
+    "last_name": "correct last name",
+    "relationship": "relationship to the plan",
+    "provider_type": "type of provider you're looking for",
+    "reference_number": "correct reference number",
 }
 
 # ── Template pools (no free text — placeholders are resolver-validated) ─────────
