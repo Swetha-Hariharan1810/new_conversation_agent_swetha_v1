@@ -6,7 +6,7 @@ fax 415-555-3299, pediatrician) so state is consistent. Each test is the
 deterministic counterpart of the listed scenario — it proves the Python
 guarantees (resolver decision, gate, span/owner checks, draining, precedence)
 without depending on an LLM classifying correctly. The end-to-end (live LLM)
-counterparts live in tests/live_e2e/test_multi_intent_scenarios.py.
+counterparts live in tests/live_e2e/scenarios.py (group N), run via test_live.py.
 
 S6 and S7 are the safety net and run in CI on every commit (see ci.yml).
 """

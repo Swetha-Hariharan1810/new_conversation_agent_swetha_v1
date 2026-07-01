@@ -204,10 +204,10 @@ Residual risks are nailed down by deterministic tests:
 (S1 canonical UAT-007 end-to-end; S2 mid-verification correction; S3 parked +
 drained independent; S4 safety/transfer precedence; S5 quad-intent precedence +
 in-line decline; S6/S7 safety net; S8 single-intent regression + one decode per
-turn). The **live (real-graph)** counterparts are
-`tests/live_e2e/test_multi_intent_scenarios.py` (tagged `live`; authored against
-the preflight-verified Emily fixture — swap the verify prefix for a Daniel Reed /
-M714598 fixture to run literally as UAT-007).
+turn). The **live (real-graph)** counterparts live in the central
+`tests/live_e2e/scenarios.py` (group **N** — `multi_intent_*` + a stalling
+scenario), registered in `SCENARIOS` and run by `test_live.py` under `-m live`;
+they're authored against the preflight-verified Emily / James fixtures.
 
 **CI**: `ci.yml` runs `uv run pytest tests/golden` on every PR — so the S6/S7
 safety net (and the whole deterministic suite) can never regress.
