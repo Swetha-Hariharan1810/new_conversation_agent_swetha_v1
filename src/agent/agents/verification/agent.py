@@ -529,6 +529,9 @@ class VerificationAgent(BaseAgent):
             ask["name_confirm_attempts"] = attempts
             return ask
 
+        if stall := self.check_stalling(state, messages, result, _NAME_CONFIRM_SLOT):
+            return stall
+
         # ── OUTCOME 4: ambiguous — retry readback ────────────────────────────
         self.slot_fail(_NAME_CONFIRM_SLOT)
         if self.get_slot(_NAME_CONFIRM_SLOT).is_exhausted():
@@ -578,6 +581,9 @@ class VerificationAgent(BaseAgent):
             # correction slot — do not increment again.
             new_state = {**state, "first_name": new_first, "last_name": new_last}
             return self._deliver_name_readback(new_state)
+
+        if stall := self.check_stalling(state, messages, result, _NAME_CORRECTION_SLOT):
+            return stall
 
         # Nothing extractable — retry the "what is the correct name?" question.
         self.slot_fail(_NAME_CORRECTION_SLOT)

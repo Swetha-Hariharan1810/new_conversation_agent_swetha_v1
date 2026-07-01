@@ -236,6 +236,15 @@ class ProviderSearchAgent(BaseAgent):
                 ask_result["dirty_artifacts"] = mark_dirty(state.get("dirty_artifacts"), "zip_code")
                 return ask_result
 
+            if stall := self.check_stalling(
+                state,
+                messages,
+                result,
+                "zip_confirmed",
+                extra_updates={"provider_type": provider_type, "zip_code": zip_on_file},
+            ):
+                return stall
+
             # No clear yes/no — retry or exhaust
             self.slot_fail("zip_confirmed")
             slot = self.get_slot("zip_confirmed")

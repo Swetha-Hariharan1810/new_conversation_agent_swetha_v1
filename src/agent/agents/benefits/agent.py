@@ -161,6 +161,9 @@ class BenefitsAgent(BaseAgent):
                 proactive_offer_available=False,
             )
 
+        if stall := self.check_stalling(state, messages, result, _CARE_COACH_SLOT):
+            return stall
+
         # No clear yes/no — retry or exhaust gracefully
         self.slot_fail(_CARE_COACH_SLOT)
         if self.get_slot(_CARE_COACH_SLOT).is_exhausted():

@@ -137,6 +137,9 @@ class RecordsCoordinationAgent(BaseAgent):
                     reason="member_declined_all_records_options",
                 )
 
+            if stall := self.check_stalling(state, messages, result, "upload_method"):
+                return stall
+
             # No clear extraction — re-ask (retry once before moving on)
             self.slot_fail("upload_method")
             if self.get_slot("upload_method").is_exhausted():
@@ -173,6 +176,9 @@ class RecordsCoordinationAgent(BaseAgent):
             if upload_consent == "no":
                 # Member declined link — offer Personal Guide
                 return await self._handle_guide_consent_ask(state)
+
+            if stall := self.check_stalling(state, messages, result, "upload_consent"):
+                return stall
 
             # Ambiguous — retry
             self.slot_fail("upload_consent")
@@ -255,6 +261,9 @@ class RecordsCoordinationAgent(BaseAgent):
                 ask_result["pending_email"] = ""
                 return ask_result
 
+            if stall := self.check_stalling(state, messages, result, "email_confirmed"):
+                return stall
+
             # Ambiguous / no extraction → re-read the email, ask again (do NOT ask for new email)
             self.slot_fail("email_confirmed")
             if self.get_slot("email_confirmed").is_exhausted():
@@ -305,6 +314,8 @@ class RecordsCoordinationAgent(BaseAgent):
                     confirm["awaiting_slot"] = "email_confirmed"
                     confirm["pending_email"] = normalized
                     return confirm
+            if stall := self.check_stalling(state, messages, result, "email"):
+                return stall
             self.slot_fail("email")
             if self.get_slot("email").is_exhausted():
                 return self.signal_escalate(
@@ -332,6 +343,9 @@ class RecordsCoordinationAgent(BaseAgent):
                     pick(MSG_DECLINE_ESCALATE),
                     reason="member_declined_personal_guide",
                 )
+
+            if stall := self.check_stalling(state, messages, result, "personal_guide_consent"):
+                return stall
 
             # Ambiguous
             self.slot_fail("personal_guide_consent")

@@ -187,3 +187,70 @@ async def test_stall_cap_falls_through_to_normal_handling():
         _state(), _config(), _messages("one moment"), pre_extracted="", decision=decision
     )
     assert agent.get_slot("member_id").attempt_count == 1
+
+
+# ── check_stalling() — shared guard for hand-coded confirmation flows ────────
+#
+# Several agents build yes/no confirmations (ZIP, fax, email, phone, name...)
+# directly in run() instead of going through _collect_slot, so they need to
+# call check_stalling() explicitly. These tests cover the helper itself plus
+# the exact regression reported in production: provider_search_agent's ZIP
+# read-back ("Just to confirm — your ZIP code is 12138?") burned a retry
+# attempt and re-asked the question in the same breath when the caller said
+# "give me a few seconds" instead of acknowledging and waiting.
+
+
+def test_check_stalling_acknowledges_without_reasking_or_burning_attempt():
+    agent = _Probe.from_state(_state())
+    decision = WorkerResult(event_type=EventType.STALLING)
+    interrupt = agent.check_stalling(
+        _state(), _messages("give me a few seconds"), decision, "zip_confirmed"
+    )
+    assert interrupt is not None
+    assert interrupt["awaiting_slot"] == "zip_confirmed"
+    ack = _ack_text(interrupt)
+    assert re.search(r"take your time|no rush", ack, re.IGNORECASE)
+    assert "zip" not in ack.lower()
+    assert "?" not in ack
+    assert agent.get_slot("zip_confirmed").attempt_count == 0
+
+
+def test_check_stalling_returns_none_for_a_real_answer():
+    agent = _Probe.from_state(_state())
+    decision = WorkerResult(event_type=EventType.ANSWERED)
+    assert agent.check_stalling(_state(), _messages("yes that's correct"), decision, "zip_confirmed") is None
+
+
+async def test_provider_search_zip_confirmed_stall_does_not_reask_or_burn_attempt(monkeypatch):
+    """Reproduces the UAT transcript: caller stalls on the ZIP read-back and
+    the agent must NOT combine the ack with a repeated confirmation question."""
+    from agent.agents.provider_search.agent import ProviderSearchAgent
+    from agent.agents.provider_search import agent as provider_search_agent_module
+
+    async def _fake_extract(*args, **kwargs):
+        return WorkerResult(event_type=EventType.STALLING)
+
+    monkeypatch.setattr(provider_search_agent_module, "extract_provider_search_decision", _fake_extract)
+    monkeypatch.setattr(provider_search_agent_module, "get_extraction_llm", lambda: None)
+
+    state = {
+        "member_status_verify": True,
+        "provider_type": "Primary Care Physician",
+        "zip_code": "12138",
+        "zip_code_used": "",
+        "awaiting_slot": "zip_confirmed",
+        "slot_attempts": {},
+        "messages": [
+            {"role": "assistant", "content": "Just to confirm — your ZIP code is 12138?"},
+            {"role": "user", "content": "give me a few seconds"},
+        ],
+    }
+    agent = ProviderSearchAgent.from_state(state)
+    interrupt = await agent.run(state)
+
+    assert interrupt["awaiting_slot"] == "zip_confirmed"
+    ack = _ack_text(interrupt)
+    assert re.search(r"take your time|no rush", ack, re.IGNORECASE)
+    assert "zip" not in ack.lower()
+    assert "?" not in ack
+    assert agent.get_slot("zip_confirmed").attempt_count == 0

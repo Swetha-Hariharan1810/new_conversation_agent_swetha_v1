@@ -43,9 +43,12 @@ async def handle_unclear_intent(agent, state: State, result=None) -> dict:
             initiator="Agent",
         )
 
+    messages = list(state.get("messages") or [])
+    if stall := agent.check_stalling(state, messages, result, INTENT_SLOT):
+        return stall
+
     agent.slot_fail(INTENT_SLOT, is_asr=False)
     logger.info(LOG_INTENT_UNCLEAR, extra={"attempt": attempts + 1})
-    messages = list(state.get("messages") or [])
 
     # if attempts == 0:
     #     from agent.agents.intake.constants import UNCLEAR_FIRST_ATTEMPT_MSGS

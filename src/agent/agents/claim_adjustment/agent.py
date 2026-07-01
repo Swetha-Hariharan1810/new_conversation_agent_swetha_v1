@@ -143,6 +143,9 @@ class ClaimAdjustmentAgent(BaseAgent):
                 logger.info(LOG_REF_COLLECTED)
                 state = {**state, "reference_number": reference_number}
             else:
+                if stall := self.check_stalling(state, messages, result, "reference_number"):
+                    return stall
+
                 # Use core slot_fail directly — ensures slot_attempts is captured
                 # in the next ask_member call (via slots_dict()), matching the
                 # pattern used by every other agent in the codebase
