@@ -130,7 +130,7 @@ class DeliveryManagementAgent(BaseAgent):
 
         # ── BENEFITS RESPONSE PHASE ──────────────────────────────────────────
         if current_awaiting == "benefits_response":
-            return await self._handle_benefits_response(state, result)
+            return await self._handle_benefits_response(state, messages, result)
 
         # ── COLLECT DELIVERY METHOD ──────────────────────────────────────────
         if not delivery_method:
@@ -221,6 +221,11 @@ class DeliveryManagementAgent(BaseAgent):
                 ask_result["pending_fax"] = ""
                 ask_result["fax"] = fax_on_file
                 return ask_result
+
+            if stall := self.check_stalling(
+                state, messages, result, "fax_confirmed", extra_updates={"fax": fax_on_file}
+            ):
+                return stall
 
             # No clear yes/no — retry or exhaust
             self.slot_fail("fax_confirmed")
@@ -334,6 +339,11 @@ class DeliveryManagementAgent(BaseAgent):
                 ask_result["email"] = email_on_file
                 return ask_result
 
+            if stall := self.check_stalling(
+                state, messages, result, "email_confirmed", extra_updates={"email": email_on_file}
+            ):
+                return stall
+
             # No clear yes/no — retry or exhaust
             self.slot_fail("email_confirmed")
             if self.get_slot("email_confirmed").is_exhausted():
@@ -377,7 +387,7 @@ class DeliveryManagementAgent(BaseAgent):
     # Private helpers
     # -------------------------------------------------------------------------
 
-    async def _handle_benefits_response(self, state: State, result) -> dict:
+    async def _handle_benefits_response(self, state: State, messages: list, result) -> dict:
         """Process the member's yes/no response to the benefits offer."""
         extracted = (result.extracted or {}) if result else {}
         benefits_raw = extracted.get("benefits_response", "")
@@ -395,6 +405,9 @@ class DeliveryManagementAgent(BaseAgent):
                 ),
                 proactive_offer_available=(benefits_conf == "yes"),
             )
+
+        if stall := self.check_stalling(state, messages, result, "benefits_response"):
+            return stall
 
         # No clear yes/no — retry or exhaust gracefully
         self.slot_fail("benefits_response")

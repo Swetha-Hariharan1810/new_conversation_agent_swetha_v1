@@ -158,6 +158,9 @@ class NotificationSetupAgent(BaseAgent):
                 ask_result["awaiting_slot"] = "n2_notification_method"
                 return ask_result
 
+            if stall := self.check_stalling(state, messages, result, "timeline_question"):
+                return stall
+
             # Ambiguous — proper slot retry pattern
             self.slot_fail("timeline_question")
             if self.get_slot("timeline_question").is_exhausted():
@@ -185,6 +188,9 @@ class NotificationSetupAgent(BaseAgent):
             if method == "email":
                 logger.info(LOG_METHOD_COLLECTED, extra={"method": "email"})
                 return self._ask_contact_confirmation(state, "email")
+
+            if stall := self.check_stalling(state, messages, result, "notification_method"):
+                return stall
 
             self.slot_fail("notification_method")
             if self.get_slot("notification_method").is_exhausted():
@@ -274,6 +280,11 @@ class NotificationSetupAgent(BaseAgent):
                 ask_result["pending_phone"] = ""
                 return ask_result
 
+            if stall := self.check_stalling(
+                state, messages, result, "phone_confirmed", extra_updates={"notification_channel": "sms"}
+            ):
+                return stall
+
             self.slot_fail("phone_confirmed")
             if self.get_slot("phone_confirmed").is_exhausted():
                 return self.signal_escalate(
@@ -302,6 +313,8 @@ class NotificationSetupAgent(BaseAgent):
                     confirm["pending_phone"] = normalized
                     confirm["notification_channel"] = "sms"
                     return confirm
+            if stall := self.check_stalling(state, messages, result, "phone"):
+                return stall
             self.slot_fail("phone")
             if self.get_slot("phone").is_exhausted():
                 return self.signal_escalate(
@@ -391,6 +404,11 @@ class NotificationSetupAgent(BaseAgent):
                 ask_result["pending_email"] = ""
                 return ask_result
 
+            if stall := self.check_stalling(
+                state, messages, result, "email_confirmed", extra_updates={"notification_channel": "email"}
+            ):
+                return stall
+
             self.slot_fail("email_confirmed")
             if self.get_slot("email_confirmed").is_exhausted():
                 return self.signal_escalate(
@@ -434,6 +452,8 @@ class NotificationSetupAgent(BaseAgent):
                     confirm["pending_email"] = normalized
                     confirm["notification_channel"] = "email"
                     return confirm
+            if stall := self.check_stalling(state, messages, result, "email"):
+                return stall
             self.slot_fail("email")
             if self.get_slot("email").is_exhausted():
                 return self.signal_escalate(
@@ -489,6 +509,9 @@ class NotificationSetupAgent(BaseAgent):
                     "reasoning": "notification_setup_agent: n2 opted out by member",
                 }
                 return result
+
+            if stall := self.check_stalling(state, messages, result, "n2_notification_method"):
+                return stall
 
             self.slot_fail("n2_notification_method")
             if self.get_slot("n2_notification_method").is_exhausted():
