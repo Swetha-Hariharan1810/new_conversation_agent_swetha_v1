@@ -216,12 +216,17 @@ async def test_retry_turn_goes_through_gemini_recovery():
         f"expected one LLM-2 recovery call, got {len(recording.calls)}"
     )
 
-    # ...using the recovery.md system prompt (its opening instruction is stable).
+    # ...using the generation/recovery.md system prompt. Assert against the built
+    # prompt itself (robust to wording changes across phases) — it is the recovery
+    # prompt concatenated onto the global voice.
+    from agent.utils import build_generation_prompt, read_prompt
+
     system_msg = recording.calls[0][0]
     system_text = getattr(system_msg, "content", "")
-    assert "generating a retry or recovery message" in system_text.lower(), (
+    assert system_text == build_generation_prompt(), (
         "expected the generation/recovery.md system prompt to drive LLM-2 recovery"
     )
+    assert read_prompt("generation/recovery.md") in system_text
 
 
 async def test_retry_falls_back_to_static_when_generation_unavailable():

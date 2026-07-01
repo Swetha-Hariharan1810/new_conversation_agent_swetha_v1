@@ -205,6 +205,21 @@ class SlotManagerMixin:
     # LLM 2 retry response helper
     # -------------------------------------------------------------------------
 
+    @staticmethod
+    def _dynamic_slot_label(state: State, slot_name: str) -> str | None:
+        """Runtime slot-label override for slots whose phrasing depends on live
+        state (relationship options, the phone number on file). Returns None for
+        fixed slots, which use the static label dict."""
+        if slot_name == "relationship" and state.get("relationship"):
+            return "relationship — whether they are the plan holder or dependent"
+        if slot_name in ("phone_confirmed", "phone_confirmation") and state.get("phone_number"):
+            digits = "".join(c for c in state["phone_number"] if c.isdigit())
+            formatted = (
+                f"{digits[:3]}-{digits[3:6]}-{digits[6:]}" if len(digits) == 10 else state["phone_number"]
+            )
+            return f"phone confirmation — whether {formatted} is still the number on file (yes or no)"
+        return None
+
     async def _generate_slot_retry_response(
         self,
         state: State,
@@ -221,17 +236,7 @@ class SlotManagerMixin:
         from agent.llm.response_generator import generate_recovery_message
 
         slot_state = self.get_slot(slot_name)
-        slot_label_override: str | None = None
-        if slot_name == "relationship" and state.get("relationship"):
-            slot_label_override = "relationship — whether they are the plan holder or dependent"
-        elif slot_name in ("phone_confirmed", "phone_confirmation") and state.get("phone_number"):
-            digits = "".join(c for c in state["phone_number"] if c.isdigit())
-            formatted = (
-                f"{digits[:3]}-{digits[3:6]}-{digits[6:]}" if len(digits) == 10 else state["phone_number"]
-            )
-            slot_label_override = (
-                f"phone confirmation — whether {formatted} is still the number on file (yes or no)"
-            )
+        slot_label_override = self._dynamic_slot_label(state, slot_name)
         sc = session_context or {}
         text = await generate_recovery_message(
             slot_name=slot_name,
@@ -428,6 +433,53 @@ class SlotManagerMixin:
             return _finish(msg, keep_slot=not slot_answered)
 
         return None
+
+    # -------------------------------------------------------------------------
+    # Phase 1: one voice — route the happy-path ask/transition through the generator
+    # -------------------------------------------------------------------------
+
+    async def _first_ask_message(
+        self,
+        state: State,
+        config: "_InternalSlotConfig",
+        ctx: ConversationContext,
+        messages: list,
+        *,
+        is_transition: bool,
+        template_text: str,
+    ) -> str:
+        """Text for a first-ask / transition turn.
+
+        Default (UNIFIED_VOICE off): the template string, exactly as before.
+        UNIFIED_VOICE on (and a typed slot): the SAME grounded generator that
+        speaks retries/clarifies/corrections, with speech act ``ask`` or
+        ``transition`` — so every turn has one voice. The template is passed as
+        ``fallback_text`` so a generation failure/timeout can never drop the turn.
+        """
+        from agent.core import flags
+
+        if not (flags.unified_voice() and config.slot_type):
+            return template_text
+
+        from agent.llm.response_generator import (
+            SPEECH_ACT_ASK,
+            SPEECH_ACT_TRANSITION,
+            generate_recovery_message,
+        )
+
+        speech_act = SPEECH_ACT_TRANSITION if is_transition else SPEECH_ACT_ASK
+        return await generate_recovery_message(
+            slot_name=config.slot_name,
+            attempt=0,
+            guard=speech_act,
+            speech_act=speech_act,
+            last_messages=messages[-4:],
+            slot_label_override=self._dynamic_slot_label(state, config.slot_name),
+            caller_name=ctx.caller_first_name,
+            confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
+            user_utterance=_last_user_msg(messages),
+            fallback_text=template_text,
+        )
 
     # -------------------------------------------------------------------------
     # Per-turn slot collector — with contextual response generation
@@ -713,25 +765,12 @@ class SlotManagerMixin:
                 else:
                     from agent.llm.response_generator import generate_recovery_message
 
-                    _sl_override: str | None = None
-                    if slot_name == "relationship" and state.get("relationship"):
-                        _sl_override = "relationship — whether they are the plan holder or dependent"
-                    elif slot_name in ("phone_confirmed", "phone_confirmation") and state.get("phone_number"):
-                        _digits = "".join(c for c in state["phone_number"] if c.isdigit())
-                        _fmt = (
-                            f"{_digits[:3]}-{_digits[3:6]}-{_digits[6:]}"
-                            if len(_digits) == 10
-                            else state["phone_number"]
-                        )
-                        _sl_override = (
-                            f"phone confirmation — whether {_fmt} is still the number on file (yes or no)"
-                        )
                     msg = await generate_recovery_message(
                         slot_name=slot_name,
                         attempt=0,
                         guard="CLARIFY",
                         last_messages=messages[-6:],
-                        slot_label_override=_sl_override,
+                        slot_label_override=self._dynamic_slot_label(state, slot_name),
                         caller_name=ctx.caller_first_name,
                         confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
                         user_utterance=_last_user_msg(messages),
@@ -776,8 +815,13 @@ class SlotManagerMixin:
             return None, interrupt
 
         # ------------------------------------------------------------------
-        # 3. First ask
+        # 3. First ask (or transition). Phase 1: when UNIFIED_VOICE is on this is
+        # spoken by the same generator as every recovery act; the template is the
+        # guaranteed fallback so no turn is ever dropped.
         # ------------------------------------------------------------------
-        interrupt = self.ask_member_with_context(state, _ask_first(), ctx)
+        first_ask_text = await self._first_ask_message(
+            state, config, ctx, messages, is_transition=is_transition, template_text=_ask_first()
+        )
+        interrupt = self.ask_member_with_context(state, first_ask_text, ctx)
         interrupt["awaiting_slot"] = slot_name
         return None, interrupt
