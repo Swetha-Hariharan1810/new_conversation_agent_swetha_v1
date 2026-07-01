@@ -561,6 +561,22 @@ class SlotManagerMixin:
         except Exception:  # observability must never break a turn
             self.logger.debug("understanding decode/resolve failed", exc_info=True)
 
+        # Phase 2: run the log-only TurnPlan observer (the LLM decode in SHADOW).
+        # It only logs a turnplan_shadow comparison and never feeds this turn, so
+        # the live path above is unchanged. No-op unless TURNPLAN_DECODE=shadow.
+        try:
+            from agent.orchestration.shadow import run_turnplan_observer
+
+            await run_turnplan_observer(
+                state,
+                utterance=_last_user_msg(messages),
+                awaiting_slot=state.get("awaiting_slot") or slot_name,
+                decision=decision,
+                agent_name=getattr(self, "AGENT_NAME", ""),
+            )
+        except Exception:  # observability must never break a turn
+            self.logger.debug("turnplan observer failed", exc_info=True)
+
         # ------------------------------------------------------------------
         # 2. LLM pre-extracted a candidate value
         # ------------------------------------------------------------------

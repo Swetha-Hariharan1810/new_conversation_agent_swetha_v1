@@ -128,6 +128,15 @@ def human_node(state: State) -> Command:
 
 # ── Graph builder ─────────────────────────────────────────────────────────────
 def build_graph(checkpointer=None):
+    # Install the TurnPlan decode per TURNPLAN_DECODE (Phase 2). Default (off) is a
+    # no-op; shadow installs the log-only LLM observer; live installs it acting.
+    try:
+        from agent.llm.turnplan_decoder import configure_turnplan_decoder
+
+        configure_turnplan_decoder()
+    except Exception:  # never block graph construction on decoder wiring
+        logger.warning("build_graph: configure_turnplan_decoder failed", exc_info=True)
+
     g = StateGraph(State)
     g.add_node("orchestrator", orchestrator)
     g.add_node("human_node", human_node)

@@ -67,6 +67,75 @@ def get_shadow_decoder() -> Optional[Decoder]:
     return _decoder
 
 
+# ── Phase 2: log-only TurnPlan observer ─────────────────────────────────────────
+# A SECOND decoder slot that runs PURELY to log a `turnplan_shadow` comparison
+# alongside the live decode — it never feeds the turn, so the live path (and its
+# output) is byte-for-byte unchanged. This is how the LLM TurnPlan decode is run
+# in SHADOW without touching behavior. The observer may be async (the LLM decode).
+_observer: Optional[Any] = None  # (state, utterance, decision) -> TurnPlan | None (may be async)
+
+
+def set_turnplan_observer(decoder: Any) -> None:
+    global _observer
+    _observer = decoder
+
+
+def clear_turnplan_observer() -> None:
+    global _observer
+    _observer = None
+
+
+def get_turnplan_observer() -> Any:
+    return _observer
+
+
+async def run_turnplan_observer(
+    state: dict,
+    *,
+    utterance: str,
+    awaiting_slot: str,
+    decision: Any = None,
+    agent_name: str = "",
+) -> Optional[ResolverOutcome]:
+    """Run the log-only observer decode and log its resolver outcome. Never affects
+    the turn (returns the outcome only for tests). No-op when no observer is
+    installed; guarded so a failing observer can never break a live turn."""
+    import inspect
+
+    observer = _observer
+    if observer is None:
+        return None
+    try:
+        if inspect.iscoroutinefunction(observer):
+            plan = await observer(state, utterance, decision)
+        else:
+            plan = observer(state, utterance, decision)
+    except Exception:  # observability must never break a turn
+        logger.debug("run_turnplan_observer: observer decode failed", exc_info=True)
+        return None
+    if plan is None:
+        return None
+
+    outcome = resolve_turn(plan, {**state, "awaiting_slot": awaiting_slot}, utterance=utterance)
+    logger.info(
+        "turnplan_shadow",
+        extra={
+            "metric": "turnplan_shadow",
+            "source": "llm_observer",
+            "agent": agent_name,
+            "awaiting_slot": awaiting_slot,
+            "event_type": getattr(getattr(decision, "event_type", None), "value", ""),
+            "n_secondary": len(plan.secondary_intents),
+            "has_correction": plan.correction is not None,
+            "answerable_secondaries": sum(
+                1 for s in plan.secondary_intents if getattr(s, "answerable_from_snapshot", False)
+            ),
+            **outcome.to_log_dict(),
+        },
+    )
+    return outcome
+
+
 # ── Default deterministic decoder (no LLM) ─────────────────────────────────────
 
 
