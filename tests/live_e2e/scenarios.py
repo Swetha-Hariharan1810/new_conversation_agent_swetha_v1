@@ -3028,6 +3028,94 @@ stalling_then_provides_member_id = Scenario(
     notes="Stalling: acknowledge time requests, never re-ask or escalate; value captured after.",
 )
 
+# S-STALL-2 — reproduces the reported regression verbatim: the ZIP read-back
+# confirmation ("Just to confirm — your ZIP code is X?") is hand-coded in
+# provider_search_agent.run() outside _collect_slot, so it used to fall
+# through to the generic retry path on a stall — burning an attempt AND
+# re-asking the confirmation question in the SAME message as the "take your
+# time" acknowledgement. check_stalling() now guards this branch too.
+stalling_during_zip_confirmation = Scenario(
+    name="stalling_during_zip_confirmation",
+    flow="pcp",
+    retries=1,
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "give me a few seconds",  # stall 1 — ZIP read-back
+        "hold on, let me grab my card",  # stall 2 — ZIP read-back
+        "yes that's correct",  # confirms ZIP on file
+        "send it to my fax",
+        "yes that's correct",  # fax on file
+        "no thanks",
+        "no thank you",
+        "no that's all",
+    ],
+    turn_expectations={
+        8: TurnExpectation(ai_contains=[r"zip"], slot_awaiting="zip_confirmed"),
+        # THE REGRESSION CATCH: the ack must be pure — no re-asked ZIP question
+        # in the same message — and the slot must still be awaiting zip_confirmed
+        # (not exhausted/escalated) after each stall.
+        9: TurnExpectation(ai_contains=[r"take your time|no rush"], slot_awaiting="zip_confirmed"),
+        10: TurnExpectation(ai_contains=[r"take your time|no rush"], slot_awaiting="zip_confirmed"),
+        11: TurnExpectation(ai_contains=[r"fax or email"]),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,  # a stall must NOT exhaust zip_confirmed / transfer the caller
+        transcript_contains=[r"take your time|no rush"],
+        final_state={"provider_list_sent": True, "delivery_method": "fax"},
+    ),
+    notes=(
+        "Regression test for the UAT transcript: stalling on the ZIP read-back "
+        "must not re-ask 'Is the ZIP code X correct?' in the same breath as the "
+        "acknowledgement, and must not burn a zip_confirmed retry attempt."
+    ),
+)
+
+# S-STALL-3 — same class of bug in a different agent: notification_setup's
+# phone_confirmed read-back is also hand-coded outside _collect_slot. Confirms
+# check_stalling() generalizes beyond provider_search.
+stalling_during_phone_confirmation = Scenario(
+    name="stalling_during_phone_confirmation",
+    flow="claim",
+    timeout_s=360,
+    retries=1,
+    user_turns=_CLAIM_TO_NOTIFICATION
+    + [
+        "You can send me the updates to my phone",  # 12 notification_method = sms
+        "give me a few seconds",  # 13 stall 1 — phone read-back
+        "hold on, let me grab my card",  # 14 stall 2 — phone read-back
+        "yes thats correct",  # 15 confirms phone on file
+        "Okay, how long will it take to finalize the request?",  # 16 timeline question
+        "email them to me",  # 17 N2 channel
+        "No, that's it. Thanks!",  # 18 close
+    ],
+    turn_expectations={
+        13: TurnExpectation(
+            ai_contains=[r"(still the correct number|on file|is that right)"],
+            slot_awaiting="phone_confirmed",
+        ),
+        14: TurnExpectation(ai_contains=[r"take your time|no rush"], slot_awaiting="phone_confirmed"),
+        15: TurnExpectation(ai_contains=[r"take your time|no rush"], slot_awaiting="phone_confirmed"),
+        16: TurnExpectation(ai_contains=[r"timeline"], slot_awaiting="timeline_question"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "member_status_verify": True,
+            "notification_channel": "sms",
+            "claim_timeline_notification_channel": "email",
+            "claim_flow_complete": True,
+        },
+    ),
+    notes=(
+        "Same regression as stalling_during_zip_confirmation but for "
+        "notification_setup_agent's hand-coded phone_confirmed branch — "
+        "proves the fix isn't provider_search-specific."
+    ),
+)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # K. Indirect-decline regression (delivery_management fax/email)
@@ -3141,6 +3229,8 @@ SCENARIOS: list[Scenario] = [
     multi_intent_transfer_precedence,  # S4
     multi_intent_one_breath,  # S5
     stalling_then_provides_member_id,  # S-STALL
+    stalling_during_zip_confirmation,  # S-STALL-2 (provider_search zip_confirmed)
+    stalling_during_phone_confirmation,  # S-STALL-3 (notification_setup phone_confirmed)
 ]
 
 SCENARIOS_BY_NAME: dict[str, Scenario] = {s.name: s for s in SCENARIOS}
