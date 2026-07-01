@@ -139,4 +139,5 @@ markers = [
     "regression: bug regression tests",
     "followup: follow-up agent tests",
     "slow: tests with many parametrized LLM calls",
+    "live: live end-to-end tests (real Azure OpenAI + Salesforce; opt-in via -m live)",
 ]

@@ -5,7 +5,24 @@ fast_path.py — Deterministic routing (core agents only).
 from __future__ import annotations
 
 from agent.core.signal import AgentSignal, AgentStatus
+from agent.orchestration.registry import ALL_AGENTS
 from agent.state import State
+
+
+def drain_next_intent(state: State) -> dict | None:
+    """Phase 3D: pop the next parked secondary intent off ``intent_queue`` and
+    return the routing update to its owner agent, or None if nothing to drain.
+
+    The resolver enqueues the owner agent of each parked in-scope independent.
+    This drains them one per turn (no fan-out) once the current step completes,
+    so an acknowledged side request is actually served on a later turn.
+    """
+    queue = list(state.get("intent_queue") or [])
+    while queue:
+        owner = queue.pop(0)
+        if owner in ALL_AGENTS:
+            return {"next_node": owner, "intent_queue": queue, "is_interrupt": False}
+    return None
 
 
 def get_fast_path_route(state: State) -> str | None:  # noqa: C901

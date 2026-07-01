@@ -2862,6 +2862,174 @@ followup_grievance_rescreen = Scenario(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# N. Multi-intent / context-retention (UAT-007) — the resolver end-to-end.
+#    Deterministic counterparts: tests/golden/test_scenarios_s1_s8.py.
+#    Authored against the preflight-verified Emily / James fixtures.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# S1 — slot answer + invalidating correction (Phase 1 + 3B).
+multi_intent_zip_correction = Scenario(
+    name="multi_intent_zip_correction",
+    flow="pcp",
+    retries=1,
+    mutating=True,  # re-resolves + writes ZIP in Salesforce
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",  # ZIP on file confirmed
+        "Fax, but I need to update my ZIP code.",  # slot answer + invalidating correction
+        "one two one three nine",  # provide the corrected ZIP
+        "yes that's correct",  # confirm fax on file
+        "no thanks",  # decline benefits
+        "no thank you",  # decline care coach
+        "no that's all",
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        transcript_contains=[r"zip"],  # ZIP-update acknowledged, not dropped
+        final_state={"provider_list_sent": truthy},
+    ),
+    notes="S1: ack fax + ZIP-update in one turn; never dispatch on the disputed ZIP.",
+)
+
+# S2 — mid-verification identity correction (Phase 3D). The correction lands on
+# the DOB turn, so this uses the verification turns inline (not the full prefix).
+multi_intent_verification_correction = Scenario(
+    name="multi_intent_verification_correction",
+    flow="pcp",
+    retries=1,
+    user_turns=[
+        "I need to find a primary care physician in my area.",
+        "emily",
+        "carter",
+        "yes correct",  # name_confirmed
+        "m nine zero seven five zero three",
+        # DOB answer + identity correction in one breath:
+        "April twelfth nineteen eighty eight — wait, my member ID was wrong, "
+        "it's m nine zero seven five zero four.",
+        "m nine zero seven five zero three",  # re-confirm the correct ID
+        "I'm calling for myself",
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no that's all",
+    ],
+    expect=Expected(
+        completed=True,
+        transcript_contains=[r"member\s*id"],  # correction acknowledged, not silently advanced
+    ),
+    notes="S2: correction acknowledged + rewound within verification (conversation-wide).",
+)
+
+# S3 — slot answer + fresh in-scope independent request (Phase 3C).
+multi_intent_benefits_independent = Scenario(
+    name="multi_intent_benefits_independent",
+    flow="pcp",
+    retries=1,
+    user_turns=PCP_VERIFY
+    + [
+        "A pediatrician — and can you also go over my benefits afterward?",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "yes please",  # benefits (parked earlier, drained here)
+        "no thank you",
+        "no that's all",
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        transcript_contains=[r"benefit"],  # benefits acknowledged this turn / actioned later
+    ),
+    notes="S3: benefits parked + acknowledged, drained on a later turn; one decode/turn.",
+)
+
+# S4 — transfer injected mid-slot — precedence (Phase 3B).
+multi_intent_transfer_precedence = Scenario(
+    name="multi_intent_transfer_precedence",
+    flow="pcp",
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "Yes that's right — actually just transfer me to a human, this is urgent.",
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=True,
+        transfer_event=True,
+        transfer_initiator="Caller",
+    ),
+    notes="S4: safety/transfer outranks the co-present slot answer; escalate immediately.",
+)
+
+# S5 — several intents in one breath — precedence + in-line decline (Phase 3C/3D).
+multi_intent_one_breath = Scenario(
+    name="multi_intent_one_breath",
+    flow="pcp",
+    retries=1,
+    mutating=True,  # re-resolves + writes ZIP
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",
+        "Email — but my ZIP is wrong, and send it to a different fax, "
+        "and what's my pharmacy copay?",
+        "one two one three nine",  # corrected ZIP
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no that's all",
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        # Every request gets a spoken outcome; the unsupported one is declined.
+        transcript_contains=[r"zip", r"(can'?t|not able|unable|outside)"],
+    ),
+    notes="S5: precedence orders the intents; pharmacy copay declined, never fabricated.",
+)
+
+# S-STALL — caller asks for time mid-collection (EventType.STALLING). The stalls
+# must be acknowledged without re-asking or escalating (the UAT transfer bug).
+stalling_then_provides_member_id = Scenario(
+    name="stalling_then_provides_member_id",
+    flow="pcp",
+    retries=1,
+    user_turns=[
+        "I need to find a primary care physician in my area.",
+        "emily",
+        "carter",
+        "yes correct",
+        "give me a few seconds",  # stall 1
+        "hold on, let me grab my card",  # stall 2
+        "m nine zero seven five zero three",  # then provides it
+        "April twelfth nineteen eighty eight",
+        "I'm calling for myself",
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no that's all",
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=False,  # a stall must NOT exhaust the slot / transfer the caller
+        transcript_contains=[r"take your time|no rush"],
+        final_state={"member_id": contains("907503")},
+    ),
+    notes="Stalling: acknowledge time requests, never re-ask or escalate; value captured after.",
+)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # K. Indirect-decline regression (delivery_management fax/email)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -2966,6 +3134,13 @@ SCENARIOS: list[Scenario] = [
     *INDIRECT_DECLINE_SCENARIOS,  # ID-1, ID-2, ID-3
     # L. Cannot-provide short-circuit
     *CANNOT_PROVIDE_SCENARIOS,  # CP-1 … CP-6
+    # N. Multi-intent / context-retention (UAT-007) + stalling
+    multi_intent_zip_correction,  # S1
+    multi_intent_verification_correction,  # S2
+    multi_intent_benefits_independent,  # S3
+    multi_intent_transfer_precedence,  # S4
+    multi_intent_one_breath,  # S5
+    stalling_then_provides_member_id,  # S-STALL
 ]
 
 SCENARIOS_BY_NAME: dict[str, Scenario] = {s.name: s for s in SCENARIOS}

@@ -9,6 +9,10 @@ class EventType(str, Enum):
     ANSWERED_WITH_FOLLOWUP = "answered_with_followup"
     CORRECTED = "corrected"
     AMBIGUOUS = "ambiguous"
+    # Caller asked for time ("give me a few seconds", "let me grab that") — they
+    # have NOT declined and have NOT answered. Acknowledge and wait; never count a
+    # failed slot attempt or re-prompt the slot question.
+    STALLING = "stalling"
     NONE = "none"
 
 
@@ -56,3 +60,43 @@ class FollowUpResult(BaseModel):
     follow_up_intent: FollowUpIntent = FollowUpIntent.UNSURE
     answer: Optional[str] = None
     detected_intent: Optional[str] = None
+
+
+# ── TurnPlan: full multi-intent understanding decode (Phase 3) ─────────────────
+# Generalizes the FollowUpResult single-decode pattern so any agent's turn can
+# carry the primary slot answer PLUS any secondary intents / corrections present
+# in the same utterance. Deliberately contains NO free-text/prose field: every
+# member-facing sentence is a templated speech-act chosen downstream by the
+# deterministic resolver, never improvised by the decode.
+
+
+class SecondaryIntentType(str, Enum):
+    IN_SCOPE_INDEPENDENT = "in_scope_independent"
+    INVALIDATING_CORRECTION = "invalidating_correction"
+    OUT_OF_SCOPE = "out_of_scope"
+    IN_DOMAIN_UNSUPPORTED = "in_domain_unsupported"
+    SAFETY = "safety"
+    UNKNOWN = "unknown"
+
+
+class SecondaryIntent(BaseModel):
+    type: SecondaryIntentType
+    owner: Optional[str] = None  # must resolve in the registry or be dropped
+    verbatim_span: str  # MUST appear in the utterance (deterministic check)
+
+
+class Correction(BaseModel):
+    field: str
+    owner: str  # must resolve in registry or rejected
+    new_value: Optional[str] = None
+
+
+class TurnPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    slot_answer: Optional[str] = None  # passes existing normalizer+validator before acceptance
+    secondary_intents: list[SecondaryIntent] = Field(default_factory=list)
+    correction: Optional[Correction] = None
+    guard: GuardType = GuardType.NONE
+    guard_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)

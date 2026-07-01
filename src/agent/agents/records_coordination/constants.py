@@ -75,6 +75,17 @@ MSG_DECLINE_ESCALATE = [
     "No problem. I'll connect you with a representative who can help you through this step.",
 ]
 
+# ── Stale-reference guard (claim-flow analog of the stale-delivery guard) ───────
+# Shown when an action keyed on the claim reference number is requested while the
+# reference is disputed/unresolved. The agent refuses and routes to the reference
+# owner (claim_adjustment) to re-resolve before acting.
+MSG_REFERENCE_DISPUTED_REDIRECT = [
+    "Before I do that, let's make sure I have the right claim. "
+    "What's the reference number for the adjustment?",
+    "I want to act on the correct claim — let's confirm the reference first. "
+    "What's the reference number?",
+]
+
 # ── Contact update prompts ─────────────────────────────────────────────────────
 MSG_EMAIL_UPDATE_PROMPT = [
     "No problem — what is the correct email address?",

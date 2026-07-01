@@ -93,6 +93,19 @@ class State(TypedDict):
     correction_return_to: str
     ambiguous_counts: dict
 
+    # ── Dependency invalidation (Phase 1 stale-delivery guard) ───────────────
+    # Maps a downstream artifact name → True when it is stale because a
+    # depended-on upstream value (e.g. zip_code) was disputed/changed and not
+    # yet re-resolved. Read by the deterministic delivery gate. See
+    # agent.orchestration.invalidation.
+    dirty_artifacts: dict[str, bool]
+
+    # ── Dropped-request metric (Phase 2 observability) ───────────────────────
+    # Running count of multi-intent turns where a detected secondary request was
+    # dropped (not actioned or parked). Observability only — see
+    # agent.orchestration.observability.
+    dropped_request_count: int
+
     # ── Verification restart boundary ────────────────────────────────────────
     verification_restart_index: int
 
@@ -205,6 +218,8 @@ def reset_for_new_intent(state: State, new_intent: Optional[str]) -> dict:
         "slot_attempts": {},
         "correction_return_to": "",
         "ambiguous_counts": {},
+        "dirty_artifacts": {},
+        "dropped_request_count": 0,
         "verification_restart_index": 0,
         # ── Provider search ──────────────────────────────────────────────────
         "provider_type": "",

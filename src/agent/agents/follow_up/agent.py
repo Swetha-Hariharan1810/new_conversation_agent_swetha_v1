@@ -239,6 +239,16 @@ class FollowUpAgent(BaseAgent):
             result["follow_up_cannot_answer_count"] = consecutive_cannot_answer
             return result
 
+        # ── UNIFIED PATH: cross-domain side request (Phase 3D) ───────────────
+        # follow_up is the prototype the resolver generalizes from. For a genuine
+        # cross-domain action request bundled into a follow-up turn (one follow_up
+        # cannot answer itself — e.g. "...and send the list to a different fax"),
+        # route through the shared understanding decode + resolver so it is
+        # acknowledged and parked for draining, instead of dropped. Pure Q&A,
+        # closure and update-request turns fall through to the existing classifier.
+        if cross := self._resolve_cross_domain_side_request(state, last_user, turn_count):
+            return cross
+
         # ── LLM call: classify intent + generate answer ──────────────────────
         call_intent = state.get("call_intent", "")
         if call_intent == "claim_services":
@@ -361,6 +371,48 @@ class FollowUpAgent(BaseAgent):
         result = self.ask_member(state, answer)
         result["follow_up_turn_count"] = turn_count
         result["follow_up_last_question"] = last_user
+        result["follow_up_cannot_answer_count"] = 0
+        return result
+
+    # Domains follow_up can answer itself from the session snapshot; a secondary
+    # owned by one of these is left to the Q&A classifier, not parked.
+    _QA_OWNERS = frozenset({"benefits_agent", "care_wellness_agent", "follow_up_agent"})
+
+    def _resolve_cross_domain_side_request(
+        self, state: State, last_user: str, turn_count: int
+    ) -> dict | None:
+        """Unify multi-intent handling onto the shared resolver for follow_up.
+
+        Runs the shared understanding decode + resolver on the utterance and, only
+        when it yields a parked in-scope independent owned by an *action* agent
+        (one follow_up cannot answer itself), acknowledges it with a templated
+        multi-intent ack and enqueues the owner for draining. Returns None for
+        everything else so the existing follow_up flow is unchanged.
+        """
+        try:
+            from agent.orchestration.resolver import MULTI_INTENT_ACK
+            from agent.orchestration.shadow import decode_and_resolve
+            from agent.responses import turn_acts
+        except Exception:  # pragma: no cover - defensive
+            return None
+
+        _plan, outcome = decode_and_resolve(
+            state, utterance=last_user, awaiting_slot="", decision=None, agent_name=self.AGENT_NAME
+        )
+        if outcome is None or outcome.speech_act != MULTI_INTENT_ACK or not outcome.parked:
+            return None
+        action_owners = [o for o in outcome.parked if o not in self._QA_OWNERS]
+        if not action_owners:
+            return None  # follow_up can answer it itself — use the Q&A path
+
+        logger.info("follow_up_agent: cross-domain side request parked", extra={"owners": action_owners})
+        result = self.ask_member(state, turn_acts.render_multi_intent_ack(action_owners))
+        queue = list(state.get("intent_queue") or [])
+        for owner in action_owners:
+            if owner not in queue:
+                queue.append(owner)
+        result["intent_queue"] = queue
+        result["follow_up_turn_count"] = turn_count
         result["follow_up_cannot_answer_count"] = 0
         return result
 

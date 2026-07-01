@@ -54,6 +54,10 @@ When in doubt → event_type:"ambiguous".
 "answered_with_followup" — caller clearly answered the awaiting slot AND also
               asked for a repeat, a read-back, a confirmation, or a side
               question. Extract the value into extracted{} as normal.
+"stalling"  — caller is asking for TIME to find/recall the value (they have NOT
+              answered and have NOT declined): "give me a few seconds",
+              "hold on", "let me grab that", "one moment". Set extracted:{},
+              corrections:{}. Do NOT use "ambiguous" for these.
 "ambiguous" — genuinely nothing extractable, garbled, or uncertain — do not guess (see CONFIDENCE anchor above).
 
 ### ANSWERED vs AMBIGUOUS quick examples
@@ -65,6 +69,8 @@ When in doubt → event_type:"ambiguous".
 | "actually it's M451982"            | corrected  | Explicit replacement with new value |
 | "November 5 1992"                  | answered   | Clear complete value                |
 | "It's Jhonny — could you repeat the question?" | answered_with_followup | Valid value + repeat request |
+| "Give me a few seconds, let me grab it" | stalling | Asking for time, no value, no decline |
+| "Hold on, let me find my card"     | stalling   | Asking for time, not a decline      |
 
 ## LOCKED FIELDS
 Never put these in corrections{}: member_status_verify, call_intent.
@@ -83,6 +89,6 @@ If not explicitly stated → omit caller_type from extracted{}.
 ## RETURN
 Return JSON only — no markdown, no explanation.
 { "extracted": {}, "corrections": {}, "event_type": "answered", "guard": null, "guard_confidence": 0.0 }
-event_type: "answered" | "answered_with_followup" | "corrected" | "ambiguous" | "none" — default "answered"
+event_type: "answered" | "answered_with_followup" | "corrected" | "stalling" | "ambiguous" | "none" — default "answered"
 `extracted` — newly provided slot values; `corrections` — replaces a previously accepted slot
 `guard` — triggered guard label or null; `guard_confidence` — 0.0 when no guard fires

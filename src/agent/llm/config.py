@@ -145,6 +145,34 @@ def get_follow_up_llm():
 
 
 @lru_cache(maxsize=1)
+def get_understanding_llm():
+    """LLM tier for the multi-intent understanding decode (TurnPlan).
+
+    Phase 3 contract-change-cost note: the understanding decode emits a TurnPlan
+    (slot_answer + secondary_intents + correction + guard), which is a larger
+    structured output than the per-agent WorkerResult slot extraction. It gets a
+    small max_tokens headroom over get_extraction_llm() (200 → 320) so the richer
+    schema never truncates. The change is ISOLATED to this seam: per-agent slot
+    extraction (get_extraction_llm) is unchanged, so single-intent flows pay no
+    extra cost. Until the LLM decoder is installed (see shadow.set_shadow_decoder)
+    the deterministic heuristic_decoder is used and this tier is dormant.
+    """
+    from langchain_openai import AzureChatOpenAI
+
+    return AzureChatOpenAI(
+        azure_endpoint=Config.AZURE_OPENAI_ENDPOINT,
+        api_key=Config.AZURE_OPENAI_API_KEY,
+        api_version=Config.OPENAI_API_VERSION,
+        azure_deployment=Config.WORKER_DEPLOYMENT,
+        temperature=Config.WORKER_TEMPERATURE,
+        max_tokens=320,  # headroom over extraction's 200 for the TurnPlan schema
+        timeout=5.0,
+        max_retries=1,
+        streaming=False,
+    )
+
+
+@lru_cache(maxsize=1)
 def get_generation_llm():
     """LLM 2 — Gemini for recovery/utterance generation. Cached singleton.
     Falls back to get_extraction_llm() if Gemini is unavailable.

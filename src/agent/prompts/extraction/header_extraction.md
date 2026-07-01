@@ -57,6 +57,9 @@ extracted{} may only contain values the caller actually spoke this turn.
                                         "do you speak Spanish", "what are your hours"
                 format uncertainty about their own answer —
                                         "I think it's...", "not sure if that's right"
+"stalling"  — caller is asking for TIME to find/recall the value, not answering
+              and not declining: "give me a few seconds", "hold on",
+              "let me grab that", "one moment". Set extracted:{}.
 "ambiguous" — genuinely nothing extractable, garbled, or uncertain — do not guess
 "none"      — a guard fired; set when guard != NONE
 
@@ -73,10 +76,12 @@ If not explicitly stated → omit caller_type from extracted{}.
 Return JSON only — no markdown, no explanation.
 {"extracted": {}, "event_type": "answered", "guard": null, "guard_confidence": 0.0}
 
-event_type: "answered" | "answered_with_followup" | "ambiguous" | "none"
+event_type: "answered" | "answered_with_followup" | "stalling" | "ambiguous" | "none"
   answered  — caller directly provided a value for the slot
   answered_with_followup — caller provided a value for the slot AND added a
               secondary signal; extracted{} must hold the slot value
+  stalling  — caller is asking for time to find/recall the value (not answering,
+              not declining); set extracted: {}
   ambiguous — genuinely nothing extractable, garbled, or uncertain — do not guess
   none      — a guard fired; set extracted: {} and populate guard fields
 

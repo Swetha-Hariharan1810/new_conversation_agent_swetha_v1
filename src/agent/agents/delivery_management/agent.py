@@ -23,6 +23,7 @@ from agent.agents.delivery_management.constants import (
     LOG_METHOD_COLLECTED,
     MAX_CONTACT_CHANGE_CYCLES,
     MSG_CONTACT_EXHAUST,
+    MSG_ZIP_DISPUTED_REDIRECT,
 )
 from agent.agents.delivery_management.handlers import (
     dispatch_provider_list,
@@ -38,6 +39,8 @@ from agent.agents.delivery_management.pipelines import (
 from agent.core.agent import BaseAgent
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
+from agent.orchestration.invalidation import is_dirty, owner_of
+from agent.orchestration.observability import observe_dropped_requests
 from agent.slots.normalizers import normalize_email, normalize_fax_number, normalize_yes_no
 from agent.slots.validators import validate_email, validate_fax_number
 from agent.state import State
@@ -415,7 +418,21 @@ class DeliveryManagementAgent(BaseAgent):
     async def _proceed_to_dispatch(
         self, state: State, delivery_method: str, confirmed_destination: str
     ) -> dict:
-        """Dispatch the provider list then make the benefits offer."""
+        """Dispatch the provider list then make the benefits offer.
+
+        Phase 1 stale-delivery guard: before ANY dispatch, refuse if the
+        provider_list is marked stale (a depended-on value — the ZIP — is
+        disputed and not yet re-resolved). The check is unconditional and reads
+        ONLY ``dirty_artifacts``, so delivery on a disputed ZIP is impossible
+        regardless of how the turn was classified. Zero model cost.
+        """
+        if is_dirty(state.get("dirty_artifacts"), "provider_list"):
+            logger.info(
+                "delivery_management_agent: dispatch blocked — provider_list stale "
+                "(ZIP disputed); redirecting to ZIP owner"
+            )
+            return self._redirect_to_resolve_zip(state)
+
         if fail := await dispatch_provider_list(self, state, delivery_method, confirmed_destination):
             return fail
 
@@ -451,6 +468,22 @@ class DeliveryManagementAgent(BaseAgent):
         else:
             offer_result["email"] = confirmed_destination
         return offer_result
+
+    def _redirect_to_resolve_zip(self, state: State) -> dict:
+        """Refuse to dispatch on a disputed ZIP and hand back to the ZIP owner.
+
+        Pauses for the member's current ZIP, then routes to the provider_search
+        agent (the registered owner of ``zip_code``) with ``zip_code_used``
+        cleared so it re-resolves the ZIP and rebuilds the list. The
+        ``dirty_artifacts`` flag is deliberately left set; provider_search clears
+        ``provider_list`` once a valid new ZIP is resolved (see
+        ProviderSearchAgent._signal_done).
+        """
+        result = self.ask_member(state, pick(MSG_ZIP_DISPUTED_REDIRECT))
+        result["next_node"] = owner_of("zip_code") or "provider_search_agent"
+        result["awaiting_slot"] = "zip_code"
+        result["zip_code_used"] = ""  # force provider_search to re-resolve the ZIP
+        return result
 
     def _ask_contact_confirmation(
         self,
@@ -501,6 +534,7 @@ class DeliveryManagementAgent(BaseAgent):
         }
 
 
+@observe_dropped_requests
 async def delivery_management_agent(state: State) -> dict:
     logger.info(LOG_ENTERED, extra={"call_intent": state.get("call_intent", "")})
     return await DeliveryManagementAgent.from_state(state).execute(state)

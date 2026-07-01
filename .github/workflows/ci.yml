@@ -29,6 +29,28 @@ jobs:
       - name: Run Pre-commit
         run: pre-commit run --all-files
 
+  golden-safety-tests:
+    # Deterministic multi-intent safety net (no LLM / Salesforce creds needed).
+    # S6 (misclassification gate) and S7 (span/owner drop) MUST run every commit;
+    # the rest of the golden suite guards the resolver/gate guarantees too.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: UV setup and activate
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run deterministic golden suite (incl. S6/S7 safety net)
+        run: uv run pytest tests/golden -q
+
   build-and-verify:
     runs-on: ubuntu-latest
 
