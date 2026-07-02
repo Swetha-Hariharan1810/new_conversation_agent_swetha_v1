@@ -83,6 +83,13 @@ class SecondaryIntent(BaseModel):
     type: SecondaryIntentType
     owner: Optional[str] = None  # must resolve in the registry or be dropped
     verbatim_span: str  # MUST appear in the utterance (deterministic check)
+    # Phase 2: for an in-scope secondary the decode may say whether it can be
+    # answered from the session snapshot, and — ONLY when it can — carry a grounded
+    # answer derived solely from that snapshot (generalizes FollowUpResult.answer).
+    # An empty answer means the question is NOT answerable → park or decline it;
+    # a value is NEVER fabricated.
+    answerable_from_snapshot: bool = False
+    answer: Optional[str] = None
 
 
 class Correction(BaseModel):

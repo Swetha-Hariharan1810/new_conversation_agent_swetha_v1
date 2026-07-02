@@ -7,8 +7,10 @@ Input is intentionally minimal. Output is one spoken sentence.
 
 from __future__ import annotations
 
+from agent.core import flags
 from agent.llm.config import get_generation_llm
 from agent.logger import get_logger
+from agent.responses.grounding import find_ungrounded_values
 from agent.utils import build_generation_prompt, build_history
 
 logger = get_logger(__name__)
@@ -61,7 +63,16 @@ _SLOT_LABELS: dict[str, str] = {
 #   RETRY   → attempt_count was just incremented; LLM should re-ask firmly
 #   CLARIFY → attempt_count unchanged; LLM should re-ask gently, no implication
 #             that the caller did anything wrong
+# Speech acts the unified voice speaks (Phase 1). "ask" and "transition" are the
+# happy-path acts routed through the generator when UNIFIED_VOICE is on; the rest
+# are the recovery acts the generator already spoke.
+SPEECH_ACT_ASK = "ask"
+SPEECH_ACT_TRANSITION = "transition"
+SPEECH_ACT_MULTI_INTENT = "multi_intent"
+
 _FALLBACKS: dict[str, str] = {
+    "ask": "Could you provide your {slot_label}?",
+    "transition": "Thank you. And your {slot_label}?",
     "INTERRUPTION": "Of course — and I still need your {slot_label}.",
     "OFFTOPIC": "Let me finish this first — your {slot_label}?",
     "RETRY": "Could you try your {slot_label} once more?",
@@ -72,6 +83,72 @@ _FALLBACKS: dict[str, str] = {
     ),
     "ANSWERED_WITH_FOLLOWUP": "Got that — and to confirm, you said {slot_label}.",
 }
+
+
+def _owner_label(owner: str) -> str:
+    """Human phrase for a parked owner agent (lazy import avoids a cycle)."""
+    try:
+        from agent.responses.turn_acts import owner_label
+
+        return owner_label(owner)
+    except Exception:  # pragma: no cover - defensive
+        return "that"
+
+
+def build_recovery_context(
+    *,
+    slot_label: str,
+    attempt: int,
+    speech_act: str,
+    history_text: str,
+    user_utterance: str | None,
+    confirmed_slots: dict | None,
+    validated_answer: str | None,
+    pending_slots: list[str] | None,
+    parked: list[str] | None,
+    declined: bool,
+    answered_inline: list[str] | None = None,
+    next_ask: str | None = None,
+    correction_field: str | None = None,
+) -> str:
+    """Build the STRUCTURED decision context handed to the generator.
+
+    The model does not infer the decision — it reads these labelled lines and
+    phrases them into ONE sentence (composing across clauses in precedence order
+    for a multi-intent turn). Only grounded, this-turn values ever appear as
+    concrete values (``Validated answer this turn`` and ``Answer to include``);
+    ``Confirmed`` lists slot *names*, never their values, so the generator cannot
+    restate a prior identifier it was never given.
+    """
+    lines = [
+        f"Speech act: {speech_act}",
+        f"Collecting: {slot_label}",
+        f"Attempt: {attempt}",
+    ]
+    if validated_answer is not None:
+        lines.append(f"Validated answer this turn: {validated_answer}")
+    if correction_field:
+        lines.append(f"Correction acknowledged: {correction_field}")
+    if answered_inline:
+        for ans in answered_inline:
+            lines.append(f"Answer to include (grounded, say verbatim): {ans}")
+    if parked:
+        parked_str = ", ".join(_owner_label(o) for o in parked)
+        lines.append(f"Parked (say you'll get to it in a moment): {parked_str}")
+    if declined:
+        lines.append("Declined (briefly say you can't help with that one here): yes")
+    if next_ask:
+        lines.append(f"Next, ask for: {next_ask}")
+    if confirmed_slots:
+        lines.append("Confirmed: " + ", ".join(str(k) for k in confirmed_slots))
+    elif confirmed_slots is not None:
+        lines.append("Confirmed: nothing yet")
+    if pending_slots:
+        lines.append("Pending: " + ", ".join(pending_slots))
+    if user_utterance:
+        lines.append(f'Caller just said: "{user_utterance}"')
+    lines += ["", "Conversation:", history_text]
+    return "\n".join(lines)
 
 
 async def generate_recovery_message(
@@ -86,20 +163,37 @@ async def generate_recovery_message(
     user_utterance: str | None = None,
     extracted_value: str | None = None,
     pending_slots: list[str] | None = None,
-    allow_followup_event: bool = False,
+    allow_followup_event: bool = False,  # accepted for back-compat; unused
+    speech_act: str | None = None,
+    parked: list[str] | None = None,
+    declined: bool = False,
+    answered_inline: list[str] | None = None,
+    next_ask: str | None = None,
+    correction_field: str | None = None,
+    grounded_values: list[str] | None = None,
+    fallback_text: str | None = None,
 ) -> str:
     """
-    Generate a natural recovery response via LLM 2 (Gemini).
+    Generate one natural spoken sentence via LLM 2 (Gemini) — the single voice
+    for every turn (Phase 1).
 
-    guard: "CORRECTION" | "CLARIFY" | "INTERRUPTION" | "OFFTOPIC" | "RETRY" | "OFFTOPIC_AGENT"
-    last_messages: recent conversation history (role/content dicts); up to 8 messages used.
-    caller_name: caller's first name if already confirmed, for personalisation.
-    confirmed_slots: dict of slot names → confirmed values for this session.
-    user_utterance: the caller's most recent utterance, so the LLM knows what was said.
-    extracted_value: value successfully extracted this turn, if any.
-    pending_slots: ordered list of slot names still to be collected, if known.
+    guard/speech_act: the speech act to phrase — "ask" | "transition" | "RETRY" |
+      "CLARIFY" | "CORRECTION" | "ANSWERED_WITH_FOLLOWUP" | "INTERRUPTION" |
+      "OFFTOPIC_AGENT". ``guard`` is the legacy name; when ``speech_act`` is given
+      it is what's shown to the model (``guard`` still selects the static fallback).
+    last_messages: recent conversation history (role/content dicts).
+    caller_name: caller's first name if known, for personalisation.
+    confirmed_slots: dict of already-confirmed slot names (values are not sent).
+    user_utterance: the caller's most recent utterance.
+    extracted_value: the value VALIDATED this turn, if any (safe to acknowledge).
+    pending_slots: slots still to be collected, if known.
+    parked: owner agents of side requests parked for later, if any.
+    declined: whether a side request was declined this turn.
+    fallback_text: exact string to return if generation fails/empties (the
+      caller's template), guaranteeing no dead turn. Falls back to the static
+      per-act string when not provided.
 
-    Falls back to static string on any exception.
+    Falls back to a static string on any exception, so a turn is never dropped.
     """
     history_text = "\n".join(build_history(last_messages, n=4))
 
@@ -111,48 +205,96 @@ async def generate_recovery_message(
         (slot_name or _SLOT_LABELS["intent"]).replace("_", " "),
     )
 
-    content_lines = [
-        "Conversation:",
-        history_text,
-        "",
-    ]
-    if user_utterance:
-        content_lines.append(f"Caller just said: {user_utterance}")
-    content_lines += [
-        f"Collecting: {slot_label}",
-        f"Attempt:    {attempt}",
-    ]
-    if confirmed_slots is not None and len(confirmed_slots) > 0:
-        filled = ", ".join(f"{k}={v}" for k, v in confirmed_slots.items())
-        content_lines.append(f"Confirmed:  {filled}")
-    elif confirmed_slots is not None:
-        content_lines.append("Confirmed:  nothing yet")
-    if pending_slots:
-        content_lines.append(f"Pending:    {', '.join(pending_slots)}")
-    if extracted_value is not None:
-        content_lines.append(f"Extracted this turn: {extracted_value}")
-    _event_guards = ("CORRECTION", "CLARIFY", "OFFTOPIC_AGENT")
-    if allow_followup_event:
-        _event_guards = _event_guards + ("ANSWERED_WITH_FOLLOWUP",)
-    if guard in _event_guards:
-        content_lines.append(f"Event:      {guard}")
+    user_content = build_recovery_context(
+        slot_label=slot_label,
+        attempt=attempt,
+        speech_act=speech_act or guard,
+        history_text=history_text,
+        user_utterance=user_utterance,
+        confirmed_slots=confirmed_slots,
+        validated_answer=extracted_value,
+        pending_slots=pending_slots,
+        parked=parked,
+        declined=declined,
+        answered_inline=answered_inline,
+        next_ask=next_ask,
+        correction_field=correction_field,
+    )
 
-    user_content = "\n".join(content_lines)
+    def _fallback() -> str:
+        if fallback_text:
+            return fallback_text
+        return _FALLBACKS.get(guard, "Could you try again?").format(slot_label=slot_label)
 
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         llm = get_generation_llm()
-        response = await llm.ainvoke(
-            [
-                SystemMessage(content=build_generation_prompt()),
-                HumanMessage(content=user_content),
-            ]
-        )
-        text = (response.content or "").strip()
+        messages = [
+            SystemMessage(content=build_generation_prompt()),
+            HumanMessage(content=user_content),
+        ]
+        # Phase 4: stream to first token to cut perceived latency (voice). A stream
+        # that errors mid-flight falls back to the template — never a dead turn.
+        if flags.stream_generation():
+            text = await _stream_generation(llm, messages)
+        else:
+            response = await llm.ainvoke(messages)
+            text = (response.content or "").strip()
         if text:
+            # Phase 4 grounding guard (belt-and-suspenders): free-flowing generation
+            # may never state a concrete value (member id / ZIP / phone / date /
+            # email) that wasn't grounded this turn. On violation, use the
+            # deterministic template for this act — an invented sensitive value can
+            # never reach the caller even if the prompt is imperfect.
+            allowed = _grounded_allowed(
+                grounded_values=grounded_values,
+                extracted_value=extracted_value,
+                caller_name=caller_name,
+                answered_inline=answered_inline,
+            )
+            leaked = find_ungrounded_values(text, allowed)
+            if leaked:
+                logger.warning(
+                    "generate_recovery_message: ungrounded value(s) in output — using template",
+                    extra={"speech_act": speech_act or guard, "n_leaked": len(leaked)},
+                )
+                return _fallback()
             return text
     except Exception:
         logger.exception("generate_recovery_message: LLM 2 failed — using fallback")
 
-    return _FALLBACKS.get(guard, "Could you try again?").format(slot_label=slot_label)
+    return _fallback()
+
+
+def _grounded_allowed(
+    *,
+    grounded_values: list[str] | None,
+    extracted_value: str | None,
+    caller_name: str | None,
+    answered_inline: list[str] | None,
+) -> list[str]:
+    """Concrete values the generated text is allowed to state this turn:
+    confirmed_slots ∪ validated_answer (∪ a known first name ∪ inline answers)."""
+    if grounded_values is not None:
+        allowed = list(grounded_values)
+    else:
+        allowed = []
+        if extracted_value:
+            allowed.append(extracted_value)
+    if caller_name:
+        allowed.append(caller_name)
+    if answered_inline:
+        allowed.extend(answered_inline)
+    return allowed
+
+
+async def _stream_generation(llm, messages) -> str:
+    """Accumulate a streamed generation to first token onward. Raises on a
+    mid-flight stream error so the caller falls back to the template."""
+    chunks: list[str] = []
+    async for chunk in llm.astream(messages):
+        piece = getattr(chunk, "content", "") or ""
+        if piece:
+            chunks.append(piece)
+    return "".join(chunks).strip()

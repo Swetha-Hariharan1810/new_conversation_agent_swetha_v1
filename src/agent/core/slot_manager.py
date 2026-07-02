@@ -205,6 +205,21 @@ class SlotManagerMixin:
     # LLM 2 retry response helper
     # -------------------------------------------------------------------------
 
+    @staticmethod
+    def _dynamic_slot_label(state: State, slot_name: str) -> str | None:
+        """Runtime slot-label override for slots whose phrasing depends on live
+        state (relationship options, the phone number on file). Returns None for
+        fixed slots, which use the static label dict."""
+        if slot_name == "relationship" and state.get("relationship"):
+            return "relationship — whether they are the plan holder or dependent"
+        if slot_name in ("phone_confirmed", "phone_confirmation") and state.get("phone_number"):
+            digits = "".join(c for c in state["phone_number"] if c.isdigit())
+            formatted = (
+                f"{digits[:3]}-{digits[3:6]}-{digits[6:]}" if len(digits) == 10 else state["phone_number"]
+            )
+            return f"phone confirmation — whether {formatted} is still the number on file (yes or no)"
+        return None
+
     async def _generate_slot_retry_response(
         self,
         state: State,
@@ -221,17 +236,7 @@ class SlotManagerMixin:
         from agent.llm.response_generator import generate_recovery_message
 
         slot_state = self.get_slot(slot_name)
-        slot_label_override: str | None = None
-        if slot_name == "relationship" and state.get("relationship"):
-            slot_label_override = "relationship — whether they are the plan holder or dependent"
-        elif slot_name in ("phone_confirmed", "phone_confirmation") and state.get("phone_number"):
-            digits = "".join(c for c in state["phone_number"] if c.isdigit())
-            formatted = (
-                f"{digits[:3]}-{digits[3:6]}-{digits[6:]}" if len(digits) == 10 else state["phone_number"]
-            )
-            slot_label_override = (
-                f"phone confirmation — whether {formatted} is still the number on file (yes or no)"
-            )
+        slot_label_override = self._dynamic_slot_label(state, slot_name)
         sc = session_context or {}
         text = await generate_recovery_message(
             slot_name=slot_name,
@@ -307,10 +312,187 @@ class SlotManagerMixin:
         )
 
     # -------------------------------------------------------------------------
+    # Phase 3: compose a multi-intent turn as ONE generated sentence
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _next_ask_label(slot: str) -> str:
+        """Human ask-label for the next pipeline slot (for the generator's final
+        clause). Reuses the response-generator slot labels."""
+        from agent.llm.response_generator import _SLOT_LABELS
+
+        return _SLOT_LABELS.get(slot, (slot or "").replace("_", " "))
+
+    def _fallback_multi_intent_text(
+        self,
+        *,
+        speech_act: str,
+        correction_field: str,
+        slot_value: Optional[str],
+        parked_owners: list[str],
+        declined: bool,
+        next_ask_label: Optional[str],
+    ) -> str:
+        """Deterministic templated fallback if generation fails/times out — a valid
+        (if less fluid) sentence, so a multi-intent turn is never dropped."""
+        from agent.orchestration.resolver import CORRECTION_ACK
+        from agent.responses import turn_acts
+
+        parts: list[str] = []
+        if speech_act == CORRECTION_ACK and correction_field:
+            parts.append(turn_acts.render_correction_ack(field=correction_field, slot_value=slot_value))
+        elif parked_owners:
+            parts.append(turn_acts.render_multi_intent_ack(parked_owners))
+        if declined:
+            parts.append(turn_acts.render_unsupported_decline())
+        if next_ask_label and speech_act != CORRECTION_ACK:
+            parts.append(turn_acts.render_re_ask(slot_label=next_ask_label))
+        return " ".join(p for p in parts if p) or turn_acts.render_open_redirect()
+
+    async def _compose_multi_intent_via_generator(
+        self,
+        state: State,
+        ctx: ConversationContext,
+        slot_name: str,
+        slot_value: Optional[str],
+        plan,
+        outcome,
+        *,
+        slot_answered: bool,
+        slot_label: str,
+        pending_slots: Optional[list[str]],
+    ) -> Optional[dict]:
+        """Narrate the resolver outcome as ONE generated sentence (Phase 3).
+
+        Handles multi_intent_ack / unsupported_decline / open_redirect and
+        correction_ack. Splits surviving in-scope independents into answered-inline
+        (grounded, default) vs. parked (PARK_ANSWERABLE=true), folds a brief decline
+        for out-of-scope asides, and ends with the next slot ask. Returns None for
+        outcomes this path doesn't own (falls back to the templated path). The
+        generated text is grounding-checked; on any doubt it uses the deterministic
+        template so no unvalidated value is ever emitted."""
+        from agent.core import flags
+        from agent.llm.response_generator import SPEECH_ACT_MULTI_INTENT, generate_recovery_message
+        from agent.orchestration.resolver import (
+            CORRECTION_ACK,
+            MULTI_INTENT_ACK,
+            OPEN_REDIRECT,
+            UNSUPPORTED_DECLINE,
+        )
+        from agent.responses import turn_acts
+
+        if outcome.speech_act not in (CORRECTION_ACK, MULTI_INTENT_ACK, UNSUPPORTED_DECLINE, OPEN_REDIRECT):
+            return None
+        slot = self.get_slot(slot_name)
+
+        # Correction: acknowledge + rewind to the corrected value's owner.
+        correction_field = ""
+        rewind = None
+        if outcome.speech_act == CORRECTION_ACK:
+            if not slot_answered:
+                return None  # bare correction → existing CORRECTED path
+            rewind = outcome.rewind_target
+            correction_field = plan.correction.field if (plan and getattr(plan, "correction", None)) else ""
+            if not rewind or not correction_field:
+                return None
+
+        # Split independents: answer inline (grounded) vs. park (the dial).
+        park_all = flags.park_answerable()
+        answered_inline: list[str] = []
+        parked_owners: list[str] = []
+        for d in getattr(outcome, "independents_detail", []) or []:
+            if d.get("answerable") and not park_all:
+                answered_inline.append(d["answer"])
+            else:
+                parked_owners.append(d["owner"])
+        declined = bool(outcome.declined)
+
+        # Next ask (deterministic, from the pipeline order).
+        next_ask_slot = ""
+        next_ask_label: Optional[str] = None
+        if not correction_field:
+            if slot_answered and pending_slots:
+                next_ask_slot = pending_slots[0]
+                next_ask_label = self._next_ask_label(next_ask_slot)
+            elif not slot_answered:
+                next_ask_slot = slot_name
+                next_ask_label = slot_label
+
+        # State updates: accept the slot; enqueue ONLY parked owners (inline-answered
+        # are handled this turn, not queued); carry dirty flags from the resolver.
+        updates = dict(outcome.state_updates or {})
+        queue = list(state.get("intent_queue") or [])
+        for o in parked_owners:
+            if o not in queue:
+                queue.append(o)
+        if parked_owners:
+            updates["intent_queue"] = queue
+        else:
+            updates.pop("intent_queue", None)
+
+        fallback = self._fallback_multi_intent_text(
+            speech_act=outcome.speech_act,
+            correction_field=correction_field,
+            slot_value=slot_value,
+            parked_owners=parked_owners,
+            declined=declined,
+            next_ask_label=next_ask_label,
+        )
+
+        # Grounding guardrail is enforced inside generate_recovery_message (Phase 4):
+        # the composed sentence may state only values grounded this turn (accepted
+        # answer + inline answers + a known first name); on any leak it returns the
+        # deterministic ``fallback`` template instead.
+        allowed = [v for v in ([slot_value] + list(answered_inline) + [ctx.caller_first_name]) if v]
+        msg = await generate_recovery_message(
+            slot_name=next_ask_slot or slot_name,
+            attempt=slot.attempt_count,
+            guard=SPEECH_ACT_MULTI_INTENT,
+            speech_act=SPEECH_ACT_MULTI_INTENT,
+            last_messages=(state.get("messages") or [])[-4:],
+            slot_label_override=next_ask_label,
+            caller_name=ctx.caller_first_name,
+            confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
+            user_utterance=_last_user_msg(state.get("messages") or []),
+            extracted_value=slot_value if (slot_answered and slot_value) else None,
+            parked=parked_owners or None,
+            declined=declined,
+            answered_inline=answered_inline or None,
+            next_ask=next_ask_label,
+            correction_field=(turn_acts.field_label(correction_field) if correction_field else None),
+            grounded_values=allowed,
+            fallback_text=fallback,
+        )
+
+        interrupt = self.ask_member_with_context(state, msg, ctx)
+        for k, v in updates.items():
+            interrupt[k] = v
+        interrupt["is_interrupt"] = True
+        if correction_field:
+            interrupt["next_node"] = rewind
+            interrupt["awaiting_slot"] = correction_field
+            if correction_field == "zip_code":
+                interrupt["zip_code_used"] = ""
+        else:
+            interrupt["awaiting_slot"] = next_ask_slot if slot_answered else slot_name
+        self.logger.info(
+            "slot_manager: multi-intent turn composed (one voice)",
+            extra={
+                "slot": slot_name,
+                "speech_act": outcome.speech_act,
+                "answered_inline": len(answered_inline),
+                "parked": list(parked_owners),
+                "declined": declined,
+                "next_ask": next_ask_slot,
+            },
+        )
+        return interrupt
+
+    # -------------------------------------------------------------------------
     # Phase 3B/3C: live application of a resolver outcome on a slot-answered turn
     # -------------------------------------------------------------------------
 
-    def _apply_resolver_outcome(
+    async def _apply_resolver_outcome(
         self,
         state: State,
         ctx: ConversationContext,
@@ -321,8 +503,15 @@ class SlotManagerMixin:
         *,
         slot_answered: bool = True,
         slot_label: Optional[str] = None,
+        pending_slots: Optional[list[str]] = None,
     ) -> Optional[dict]:
         """Build the live interrupt for an actionable resolver outcome, or None.
+
+        Phase 3 (behind MULTI_INTENT_LIVE): the outcome is narrated by the GENERATOR
+        as ONE natural sentence (accept → answer inline → note parked → decline →
+        ask next), composed from the resolver's structured decomposition. When the
+        flag is off, the deterministic templated path below runs unchanged (so
+        single-intent and default flows are byte-identical to Phase 1).
 
         Runs at the shared chokepoint for every agent (Phase 3D), both when the
         awaiting slot was answered AND when it was not (``slot_answered``). Handles,
@@ -342,6 +531,7 @@ class SlotManagerMixin:
         of the same slot (awaiting kept), so the primary collection continues.
         Returns None for clean answers and re_ask/clarify (existing logic).
         """
+        from agent.core import flags
         from agent.orchestration.resolver import (
             CORRECTION_ACK,
             MULTI_INTENT_ACK,
@@ -354,6 +544,23 @@ class SlotManagerMixin:
             return None
         slot = self.get_slot(slot_name)
         label = slot_label or slot_name.replace("_", " ")
+
+        # ── Phase 3: narrate the whole turn as ONE generated sentence ──────────
+        if flags.multi_intent_live():
+            composed = await self._compose_multi_intent_via_generator(
+                state,
+                ctx,
+                slot_name,
+                slot_value,
+                plan,
+                outcome,
+                slot_answered=slot_answered,
+                slot_label=label,
+                pending_slots=pending_slots,
+            )
+            if composed is not None:
+                return composed
+            # Fall through to the deterministic template path as the fallback.
 
         def _finish(msg: str, *, extra_updates: dict | None = None, keep_slot: bool) -> dict:
             interrupt = self.ask_member_with_context(state, msg, ctx)
@@ -430,6 +637,53 @@ class SlotManagerMixin:
         return None
 
     # -------------------------------------------------------------------------
+    # Phase 1: one voice — route the happy-path ask/transition through the generator
+    # -------------------------------------------------------------------------
+
+    async def _first_ask_message(
+        self,
+        state: State,
+        config: "_InternalSlotConfig",
+        ctx: ConversationContext,
+        messages: list,
+        *,
+        is_transition: bool,
+        template_text: str,
+    ) -> str:
+        """Text for a first-ask / transition turn.
+
+        Default (UNIFIED_VOICE off): the template string, exactly as before.
+        UNIFIED_VOICE on (and a typed slot): the SAME grounded generator that
+        speaks retries/clarifies/corrections, with speech act ``ask`` or
+        ``transition`` — so every turn has one voice. The template is passed as
+        ``fallback_text`` so a generation failure/timeout can never drop the turn.
+        """
+        from agent.core import flags
+
+        if not (flags.unified_voice() and config.slot_type):
+            return template_text
+
+        from agent.llm.response_generator import (
+            SPEECH_ACT_ASK,
+            SPEECH_ACT_TRANSITION,
+            generate_recovery_message,
+        )
+
+        speech_act = SPEECH_ACT_TRANSITION if is_transition else SPEECH_ACT_ASK
+        return await generate_recovery_message(
+            slot_name=config.slot_name,
+            attempt=0,
+            guard=speech_act,
+            speech_act=speech_act,
+            last_messages=messages[-4:],
+            slot_label_override=self._dynamic_slot_label(state, config.slot_name),
+            caller_name=ctx.caller_first_name,
+            confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
+            user_utterance=_last_user_msg(messages),
+            fallback_text=template_text,
+        )
+
+    # -------------------------------------------------------------------------
     # Per-turn slot collector — with contextual response generation
     # -------------------------------------------------------------------------
 
@@ -443,6 +697,7 @@ class SlotManagerMixin:
         context: Optional[ConversationContext] = None,
         is_transition: bool = False,
         decision: Optional[Any] = None,
+        pending_slots: Optional[list[str]] = None,
     ) -> Tuple[Optional[str], Optional[dict]]:
         slot_name = config.slot_name
         normalizer = config.normalizer
@@ -497,9 +752,9 @@ class SlotManagerMixin:
         _turn_plan = None
         _turn_outcome = None
         try:
-            from agent.orchestration.shadow import decode_and_resolve
+            from agent.orchestration.shadow import decode_and_resolve_async
 
-            _turn_plan, _turn_outcome = decode_and_resolve(
+            _turn_plan, _turn_outcome = await decode_and_resolve_async(
                 state,
                 utterance=_last_user_msg(messages),
                 awaiting_slot=state.get("awaiting_slot") or slot_name,
@@ -508,6 +763,22 @@ class SlotManagerMixin:
             )
         except Exception:  # observability must never break a turn
             self.logger.debug("understanding decode/resolve failed", exc_info=True)
+
+        # Phase 2: run the log-only TurnPlan observer (the LLM decode in SHADOW).
+        # It only logs a turnplan_shadow comparison and never feeds this turn, so
+        # the live path above is unchanged. No-op unless TURNPLAN_DECODE=shadow.
+        try:
+            from agent.orchestration.shadow import run_turnplan_observer
+
+            await run_turnplan_observer(
+                state,
+                utterance=_last_user_msg(messages),
+                awaiting_slot=state.get("awaiting_slot") or slot_name,
+                decision=decision,
+                agent_name=getattr(self, "AGENT_NAME", ""),
+            )
+        except Exception:  # observability must never break a turn
+            self.logger.debug("turnplan observer failed", exc_info=True)
 
         # ------------------------------------------------------------------
         # 2. LLM pre-extracted a candidate value
@@ -533,7 +804,7 @@ class SlotManagerMixin:
                     #     dirty, route to the owner to re-resolve before delivery;
                     #   * in-scope independent → acknowledge + park for draining;
                     #   * out-of-scope / unsupported → spoken decline / redirect.
-                    live = self._apply_resolver_outcome(
+                    live = await self._apply_resolver_outcome(
                         state,
                         ctx,
                         slot_name,
@@ -542,6 +813,7 @@ class SlotManagerMixin:
                         _turn_outcome,
                         slot_answered=True,
                         slot_label=slot_label,
+                        pending_slots=pending_slots,
                     )
                     if live is not None:
                         return normalized, live
@@ -628,7 +900,7 @@ class SlotManagerMixin:
             # request (an independent to park, or an out-of-scope/unsupported
             # question). Give it a spoken outcome, then re-ask the slot. Corrections
             # with no answer fall through to the existing CORRECTED path below.
-            live = self._apply_resolver_outcome(
+            live = await self._apply_resolver_outcome(
                 state,
                 ctx,
                 slot_name,
@@ -637,6 +909,7 @@ class SlotManagerMixin:
                 _turn_outcome,
                 slot_answered=False,
                 slot_label=slot_label,
+                pending_slots=pending_slots,
             )
             if live is not None:
                 return None, live
@@ -713,25 +986,12 @@ class SlotManagerMixin:
                 else:
                     from agent.llm.response_generator import generate_recovery_message
 
-                    _sl_override: str | None = None
-                    if slot_name == "relationship" and state.get("relationship"):
-                        _sl_override = "relationship — whether they are the plan holder or dependent"
-                    elif slot_name in ("phone_confirmed", "phone_confirmation") and state.get("phone_number"):
-                        _digits = "".join(c for c in state["phone_number"] if c.isdigit())
-                        _fmt = (
-                            f"{_digits[:3]}-{_digits[3:6]}-{_digits[6:]}"
-                            if len(_digits) == 10
-                            else state["phone_number"]
-                        )
-                        _sl_override = (
-                            f"phone confirmation — whether {_fmt} is still the number on file (yes or no)"
-                        )
                     msg = await generate_recovery_message(
                         slot_name=slot_name,
                         attempt=0,
                         guard="CLARIFY",
                         last_messages=messages[-6:],
-                        slot_label_override=_sl_override,
+                        slot_label_override=self._dynamic_slot_label(state, slot_name),
                         caller_name=ctx.caller_first_name,
                         confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
                         user_utterance=_last_user_msg(messages),
@@ -776,8 +1036,13 @@ class SlotManagerMixin:
             return None, interrupt
 
         # ------------------------------------------------------------------
-        # 3. First ask
+        # 3. First ask (or transition). Phase 1: when UNIFIED_VOICE is on this is
+        # spoken by the same generator as every recovery act; the template is the
+        # guaranteed fallback so no turn is ever dropped.
         # ------------------------------------------------------------------
-        interrupt = self.ask_member_with_context(state, _ask_first(), ctx)
+        first_ask_text = await self._first_ask_message(
+            state, config, ctx, messages, is_transition=is_transition, template_text=_ask_first()
+        )
+        interrupt = self.ask_member_with_context(state, first_ask_text, ctx)
         interrupt["awaiting_slot"] = slot_name
         return None, interrupt

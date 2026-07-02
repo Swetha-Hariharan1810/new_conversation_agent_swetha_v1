@@ -30,9 +30,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,6 +93,10 @@ class Scenario:
     timeout_s: float = DEFAULT_SCENARIO_TIMEOUT_S
     # async callables (final_state) -> failure string | None, run after the conversation
     post_checks: list = field(default_factory=list)
+    # Feature-flag env overrides applied for the whole run (build_graph reads
+    # TURNPLAN_DECODE at construction; UNIFIED_VOICE / MULTI_INTENT_LIVE /
+    # STREAM_GENERATION / PARK_ANSWERABLE are read live per turn). Restored after.
+    flags: dict = field(default_factory=dict)
     notes: str = ""
 
 
@@ -236,6 +242,24 @@ class RunRecorder:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+@contextmanager
+def _flag_env(flags: dict):
+    """Apply feature-flag env overrides for the duration of a scenario, then
+    restore the previous values (so scenarios can't leak flags into each other)."""
+    saved: dict[str, str | None] = {}
+    try:
+        for k, v in (flags or {}).items():
+            saved[k] = os.environ.get(k)
+            os.environ[k] = str(v)
+        yield
+    finally:
+        for k, old in saved.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
+
+
 async def _drive(scenario: Scenario, recorder: RunRecorder) -> dict:
     """Drive one scenario against the live graph. Returns the final state."""
     from langgraph.checkpoint.memory import MemorySaver
@@ -243,6 +267,11 @@ async def _drive(scenario: Scenario, recorder: RunRecorder) -> dict:
 
     from agent.app_graph import build_graph
 
+    with _flag_env(scenario.flags):
+        return await _drive_inner(scenario, recorder, MemorySaver, Command, build_graph)
+
+
+async def _drive_inner(scenario, recorder, MemorySaver, Command, build_graph) -> dict:
     memory = MemorySaver()
     graph = build_graph(checkpointer=memory)
     config = {
