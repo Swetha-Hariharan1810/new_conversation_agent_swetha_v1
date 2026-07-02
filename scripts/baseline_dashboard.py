@@ -67,6 +67,7 @@ class RunCounts:
     generator_turns: int
     template_turns: int
     dropped_request_count: int
+    latencies_ms: list = field(default_factory=list)
     error: str = ""
 
     def to_dict(self) -> dict:
@@ -76,8 +77,18 @@ class RunCounts:
             "generator_turns": self.generator_turns,
             "template_turns": self.template_turns,
             "dropped_request_count": self.dropped_request_count,
+            "latencies_ms": self.latencies_ms,
             **({"error": self.error} if self.error else {}),
         }
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    """Nearest-rank percentile (deterministic; no numpy dependency)."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    k = max(0, min(len(ordered) - 1, int(round((pct / 100.0) * (len(ordered) - 1)))))
+    return round(ordered[k], 2)
 
 
 @dataclass
@@ -152,6 +163,7 @@ async def _count_golden_run(fixture: dict) -> RunCounts:
             generator_turns=counts.generator,
             template_turns=counts.template,
             dropped_request_count=record.dropped_request_count,
+            latencies_ms=list(record.latencies_ms),
         )
     except Exception as exc:  # a fixture that this single-agent driver can't drive
         return RunCounts(
@@ -187,12 +199,15 @@ class DashboardReport:
 
     def totals(self) -> dict:
         ok = [r for r in self.golden if not r.error]
+        all_latencies = [ms for r in ok for ms in r.latencies_ms]
         return {
             "golden_runs": len(self.golden),
             "golden_runs_counted": len(ok),
             "generator_turns": sum(r.generator_turns for r in ok),
             "template_turns": sum(r.template_turns for r in ok),
             "dropped_request_count": sum(r.dropped_request_count for r in ok),
+            "turn_latency_ms_p50": _percentile(all_latencies, 50),
+            "turn_latency_ms_p95": _percentile(all_latencies, 95),
         }
 
     def to_dict(self) -> dict:
@@ -231,6 +246,11 @@ def _print_table(report: DashboardReport) -> None:
         f"{t['generator_turns']} generator / {t['template_turns']} template"
     )
     print(f"issue-2 surface (dropped_request_count): {t['dropped_request_count']}")
+    print(
+        f"turn latency (golden, deterministic): "
+        f"p50={t['turn_latency_ms_p50']}ms p95={t['turn_latency_ms_p95']}ms "
+        f"(live_e2e p50/p95 validated separately — needs credentials)"
+    )
     print(f"\nlive_e2e: {report.live_status}" + (f" — {report.live_note}" if report.live_note else ""))
 
 

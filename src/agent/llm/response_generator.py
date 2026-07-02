@@ -7,8 +7,10 @@ Input is intentionally minimal. Output is one spoken sentence.
 
 from __future__ import annotations
 
+from agent.core import flags
 from agent.llm.config import get_generation_llm
 from agent.logger import get_logger
+from agent.responses.grounding import find_ungrounded_values
 from agent.utils import build_generation_prompt, build_history
 
 logger = get_logger(__name__)
@@ -168,6 +170,7 @@ async def generate_recovery_message(
     answered_inline: list[str] | None = None,
     next_ask: str | None = None,
     correction_field: str | None = None,
+    grounded_values: list[str] | None = None,
     fallback_text: str | None = None,
 ) -> str:
     """
@@ -218,22 +221,80 @@ async def generate_recovery_message(
         correction_field=correction_field,
     )
 
+    def _fallback() -> str:
+        if fallback_text:
+            return fallback_text
+        return _FALLBACKS.get(guard, "Could you try again?").format(slot_label=slot_label)
+
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         llm = get_generation_llm()
-        response = await llm.ainvoke(
-            [
-                SystemMessage(content=build_generation_prompt()),
-                HumanMessage(content=user_content),
-            ]
-        )
-        text = (response.content or "").strip()
+        messages = [
+            SystemMessage(content=build_generation_prompt()),
+            HumanMessage(content=user_content),
+        ]
+        # Phase 4: stream to first token to cut perceived latency (voice). A stream
+        # that errors mid-flight falls back to the template — never a dead turn.
+        if flags.stream_generation():
+            text = await _stream_generation(llm, messages)
+        else:
+            response = await llm.ainvoke(messages)
+            text = (response.content or "").strip()
         if text:
+            # Phase 4 grounding guard (belt-and-suspenders): free-flowing generation
+            # may never state a concrete value (member id / ZIP / phone / date /
+            # email) that wasn't grounded this turn. On violation, use the
+            # deterministic template for this act — an invented sensitive value can
+            # never reach the caller even if the prompt is imperfect.
+            allowed = _grounded_allowed(
+                grounded_values=grounded_values,
+                extracted_value=extracted_value,
+                caller_name=caller_name,
+                answered_inline=answered_inline,
+            )
+            leaked = find_ungrounded_values(text, allowed)
+            if leaked:
+                logger.warning(
+                    "generate_recovery_message: ungrounded value(s) in output — using template",
+                    extra={"speech_act": speech_act or guard, "n_leaked": len(leaked)},
+                )
+                return _fallback()
             return text
     except Exception:
         logger.exception("generate_recovery_message: LLM 2 failed — using fallback")
 
-    if fallback_text:
-        return fallback_text
-    return _FALLBACKS.get(guard, "Could you try again?").format(slot_label=slot_label)
+    return _fallback()
+
+
+def _grounded_allowed(
+    *,
+    grounded_values: list[str] | None,
+    extracted_value: str | None,
+    caller_name: str | None,
+    answered_inline: list[str] | None,
+) -> list[str]:
+    """Concrete values the generated text is allowed to state this turn:
+    confirmed_slots ∪ validated_answer (∪ a known first name ∪ inline answers)."""
+    if grounded_values is not None:
+        allowed = list(grounded_values)
+    else:
+        allowed = []
+        if extracted_value:
+            allowed.append(extracted_value)
+    if caller_name:
+        allowed.append(caller_name)
+    if answered_inline:
+        allowed.extend(answered_inline)
+    return allowed
+
+
+async def _stream_generation(llm, messages) -> str:
+    """Accumulate a streamed generation to first token onward. Raises on a
+    mid-flight stream error so the caller falls back to the template."""
+    chunks: list[str] = []
+    async for chunk in llm.astream(messages):
+        piece = getattr(chunk, "content", "") or ""
+        if piece:
+            chunks.append(piece)
+    return "".join(chunks).strip()

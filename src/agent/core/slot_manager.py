@@ -380,7 +380,6 @@ class SlotManagerMixin:
             UNSUPPORTED_DECLINE,
         )
         from agent.responses import turn_acts
-        from agent.responses.grounding import find_ungrounded_values
 
         if outcome.speech_act not in (CORRECTION_ACK, MULTI_INTENT_ACK, UNSUPPORTED_DECLINE, OPEN_REDIRECT):
             return None
@@ -440,6 +439,11 @@ class SlotManagerMixin:
             next_ask_label=next_ask_label,
         )
 
+        # Grounding guardrail is enforced inside generate_recovery_message (Phase 4):
+        # the composed sentence may state only values grounded this turn (accepted
+        # answer + inline answers + a known first name); on any leak it returns the
+        # deterministic ``fallback`` template instead.
+        allowed = [v for v in ([slot_value] + list(answered_inline) + [ctx.caller_first_name]) if v]
         msg = await generate_recovery_message(
             slot_name=next_ask_slot or slot_name,
             attempt=slot.attempt_count,
@@ -456,18 +460,9 @@ class SlotManagerMixin:
             answered_inline=answered_inline or None,
             next_ask=next_ask_label,
             correction_field=(turn_acts.field_label(correction_field) if correction_field else None),
+            grounded_values=allowed,
             fallback_text=fallback,
         )
-
-        # Grounding guardrail: the composed sentence may state only values grounded
-        # this turn (the accepted answer + inline answers + a known first name).
-        allowed = [v for v in ([slot_value] + list(answered_inline) + [ctx.caller_first_name]) if v]
-        if find_ungrounded_values(msg, allowed):
-            self.logger.warning(
-                "multi-intent compose emitted an ungrounded value — using template fallback",
-                extra={"slot": slot_name},
-            )
-            msg = fallback
 
         interrupt = self.ask_member_with_context(state, msg, ctx)
         for k, v in updates.items():
