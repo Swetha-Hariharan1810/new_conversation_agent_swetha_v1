@@ -3118,6 +3118,255 @@ stalling_during_phone_confirmation = Scenario(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# N2. Flag-gated Context-Retention rebuild (Phases 1–4), end-to-end.
+#
+# Group N (above) already exercises the resolver behaviors that shipped in the
+# repo. This group turns the NEW rollout flags ON per scenario (via Scenario.flags)
+# and re-runs the flows so each phase is validated live:
+#
+#   Phase 1  UNIFIED_VOICE            — one generated voice on the happy path
+#   Phase 2  TURNPLAN_DECODE=shadow   — single-intent output unchanged (log-only)
+#   Phase 3  MULTI_INTENT_LIVE +      — multi-intent narrated by the generator:
+#            TURNPLAN_DECODE=live       inline-or-park follow-up, out-of-scope
+#            (+ PARK_ANSWERABLE)         decline, invalidating correction
+#   Phase 4  STREAM_GENERATION        — streaming + grounding guard don't break flows
+#
+# Assertions stay tolerant (completion, escalation flags, state keys, keyword
+# regexes) because the voice is generated. The deterministic clause/grounding
+# guarantees live in tests/golden/test_phase{1,3,4}_*.py; here we prove the
+# flag-on flows complete correctly against live Azure OpenAI + Salesforce.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_REBUILD_LIVE = {
+    "UNIFIED_VOICE": "true",
+    "TURNPLAN_DECODE": "live",
+    "MULTI_INTENT_LIVE": "true",
+}
+
+# ── Phase 1: one voice on a plain happy path ────────────────────────────────────
+unified_voice_pcp_happy = Scenario(
+    name="unified_voice_pcp_happy",
+    flow="pcp",
+    flags={"UNIFIED_VOICE": "true"},
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no that's all",
+    ],
+    turn_expectations=_VERIFY_TURNS,
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={"provider_list_sent": True, "delivery_method": "fax"},
+    ),
+    notes="P1: happy path spoken by the unified generator (asks/transitions) still completes.",
+)
+
+# ── Phase 1: a wrong-format retry recovers in the one voice ─────────────────────
+unified_voice_member_id_retry = Scenario(
+    name="unified_voice_member_id_retry",
+    flow="pcp",
+    flags={"UNIFIED_VOICE": "true"},
+    retries=1,
+    user_turns=[
+        "I need to find a primary care physician in my area.",
+        "emily",
+        "carter",
+        "yes correct",
+        "one two three",  # invalid member id → generated retry (no false-accept)
+        "m nine zero seven five zero three",  # valid on retry
+        "April twelvee nineteen eighty-eight",
+        "I'm calling for myself",
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no that's all",
+    ],
+    expect=Expected(completed=True, escalated=False, final_state={"member_status_verify": True}),
+    notes="P1: invalid member id → generated retry re-asks (no false-accept), recovers, completes.",
+)
+
+# ── Phase 2: shadow decode — single-intent output unchanged (log-only) ──────────
+turnplan_shadow_single_intent_unchanged = Scenario(
+    name="turnplan_shadow_single_intent_unchanged",
+    flow="pcp",
+    flags={"TURNPLAN_DECODE": "shadow"},
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no that's all",
+    ],
+    turn_expectations=_VERIFY_TURNS,
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={"provider_list_sent": True, "delivery_method": "fax"},
+    ),
+    notes="P2: LLM TurnPlan runs in shadow (log-only); the live single-intent flow is unchanged.",
+)
+
+# ── Phase 3: multi-intent live — in-scope follow-up answered-or-parked ──────────
+multi_intent_live_benefits_followup = Scenario(
+    name="multi_intent_live_benefits_followup",
+    flow="pcp",
+    flags=_REBUILD_LIVE,
+    retries=1,
+    user_turns=PCP_VERIFY
+    + [
+        "A pediatrician — and can you also go over my benefits afterward?",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "yes please",  # benefits (answered inline or drained here)
+        "no thank you",
+        "no that's all",
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        transcript_contains=[r"benefit"],  # the bundled request is addressed, never dropped
+    ),
+    notes="P3: bundled benefits request narrated (inline-or-parked) in the same turn; completes.",
+)
+
+# ── Phase 3 + PARK_ANSWERABLE: the same request is parked, then drained ─────────
+multi_intent_live_park_answerable = Scenario(
+    name="multi_intent_live_park_answerable",
+    flow="pcp",
+    flags={**_REBUILD_LIVE, "PARK_ANSWERABLE": "true"},
+    retries=1,
+    user_turns=PCP_VERIFY
+    + [
+        "A pediatrician — and can you also go over my benefits afterward?",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "yes please",  # parked benefits drained here
+        "no thank you",
+        "no that's all",
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        transcript_contains=[r"benefit"],
+    ),
+    notes="P3 dial: PARK_ANSWERABLE parks the follow-up for its owner to drain after the slot.",
+)
+
+# ── Phase 3: out-of-scope aside folded into a brief decline, flow continues ─────
+multi_intent_live_out_of_scope_decline = Scenario(
+    name="multi_intent_live_out_of_scope_decline",
+    flow="pcp",
+    flags=_REBUILD_LIVE,
+    retries=1,
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician, and can you also refund my last bill?",  # out-of-scope aside
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no that's all",
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=False,  # a refund aside is declined, NOT transferred
+        final_state={"provider_list_sent": True},
+    ),
+    notes="P3: out-of-scope refund declined in the same sentence; provider flow proceeds.",
+)
+
+# ── Phase 3: invalidating ZIP correction, narrated by the generator ─────────────
+multi_intent_live_zip_correction = Scenario(
+    name="multi_intent_live_zip_correction",
+    flow="pcp",
+    flags=_REBUILD_LIVE,
+    retries=1,
+    mutating=True,  # re-resolves + writes ZIP in Salesforce
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",  # ZIP on file confirmed
+        "Fax, but I need to update my ZIP code.",  # slot answer + invalidating correction
+        "one two one three nine",  # corrected ZIP
+        "yes that's correct",  # fax on file
+        "no thanks",
+        "no thank you",
+        "no that's all",
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        transcript_contains=[r"zip"],  # ZIP-update acknowledged in one composed sentence
+        final_state={"provider_list_sent": truthy},
+    ),
+    notes="P3: fax + ZIP-update acked in one generated sentence; never dispatch on the disputed ZIP.",
+)
+
+# ── Phase 4: streaming happy path (streaming + grounding guard don't break flow) ─
+streaming_pcp_happy = Scenario(
+    name="streaming_pcp_happy",
+    flow="pcp",
+    flags={**_REBUILD_LIVE, "STREAM_GENERATION": "true"},
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no that's all",
+    ],
+    turn_expectations=_VERIFY_TURNS,
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={"provider_list_sent": True, "delivery_method": "fax"},
+    ),
+    notes="P4: STREAM_GENERATION on — streamed generation + grounding guard complete the flow.",
+)
+
+# ── Phase 4: streaming + multi-intent together ──────────────────────────────────
+streaming_multi_intent = Scenario(
+    name="streaming_multi_intent",
+    flow="pcp",
+    flags={**_REBUILD_LIVE, "STREAM_GENERATION": "true"},
+    retries=1,
+    user_turns=PCP_VERIFY
+    + [
+        "A pediatrician — and can you also go over my benefits afterward?",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "yes please",
+        "no thank you",
+        "no that's all",
+    ],
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        transcript_contains=[r"benefit"],
+    ),
+    notes="P4: streamed multi-intent narration completes and still addresses the bundled request.",
+)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # K. Indirect-decline regression (delivery_management fax/email)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -3231,6 +3480,16 @@ SCENARIOS: list[Scenario] = [
     stalling_then_provides_member_id,  # S-STALL
     stalling_during_zip_confirmation,  # S-STALL-2 (provider_search zip_confirmed)
     stalling_during_phone_confirmation,  # S-STALL-3 (notification_setup phone_confirmed)
+    # N2. Flag-gated Context-Retention rebuild (Phases 1–4)
+    unified_voice_pcp_happy,  # P1
+    unified_voice_member_id_retry,  # P1
+    turnplan_shadow_single_intent_unchanged,  # P2
+    multi_intent_live_benefits_followup,  # P3
+    multi_intent_live_park_answerable,  # P3 (PARK_ANSWERABLE)
+    multi_intent_live_out_of_scope_decline,  # P3
+    multi_intent_live_zip_correction,  # P3 (mutating)
+    streaming_pcp_happy,  # P4
+    streaming_multi_intent,  # P4
 ]
 
 SCENARIOS_BY_NAME: dict[str, Scenario] = {s.name: s for s in SCENARIOS}
