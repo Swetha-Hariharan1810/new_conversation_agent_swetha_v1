@@ -174,7 +174,8 @@ def _uat007_initial_state() -> dict:
     }
 
 
-async def test_uat_007_zip_detour_end_to_end():
+async def test_uat_007_zip_detour_end_to_end(monkeypatch):
+    monkeypatch.setenv("MULTI_INTENT_LIVE", "false")   # templated-speech kill switch
     turns = [
         # 1) member answers fax AND disputes the ZIP → ack both, route to ZIP owner
         {

@@ -186,7 +186,8 @@ def _plan_with_parked_benefits(slot_answer: str) -> TurnPlan:
     )
 
 
-async def test_zip_yes_with_parked_secondary_accepts_and_asks_next_step():
+async def test_zip_yes_with_parked_secondary_accepts_and_asks_next_step(monkeypatch):
+    monkeypatch.setenv("MULTI_INTENT_LIVE", "false")   # templated-speech kill switch
     """Bug 2: 'yes' + a side request must produce accept → park-ack → the NEXT
     step's ask (delivery method) in ONE turn, with the accept taking effect and
     the next turn routed to the delivery agent — never a re-ask of zip_confirmed."""
@@ -227,7 +228,8 @@ async def test_zip_yes_with_parked_secondary_accepts_and_asks_next_step():
     assert run.recorder.count("dispatch_provider_list") == 0
 
 
-async def test_zip_no_with_parked_secondary_marks_dirty_and_asks_new_zip():
+async def test_zip_no_with_parked_secondary_marks_dirty_and_asks_new_zip(monkeypatch):
+    monkeypatch.setenv("MULTI_INTENT_LIVE", "false")   # templated-speech kill switch
     """'no' + a side request: the decline still takes effect (list marked stale,
     new ZIP is the next step) and the side request is parked, in ONE sentence."""
     shadow_mod.set_shadow_decoder(lambda _s, _u, _d: _plan_with_parked_benefits("no"))

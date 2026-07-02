@@ -90,7 +90,7 @@ def _last_ai_text(interrupt: dict) -> str:
 
 
 async def test_first_ask_uses_template_when_flag_off(monkeypatch):
-    monkeypatch.delenv("UNIFIED_VOICE", raising=False)
+    monkeypatch.setenv("UNIFIED_VOICE", "false")  # kill switch (default is on since Phase 4)
     state = _first_ask_state()
     agent = _probe_agent(state)
     recording = _RecordingLLM()

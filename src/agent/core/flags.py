@@ -7,19 +7,19 @@ environment variable at the call site — so the whole rollout has one auditable
 surface and the baseline dashboard can snapshot the live configuration in one
 call (see ``snapshot()``).
 
-Phase 0 contract — these are the OLD defaults, chosen so the flags reproduce
-today's behavior when nothing is set:
+Phase 4 rollout contract — the rebuild is ON by default (flipped only after
+the Phase 0–3 suites were green):
 
-    UNIFIED_VOICE      = false           # generation vs. template voice unified
-    TURNPLAN_DECODE    = off             # off | shadow | live
-    MULTI_INTENT_LIVE  = false           # resolver acts live on multi-intent turns
-    STREAM_GENERATION  = false           # stream LLM-2 generation token-by-token
-    PARK_ANSWERABLE    = false           # park answerable follow-ups for draining
+    UNIFIED_VOICE      = true            # one grounded generator voice on every turn
+    TURNPLAN_DECODE    = live            # off | shadow | live — the resolver acts
+    MULTI_INTENT_LIVE  = true            # multi-intent turns composed as ONE sentence
+    STREAM_GENERATION  = false           # stream LLM-2 generation token-by-token (as-is)
+    PARK_ANSWERABLE    = false           # answer answerable side questions INLINE from
+                                         # the snapshot (cheaper and more natural) —
+                                         # parking stays opt-in
 
-Phase 0 only *establishes* the module (plus the baseline + characterization
-tests); it deliberately does NOT wire these switches into any runtime branch, so
-adding this file is a zero-output-change change. Wiring each switch onto its
-behavior — and flipping a default — is the job of the later phase that owns it.
+Any flag can be flipped back per environment (the kill switches survive), and
+the getters still read the environment live on every call.
 
 Reads are live (each getter reads ``os.environ`` on call) so tests can toggle a
 flag with ``monkeypatch.setenv`` without reimporting anything. Values are parsed
@@ -46,10 +46,10 @@ TURNPLAN_SHADOW: Final[str] = "shadow"
 TURNPLAN_LIVE: Final[str] = "live"
 TURNPLAN_MODES: Final[tuple[str, ...]] = (TURNPLAN_OFF, TURNPLAN_SHADOW, TURNPLAN_LIVE)
 
-# ── Defaults (the "OLD" baseline behavior) ──────────────────────────────────────
-DEFAULT_UNIFIED_VOICE: Final[bool] = False
-DEFAULT_TURNPLAN_DECODE: Final[str] = TURNPLAN_OFF
-DEFAULT_MULTI_INTENT_LIVE: Final[bool] = False
+# ── Defaults (Phase 4 rollout: the rebuild is ON) ───────────────────────────────
+DEFAULT_UNIFIED_VOICE: Final[bool] = True
+DEFAULT_TURNPLAN_DECODE: Final[str] = TURNPLAN_LIVE
+DEFAULT_MULTI_INTENT_LIVE: Final[bool] = True
 DEFAULT_STREAM_GENERATION: Final[bool] = False
 DEFAULT_PARK_ANSWERABLE: Final[bool] = False
 DEFAULT_TURNPLAN_TIMEOUT_MS: Final[int] = 2000

@@ -94,7 +94,8 @@ def _fixed_decoder(plan: TurnPlan):
     return lambda _state, _utterance, _decision: plan
 
 
-async def test_out_of_scope_on_unanswered_slot_gets_spoken_outcome_and_reasks():
+async def test_out_of_scope_on_unanswered_slot_gets_spoken_outcome_and_reasks(monkeypatch):
+    monkeypatch.setenv("MULTI_INTENT_LIVE", "false")   # templated-speech kill switch
     plan = TurnPlan(
         secondary_intents=[
             SecondaryIntent(type=SecondaryIntentType.OUT_OF_SCOPE, owner=None, verbatim_span="weather")

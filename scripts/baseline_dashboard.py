@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 from contextlib import ExitStack
 from dataclasses import dataclass, field
@@ -68,6 +69,10 @@ class RunCounts:
     template_turns: int
     dropped_request_count: int
     latencies_ms: list = field(default_factory=list)
+    # Phase 4: turn-gate understanding-decode latency, split by path
+    # (metric="turn_gate_latency_ms", tag fast_path=true/false).
+    gate_fast_ms: list = field(default_factory=list)
+    gate_decode_ms: list = field(default_factory=list)
     error: str = ""
 
     def to_dict(self) -> dict:
@@ -78,6 +83,8 @@ class RunCounts:
             "template_turns": self.template_turns,
             "dropped_request_count": self.dropped_request_count,
             "latencies_ms": self.latencies_ms,
+            "gate_fast_ms": self.gate_fast_ms,
+            "gate_decode_ms": self.gate_decode_ms,
             **({"error": self.error} if self.error else {}),
         }
 
@@ -141,6 +148,34 @@ class _SpyContext:
         self._stack.close()
 
 
+class _GateLatencyCapture(logging.Handler):
+    """Collect the Phase 4 ``turn_gate_latency_ms`` records emitted during one
+    replay, split by path (fast_path=true/false). Log-capture only — never
+    changes gate behavior."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fast_ms: list[float] = []
+        self.decode_ms: list[float] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if getattr(record, "metric", None) != "turn_gate_latency_ms":
+            return
+        bucket = self.fast_ms if getattr(record, "fast_path", False) else self.decode_ms
+        bucket.append(float(getattr(record, "latency_ms", 0.0)))
+
+    def __enter__(self) -> "_GateLatencyCapture":
+        lg = logging.getLogger("agent.orchestration.turn_gate")
+        self._logger, self._prev_level = lg, lg.level
+        lg.setLevel(logging.DEBUG)
+        lg.addHandler(self)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._logger.removeHandler(self)
+        self._logger.setLevel(self._prev_level)
+
+
 async def _count_golden_run(fixture: dict) -> RunCounts:
     run_id = fixture.get("id", "?")
     # A few fixtures probe the shared collector directly (driver "_collect_slot")
@@ -155,7 +190,7 @@ async def _count_golden_run(fixture: dict) -> RunCounts:
             error="collector-probe fixture (driven by its own test)",
         )
     try:
-        with _SpyContext() as counts:
+        with _SpyContext() as counts, _GateLatencyCapture() as gate:
             record: RunRecord = await run_fixture(fixture, print_latency=False)
         return RunCounts(
             run_id=run_id,
@@ -164,6 +199,8 @@ async def _count_golden_run(fixture: dict) -> RunCounts:
             template_turns=counts.template,
             dropped_request_count=record.dropped_request_count,
             latencies_ms=list(record.latencies_ms),
+            gate_fast_ms=gate.fast_ms,
+            gate_decode_ms=gate.decode_ms,
         )
     except Exception as exc:  # a fixture that this single-agent driver can't drive
         return RunCounts(
@@ -200,6 +237,8 @@ class DashboardReport:
     def totals(self) -> dict:
         ok = [r for r in self.golden if not r.error]
         all_latencies = [ms for r in ok for ms in r.latencies_ms]
+        gate_fast = [ms for r in ok for ms in r.gate_fast_ms]
+        gate_decode = [ms for r in ok for ms in r.gate_decode_ms]
         return {
             "golden_runs": len(self.golden),
             "golden_runs_counted": len(ok),
@@ -208,6 +247,13 @@ class DashboardReport:
             "dropped_request_count": sum(r.dropped_request_count for r in ok),
             "turn_latency_ms_p50": _percentile(all_latencies, 50),
             "turn_latency_ms_p95": _percentile(all_latencies, 95),
+            # Phase 4: understanding-decode cost at the turn gate, per path.
+            "gate_fast_path_turns": len(gate_fast),
+            "gate_fast_path_ms_p50": _percentile(gate_fast, 50),
+            "gate_fast_path_ms_p95": _percentile(gate_fast, 95),
+            "gate_decode_turns": len(gate_decode),
+            "gate_decode_ms_p50": _percentile(gate_decode, 50),
+            "gate_decode_ms_p95": _percentile(gate_decode, 95),
         }
 
     def to_dict(self) -> dict:
@@ -250,6 +296,14 @@ def _print_table(report: DashboardReport) -> None:
         f"turn latency (golden, deterministic): "
         f"p50={t['turn_latency_ms_p50']}ms p95={t['turn_latency_ms_p95']}ms "
         f"(live_e2e p50/p95 validated separately — needs credentials)"
+    )
+    print(
+        f"turn-gate understanding decode: "
+        f"fast-path n={t['gate_fast_path_turns']} "
+        f"p50={t['gate_fast_path_ms_p50']}ms p95={t['gate_fast_path_ms_p95']}ms | "
+        f"decode n={t['gate_decode_turns']} "
+        f"p50={t['gate_decode_ms_p50']}ms p95={t['gate_decode_ms_p95']}ms "
+        f"(acceptance: fast path < 1ms; one decode per turn)"
     )
     print(f"\nlive_e2e: {report.live_status}" + (f" — {report.live_note}" if report.live_note else ""))
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from typing import Any, Optional
 
 from agent.core import flags
@@ -57,6 +58,23 @@ def stashed_turn_understanding(state: dict) -> tuple[Optional[TurnPlan], Optiona
     """The (plan, outcome) the gate stashed for this turn, or (None, None)."""
     cached = state.get(_UNDERSTANDING_KEY) or {}
     return cached.get("plan"), cached.get("outcome")
+
+
+def _log_latency(start: float, *, fast_path: bool, agent_name: str, awaiting_slot: str) -> None:
+    """Phase 4 latency proof: one record per decoded turn. Fast-path turns must
+    add <1ms; decode turns stay within one LLM round-trip (the idempotence
+    cache guarantees a turn never pays a second understanding call)."""
+    latency_ms = (time.perf_counter() - start) * 1000.0
+    logger.info(
+        "turn_gate_latency",
+        extra={
+            "metric": "turn_gate_latency_ms",
+            "latency_ms": round(latency_ms, 3),
+            "fast_path": fast_path,
+            "agent": agent_name,
+            "awaiting_slot": awaiting_slot,
+        },
+    )
 
 
 def _stash(
@@ -95,6 +113,7 @@ async def understand_turn(
 
     from agent.llm.turnplan_decoder import _fast_path_single_intent
 
+    start = time.perf_counter()
     msg_id = _msg_id(utterance)
 
     # ── Idempotence: already decoded this user message this turn ───────────────
@@ -128,6 +147,7 @@ async def understand_turn(
             agent_name=agent_name,
         )
         _stash(state, msg_id, awaiting_slot, plan, outcome)
+        _log_latency(start, fast_path=True, agent_name=agent_name, awaiting_slot=awaiting_slot)
         return plan, outcome
 
     # ── Budgeted full decode; heuristic fallback on timeout/failure ───────────
@@ -157,4 +177,5 @@ async def understand_turn(
         )
 
     _stash(state, msg_id, awaiting_slot, plan, outcome)
+    _log_latency(start, fast_path=False, agent_name=agent_name, awaiting_slot=awaiting_slot)
     return plan, outcome

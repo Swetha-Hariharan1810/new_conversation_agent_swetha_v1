@@ -41,7 +41,8 @@ def _signal(state: dict) -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def test_uat_007_zip_request_acknowledged_and_routed():
+async def test_uat_007_zip_request_acknowledged_and_routed(monkeypatch):
+    monkeypatch.setenv("MULTI_INTENT_LIVE", "false")   # templated-speech kill switch
     """Phase 3B: F1 is CLOSED — the ZIP-update request is acknowledged in the SAME
     turn the member says 'Fax, but I need to update my ZIP code', and the call
     routes to update the ZIP and rebuild before delivery. F2 stays closed."""
@@ -78,7 +79,8 @@ async def test_uat_007_zip_request_acknowledged_and_routed():
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def test_provider_search_fresh_request_acknowledged():
+async def test_provider_search_fresh_request_acknowledged(monkeypatch):
+    monkeypatch.setenv("MULTI_INTENT_LIVE", "false")   # templated-speech kill switch
     """Phase 3C: the bundled in-scope request (a benefits question) is no longer
     dropped — it is acknowledged and parked for draining, while the slot answer is
     accepted. The drop is gone."""

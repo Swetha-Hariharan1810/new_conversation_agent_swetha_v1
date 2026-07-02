@@ -45,7 +45,8 @@ def _fixed_decoder(plan):
 # ── S1 — Canonical UAT-007: slot answer + invalidating correction (P1+3B) ────
 
 
-async def test_s1_slot_answer_plus_invalidating_correction_end_to_end():
+async def test_s1_slot_answer_plus_invalidating_correction_end_to_end(monkeypatch):
+    monkeypatch.setenv("MULTI_INTENT_LIVE", "false")   # templated-speech kill switch
     initial = {
         "messages": [{"role": "assistant", "content": "Your list is ready. Fax or email?"}],
         "member_status_verify": True,
@@ -138,7 +139,8 @@ async def test_s2_mid_verification_identity_correction():
 # ── S3 — Slot answer + fresh in-scope independent (Phase 3C) ─────────────────
 
 
-async def test_s3_slot_answer_plus_independent_parked_then_drained():
+async def test_s3_slot_answer_plus_independent_parked_then_drained(monkeypatch):
+    monkeypatch.setenv("MULTI_INTENT_LIVE", "false")   # templated-speech kill switch
     run = await run_fixture(load_fixture("slot_interrupt_fresh_request"), print_latency=False)
     # benefits parked + acknowledged this turn.
     assert "benefits_agent" in queue_owners(run.final_state.get("intent_queue"))
@@ -234,7 +236,8 @@ def test_s5_quad_intent_precedence_and_accounting():
     # 4 distinct outcomes accounted for; nothing silently dropped.
 
 
-async def test_s5_quad_intent_every_request_gets_spoken_outcome():
+async def test_s5_quad_intent_every_request_gets_spoken_outcome(monkeypatch):
+    monkeypatch.setenv("MULTI_INTENT_LIVE", "false")   # templated-speech kill switch
     plan = TurnPlan(
         slot_answer="email",
         correction=Correction(field="zip_code", owner="provider_search_agent"),

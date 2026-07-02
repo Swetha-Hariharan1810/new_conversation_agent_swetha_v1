@@ -27,11 +27,13 @@ def _clear(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def test_old_defaults(monkeypatch):
+def test_rollout_defaults(monkeypatch):
+    """Phase 4 flip: the rebuild is ON by default; parking answerable side
+    questions stays opt-in and streaming is unchanged."""
     _clear(monkeypatch)
-    assert flags.unified_voice() is False
-    assert flags.turnplan_decode() == flags.TURNPLAN_OFF
-    assert flags.multi_intent_live() is False
+    assert flags.unified_voice() is True
+    assert flags.turnplan_decode() == flags.TURNPLAN_LIVE
+    assert flags.multi_intent_live() is True
     assert flags.stream_generation() is False
     assert flags.park_answerable() is False
 
@@ -39,9 +41,9 @@ def test_old_defaults(monkeypatch):
 def test_snapshot_matches_defaults(monkeypatch):
     _clear(monkeypatch)
     assert flags.snapshot() == {
-        "UNIFIED_VOICE": False,
-        "TURNPLAN_DECODE": "off",
-        "MULTI_INTENT_LIVE": False,
+        "UNIFIED_VOICE": True,
+        "TURNPLAN_DECODE": "live",
+        "MULTI_INTENT_LIVE": True,
         "STREAM_GENERATION": False,
         "PARK_ANSWERABLE": False,
         "TURNPLAN_TIMEOUT_MS": 2000,
@@ -54,10 +56,16 @@ def test_bool_truthy(monkeypatch, token):
     assert flags.unified_voice() is True
 
 
-@pytest.mark.parametrize("token", ["0", "false", "no", "off", "", "garbage"])
-def test_bool_falsy_and_unknown(monkeypatch, token):
+@pytest.mark.parametrize("token", ["0", "false", "no", "off", ""])
+def test_bool_falsy(monkeypatch, token):
     monkeypatch.setenv(flags.ENV_MULTI_INTENT_LIVE, token)
     assert flags.multi_intent_live() is False
+
+
+def test_bool_unknown_clamps_to_default(monkeypatch):
+    # A malformed value falls back to the default (True since the Phase 4 flip).
+    monkeypatch.setenv(flags.ENV_MULTI_INTENT_LIVE, "garbage")
+    assert flags.multi_intent_live() is True
 
 
 @pytest.mark.parametrize(
@@ -68,7 +76,7 @@ def test_bool_falsy_and_unknown(monkeypatch, token):
         ("live", "live"),
         ("SHADOW", "shadow"),
         ("  live  ", "live"),
-        ("nonsense", "off"),  # unknown clamps to default
+        ("nonsense", "live"),  # unknown clamps to the (Phase 4) default
     ],
 )
 def test_turnplan_decode_modes(monkeypatch, value, expected):
