@@ -38,6 +38,7 @@ ENV_TURNPLAN_DECODE: Final[str] = "TURNPLAN_DECODE"
 ENV_MULTI_INTENT_LIVE: Final[str] = "MULTI_INTENT_LIVE"
 ENV_STREAM_GENERATION: Final[str] = "STREAM_GENERATION"
 ENV_PARK_ANSWERABLE: Final[str] = "PARK_ANSWERABLE"
+ENV_TURNPLAN_TIMEOUT_MS: Final[str] = "TURNPLAN_TIMEOUT_MS"
 
 # ── TurnPlan decode modes ───────────────────────────────────────────────────────
 TURNPLAN_OFF: Final[str] = "off"
@@ -51,6 +52,7 @@ DEFAULT_TURNPLAN_DECODE: Final[str] = TURNPLAN_OFF
 DEFAULT_MULTI_INTENT_LIVE: Final[bool] = False
 DEFAULT_STREAM_GENERATION: Final[bool] = False
 DEFAULT_PARK_ANSWERABLE: Final[bool] = False
+DEFAULT_TURNPLAN_TIMEOUT_MS: Final[int] = 2000
 
 _TRUE_TOKENS: Final[frozenset[str]] = frozenset({"1", "true", "t", "yes", "y", "on"})
 _FALSE_TOKENS: Final[frozenset[str]] = frozenset({"0", "false", "f", "no", "n", "off", ""})
@@ -102,6 +104,20 @@ def park_answerable() -> bool:
     return _read_bool(ENV_PARK_ANSWERABLE, DEFAULT_PARK_ANSWERABLE)
 
 
+def turnplan_timeout_ms() -> int:
+    """Budget (ms) for the full TurnPlan decode at the turn gate; on expiry the
+    gate falls back to the deterministic heuristic decoder. Malformed or
+    non-positive values clamp to the default."""
+    raw = os.getenv(ENV_TURNPLAN_TIMEOUT_MS)
+    if raw is None:
+        return DEFAULT_TURNPLAN_TIMEOUT_MS
+    try:
+        value = int(raw.strip())
+    except (ValueError, AttributeError):
+        return DEFAULT_TURNPLAN_TIMEOUT_MS
+    return value if value > 0 else DEFAULT_TURNPLAN_TIMEOUT_MS
+
+
 def snapshot() -> dict[str, object]:
     """Return the live value of every flag — one call for logs/dashboards."""
     return {
@@ -110,4 +126,5 @@ def snapshot() -> dict[str, object]:
         ENV_MULTI_INTENT_LIVE: multi_intent_live(),
         ENV_STREAM_GENERATION: stream_generation(),
         ENV_PARK_ANSWERABLE: park_answerable(),
+        ENV_TURNPLAN_TIMEOUT_MS: turnplan_timeout_ms(),
     }

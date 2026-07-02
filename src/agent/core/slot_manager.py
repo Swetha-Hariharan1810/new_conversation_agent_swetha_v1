@@ -386,6 +386,8 @@ class SlotManagerMixin:
         slot_answered: bool,
         slot_label: str,
         pending_slots: Optional[list[str]],
+        extra_updates: Optional[dict] = None,
+        next_node_when_done: Optional[str] = None,
     ) -> Optional[dict]:
         """Narrate the resolver outcome as ONE generated sentence (Phase 3).
 
@@ -497,6 +499,8 @@ class SlotManagerMixin:
         )
 
         interrupt = self.ask_member_with_context(state, msg, ctx)
+        for k, v in (extra_updates or {}).items():
+            interrupt[k] = v
         for k, v in updates.items():
             interrupt[k] = v
         interrupt["is_interrupt"] = True
@@ -507,6 +511,11 @@ class SlotManagerMixin:
                 interrupt["zip_code_used"] = ""
         else:
             interrupt["awaiting_slot"] = next_ask_slot if slot_answered else slot_name
+            # Bug 2: a confirmed yes/no slot with parked secondaries completes the
+            # current agent's step — the composed sentence already ends with the
+            # NEXT step's ask; route the answer to that step's agent.
+            if slot_answered and next_node_when_done:
+                interrupt["next_node"] = next_node_when_done
         self.logger.info(
             "slot_manager: multi-intent turn composed (one voice)",
             extra={
@@ -524,7 +533,7 @@ class SlotManagerMixin:
     # Phase 3B/3C: live application of a resolver outcome on a slot-answered turn
     # -------------------------------------------------------------------------
 
-    async def _apply_resolver_outcome(
+    async def _apply_resolver_outcome(  # noqa: C901
         self,
         state: State,
         ctx: ConversationContext,
@@ -536,6 +545,9 @@ class SlotManagerMixin:
         slot_answered: bool = True,
         slot_label: Optional[str] = None,
         pending_slots: Optional[list[str]] = None,
+        extra_updates: Optional[dict] = None,
+        next_node_when_done: Optional[str] = None,
+        ask_next_on_answered: bool = False,
     ) -> Optional[dict]:
         """Build the live interrupt for an actionable resolver outcome, or None.
 
@@ -558,6 +570,20 @@ class SlotManagerMixin:
             speak a templated acknowledgement (no per-parked-intent fan-out).
           * unsupported_decline / open_redirect — give the unanswerable side
             question a spoken outcome; never act on it.
+          * cross_slot_accept — the utterance answered a DIFFERENT pending slot of
+            this agent; accept that value and re-ask the awaiting slot (no failed
+            attempt is counted, because this interrupt returns before slot_fail).
+
+        Phase 2 (hand-coded confirmation flows):
+          * ``extra_updates`` — merged into ANY interrupt returned, so a hand-coded
+            call site's flow keys (provider_type, zip_code, …) persist.
+          * ``ask_next_on_answered`` — when True and the slot WAS answered, the
+            spoken outcome ends with the ask for ``pending_slots[0]`` and
+            ``awaiting_slot`` moves there (Bug 2: accept → park-ack → next-step
+            ask in ONE turn), applying the resolver's ``state_updates`` in full.
+          * ``next_node_when_done`` — when the answered slot completes this
+            agent's step, route the next turn to that agent.
+        Pipeline call sites pass none of these, so their behavior is unchanged.
 
         When the slot was NOT answered, the spoken outcome is followed by a re-ask
         of the same slot (awaiting kept), so the primary collection continues.
@@ -566,6 +592,7 @@ class SlotManagerMixin:
         from agent.core import flags
         from agent.orchestration.resolver import (
             CORRECTION_ACK,
+            CROSS_SLOT_ACCEPT,
             MULTI_INTENT_ACK,
             OPEN_REDIRECT,
             UNSUPPORTED_DECLINE,
@@ -576,6 +603,7 @@ class SlotManagerMixin:
             return None
         slot = self.get_slot(slot_name)
         label = slot_label or slot_name.replace("_", " ")
+        caller_updates = dict(extra_updates or {})
 
         # ── Phase 3: narrate the whole turn as ONE generated sentence ──────────
         if flags.multi_intent_live():
@@ -589,6 +617,8 @@ class SlotManagerMixin:
                 slot_answered=slot_answered,
                 slot_label=label,
                 pending_slots=pending_slots,
+                extra_updates=caller_updates or None,
+                next_node_when_done=next_node_when_done,
             )
             if composed is not None:
                 return composed
@@ -596,10 +626,29 @@ class SlotManagerMixin:
 
         def _finish(msg: str, *, extra_updates: dict | None = None, keep_slot: bool) -> dict:
             interrupt = self.ask_member_with_context(state, msg, ctx)
+            for k, v in caller_updates.items():
+                interrupt[k] = v
             for k, v in (extra_updates or {}).items():
                 interrupt[k] = v
             interrupt["awaiting_slot"] = slot_name if keep_slot else ""
             interrupt["is_interrupt"] = True
+            return interrupt
+
+        def _next_step_ask() -> tuple[str, str]:
+            """Bug 2 completion: the yes/no slot WAS answered and the agent's step
+            is done — the same sentence must end with the NEXT step's ask.
+            Returns (ask_sentence, next_slot), or ("", "") when not applicable."""
+            if not (slot_answered and ask_next_on_answered and pending_slots):
+                return "", ""
+            next_slot = pending_slots[0]
+            return turn_acts.render_next_ask(slot_label=self._next_ask_label(next_slot)), next_slot
+
+        def _route_done(interrupt: dict, next_slot: str) -> dict:
+            """Move awaiting to the next step's slot and route to its agent."""
+            if next_slot:
+                interrupt["awaiting_slot"] = next_slot
+            if next_node_when_done:
+                interrupt["next_node"] = next_node_when_done
             return interrupt
 
         # ── correction_ack — only when the slot was answered (else CORRECTED path)
@@ -619,6 +668,8 @@ class SlotManagerMixin:
             if outcome.declined:  # co-occurring unsupported request → decline in-line
                 msg = f"{msg} {turn_acts.render_unsupported_decline(attempt=slot.attempt_count)}"
             interrupt = self.ask_member_with_context(state, msg, ctx)
+            for k, v in caller_updates.items():
+                interrupt[k] = v
             for k, v in (outcome.state_updates or {}).items():
                 interrupt[k] = v
             interrupt["next_node"] = rewind  # rewind to the corrected value's owner
@@ -642,15 +693,26 @@ class SlotManagerMixin:
             ack = turn_acts.render_multi_intent_ack(outcome.parked, attempt=slot.attempt_count)
             if outcome.declined:  # co-occurring unsupported request → decline in-line
                 ack = f"{ack} {turn_acts.render_unsupported_decline(attempt=slot.attempt_count)}"
-            msg = ack if slot_answered else f"{ack} {turn_acts.render_re_ask(slot_label=label)}"
+            next_ask, next_slot = _next_step_ask()
+            if next_ask:
+                msg = f"{ack} {next_ask}"
+            else:
+                msg = ack if slot_answered else f"{ack} {turn_acts.render_re_ask(slot_label=label)}"
             extra = {}
-            if "intent_queue" in (outcome.state_updates or {}):
+            if slot_answered and ask_next_on_answered:
+                # Bug 2: the accept must take effect in full (accepted value +
+                # queue), not just the intent_queue delta.
+                extra.update(outcome.state_updates or {})
+            elif "intent_queue" in (outcome.state_updates or {}):
                 extra["intent_queue"] = outcome.state_updates["intent_queue"]
             self.logger.info(
                 "slot_manager: multi-intent acknowledged",
                 extra={"slot": slot_name, "parked": list(outcome.parked)},
             )
-            return _finish(msg, extra_updates=extra, keep_slot=not slot_answered)
+            interrupt = _finish(msg, extra_updates=extra, keep_slot=not slot_answered)
+            if slot_answered and ask_next_on_answered:
+                interrupt = _route_done(interrupt, next_slot)
+            return interrupt
 
         # ── unsupported / open redirect — spoken outcome, never act ─────────────
         if outcome.speech_act in (UNSUPPORTED_DECLINE, OPEN_REDIRECT):
@@ -659,12 +721,33 @@ class SlotManagerMixin:
                 if outcome.speech_act == UNSUPPORTED_DECLINE
                 else turn_acts.render_open_redirect(attempt=slot.attempt_count)
             )
-            msg = base if slot_answered else f"{base} {turn_acts.render_re_ask(slot_label=label)}"
+            next_ask, next_slot = _next_step_ask()
+            if next_ask:
+                msg = f"{base} {next_ask}"
+            else:
+                msg = base if slot_answered else f"{base} {turn_acts.render_re_ask(slot_label=label)}"
             self.logger.info(
                 "slot_manager: side-question given spoken outcome",
                 extra={"slot": slot_name, "speech_act": outcome.speech_act},
             )
-            return _finish(msg, keep_slot=not slot_answered)
+            interrupt = _finish(msg, keep_slot=not slot_answered)
+            if slot_answered and ask_next_on_answered:
+                interrupt = _route_done(interrupt, next_slot)
+            return interrupt
+
+        # ── cross_slot_accept — the answer belonged to a DIFFERENT pending slot ──
+        if outcome.speech_act == CROSS_SLOT_ACCEPT and outcome.state_updates:
+            field, value = next(iter(outcome.state_updates.items()))
+            msg = turn_acts.render_cross_slot_accept(
+                field=field, value=value, slot_label=label, attempt=slot.attempt_count
+            )
+            self.logger.info(
+                "slot_manager: cross-slot answer accepted",
+                extra={"slot": slot_name, "accepted_slot": field},
+            )
+            # keep_slot: the awaiting slot is still open — re-asked in the same
+            # sentence, and NO failed attempt was counted against it.
+            return _finish(msg, extra_updates=dict(outcome.state_updates), keep_slot=True)
 
         return None
 
@@ -778,20 +861,19 @@ class SlotManagerMixin:
         slot = self.get_slot(slot_name)
 
         # ------------------------------------------------------------------
-        # Phase 3A/3B: shared understanding decode + resolver.
+        # Phase 3A/3B → Phase 2 turn gate: shared understanding decode + resolver.
         # Runs the single resolver on every slot-collection turn in every agent
-        # and LOGS its decision. Phase 3B ACTS on exactly one outcome — the
-        # invalidating-correction case (handled below, after the slot answer is
-        # confirmed); every other outcome remains shadow-only, so single-intent
-        # and all other flows are unchanged. No-op unless a decoder is installed.
+        # through ``understand_turn`` — the ONE per-turn chokepoint (fast path,
+        # decode budget, idempotence cache), so an agent that both runs its
+        # guards and a pipeline never decodes the same user message twice.
         # Guarded so it can never break a live turn.
         # ------------------------------------------------------------------
         _turn_plan = None
         _turn_outcome = None
         try:
-            from agent.orchestration.shadow import decode_and_resolve_async
+            from agent.orchestration.turn_gate import understand_turn
 
-            _turn_plan, _turn_outcome = await decode_and_resolve_async(
+            _turn_plan, _turn_outcome = await understand_turn(
                 state,
                 utterance=_last_user_msg(messages),
                 awaiting_slot=state.get("awaiting_slot") or slot_name,

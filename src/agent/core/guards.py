@@ -129,6 +129,25 @@ class ConversationGuardsMixin:
         user_text: str,
         result: Optional["WorkerResult"] = None,
     ) -> Optional[dict]:
+        # ── Phase 2: ONE understanding decode per turn (the turn gate) ─────────
+        # Guards run first on every agent turn and already hold the WorkerResult,
+        # so this is where the turn is decoded ONCE and stashed in state
+        # (``_turn_understanding``). Hand-coded confirmation branches and the
+        # shared slot collector re-read the cached result for free — never a
+        # second decode. Guarded: understanding must never break a live turn.
+        try:
+            from agent.orchestration.turn_gate import understand_turn
+
+            await understand_turn(
+                state,
+                utterance=user_text,
+                awaiting_slot=state.get("awaiting_slot") or "",
+                decision=result,
+                agent_name=self.AGENT_NAME,
+            )
+        except Exception:
+            self.logger.debug("run_conversation_guards: turn gate failed", exc_info=True)
+
         # ── Passive caller type detection ─────────────────────────────
         # Fires at any point in the conversation when caller explicitly
         # identifies themselves as a non-member.

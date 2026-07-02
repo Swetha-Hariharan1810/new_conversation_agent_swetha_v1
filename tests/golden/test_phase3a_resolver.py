@@ -296,4 +296,5 @@ def test_speech_acts_are_from_closed_set():
         "unsupported_decline",
         "multi_intent_ack",
         "open_redirect",
+        "cross_slot_accept",
     }

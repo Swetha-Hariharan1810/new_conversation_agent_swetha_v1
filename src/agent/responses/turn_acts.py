@@ -88,6 +88,23 @@ _OPEN_REDIRECT = [
     "I can't take care of that one here. Is there something else I can help with?",
 ]
 
+# Cross-slot accept (Phase 2): the caller answered a DIFFERENT pending slot of
+# the active agent — accept that value out loud, then return to the awaiting
+# slot. {value} and {field_label} are resolver-validated; no free text.
+_CROSS_SLOT_ACCEPT = [
+    "Great — {value} for your {field_label}. Now, back to your {slot_label}?",
+    "Perfect, I've noted {value} for your {field_label} — and your {slot_label}?",
+    "Got it, {value} it is for the {field_label}. Could I get your {slot_label}?",
+]
+
+# Next-step ask appended when a confirmed yes/no slot completes the current step
+# and the same sentence must carry the following question (Bug 2).
+_NEXT_ASK = [
+    "Now — what's your {slot_label}?",
+    "Next, could you share your {slot_label}?",
+    "And your {slot_label}?",
+]
+
 # Caller asked for time — acknowledge ONLY. Never re-ask the slot here (the slot
 # stays pending), and never count a retry attempt against it.
 _STALLING_ACK = [
@@ -174,6 +191,20 @@ def render_open_redirect(*, attempt: int = 0) -> str:
 def render_stalling_ack(*, attempt: int = 0) -> str:
     """Acknowledge a request for time. No slot label, no question — pure ack."""
     return _rotate(_STALLING_ACK, attempt)
+
+
+def render_cross_slot_accept(*, field: str, value: str, slot_label: str, attempt: int = 0) -> str:
+    """Accept a value the caller gave for a DIFFERENT pending slot, then return
+    to the awaiting slot. ``value`` must be resolver-validated (it is spoken)."""
+    return _rotate(_CROSS_SLOT_ACCEPT, attempt).format(
+        value=value, field_label=field_label(field), slot_label=slot_label
+    )
+
+
+def render_next_ask(*, slot_label: str, attempt: int = 0) -> str:
+    """Ask for the NEXT step's slot after a completed confirmation (no retry
+    framing — this is a first ask, not a re-ask)."""
+    return _rotate(_NEXT_ASK, attempt).format(slot_label=slot_label)
 
 
 def owner_label(owner: str) -> str:

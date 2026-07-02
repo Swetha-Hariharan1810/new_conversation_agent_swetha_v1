@@ -44,6 +44,7 @@ def test_snapshot_matches_defaults(monkeypatch):
         "MULTI_INTENT_LIVE": False,
         "STREAM_GENERATION": False,
         "PARK_ANSWERABLE": False,
+        "TURNPLAN_TIMEOUT_MS": 2000,
     }
 
 

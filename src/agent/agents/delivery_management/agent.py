@@ -36,6 +36,7 @@ from agent.agents.delivery_management.pipelines import (
     build_email_pipeline,
     build_fax_pipeline,
 )
+from agent.conversation.context import ConversationContext
 from agent.core.agent import BaseAgent
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
@@ -195,6 +196,21 @@ class DeliveryManagementAgent(BaseAgent):
                 ask_result["fax"] = fax_on_file
                 return ask_result
 
+            # ── Phase 2: the confirmation turn flows through the shared resolver ──
+            live, queue_update = await self._confirmation_resolver_outcome(
+                state,
+                result,
+                slot_name="fax_confirmed",
+                slot_label="fax number confirmation",
+                contact_conf=contact_conf,
+                update_slot="fax",
+                on_file=fax_on_file,
+                pending_key="pending_fax",
+                pending_value="" if contact_conf == "no" else pending_fax,
+            )
+            if live is not None:
+                return live
+
             if contact_conf == "yes":
                 if pending_fax:
                     if fail := await update_fax_in_salesforce(self, state, pending_fax):
@@ -202,10 +218,12 @@ class DeliveryManagementAgent(BaseAgent):
                     logger.info(LOG_CONTACT_UPDATED, extra={"fax_tail": pending_fax[-4:]})
                     done = await self._proceed_to_dispatch(state, delivery_method, pending_fax)
                     done["pending_fax"] = ""
+                    done.update(queue_update)
                     return done
                 logger.info(LOG_CONTACT_CONFIRMED, extra={"method": "fax"})
                 done = await self._proceed_to_dispatch(state, delivery_method, fax_on_file)
                 done["pending_fax"] = ""
+                done.update(queue_update)
                 return done
             if contact_conf == "no":
                 if escalation := self.guard_loop_limit(
@@ -312,6 +330,21 @@ class DeliveryManagementAgent(BaseAgent):
                 ask_result["email"] = email_on_file
                 return ask_result
 
+            # ── Phase 2: the confirmation turn flows through the shared resolver ──
+            live, queue_update = await self._confirmation_resolver_outcome(
+                state,
+                result,
+                slot_name="email_confirmed",
+                slot_label="email address confirmation",
+                contact_conf=contact_conf,
+                update_slot="email",
+                on_file=email_on_file,
+                pending_key="pending_email",
+                pending_value="" if contact_conf == "no" else pending_email,
+            )
+            if live is not None:
+                return live
+
             if contact_conf == "yes":
                 if pending_email:
                     if fail := await update_email_in_salesforce(self, state, pending_email):
@@ -319,10 +352,12 @@ class DeliveryManagementAgent(BaseAgent):
                     logger.info(LOG_CONTACT_UPDATED, extra={"method": "email"})
                     done = await self._proceed_to_dispatch(state, delivery_method, pending_email)
                     done["pending_email"] = ""
+                    done.update(queue_update)
                     return done
                 logger.info(LOG_CONTACT_CONFIRMED, extra={"method": "email"})
                 done = await self._proceed_to_dispatch(state, delivery_method, email_on_file)
                 done["pending_email"] = ""
+                done.update(queue_update)
                 return done
             if contact_conf == "no":
                 if escalation := self.guard_loop_limit(
@@ -387,14 +422,102 @@ class DeliveryManagementAgent(BaseAgent):
     # Private helpers
     # -------------------------------------------------------------------------
 
+    async def _confirmation_resolver_outcome(
+        self,
+        state: State,
+        result,
+        *,
+        slot_name: str,
+        slot_label: str,
+        contact_conf: str,
+        update_slot: str,
+        on_file,
+        pending_key: str,
+        pending_value,
+        completes_on: tuple[str, ...] = ("yes",),
+    ) -> tuple[dict | None, dict]:
+        """Phase 2: route a hand-coded contact confirmation through the shared
+        resolver (one cached understanding decode via the turn gate).
+
+        Returns ``(interrupt, queue_update)``:
+
+          * ``interrupt`` — the resolver's spoken outcome (park-ack / decline /
+            correction rewind) when it owns the turn; the caller returns it. On
+            a declined read-back ("no") the same sentence ends with the ask for
+            the replacement value, so nothing is silently dropped.
+          * ``queue_update`` — for an answer in ``completes_on``, whose
+            completion has side effects (the dispatch/complete MUST still run —
+            Bug 2: the accept takes effect), parked owners come back as an
+            ``intent_queue`` delta the caller merges into the completion result
+            instead of interrupting.
+        """
+        from agent.orchestration.resolver import CORRECTION_ACK, CROSS_SLOT_ACCEPT
+        from agent.orchestration.turn_gate import understand_turn
+
+        messages = list(state.get("messages") or [])
+        plan, outcome = await understand_turn(
+            state,
+            utterance=_last_user_msg(messages),
+            awaiting_slot=slot_name,
+            decision=result,
+            agent_name=self.AGENT_NAME,
+        )
+        if outcome is None or not outcome.speech_act:
+            return None, {}
+        # Cross-slot accepts are pipeline territory: the pending-confirm flow here
+        # must never write a contact value that skipped its read-back confirmation.
+        if outcome.speech_act == CROSS_SLOT_ACCEPT:
+            return None, {}
+        if contact_conf in completes_on and outcome.speech_act != CORRECTION_ACK:
+            updates = outcome.state_updates or {}
+            if "intent_queue" in updates:
+                return None, {"intent_queue": updates["intent_queue"]}
+            return None, {}
+        collects_replacement = bool(contact_conf) and contact_conf not in completes_on
+        ctx = ConversationContext.from_state(state)
+        live = await self._apply_resolver_outcome(
+            state,
+            ctx,
+            slot_name,
+            contact_conf or None,
+            plan,
+            outcome,
+            slot_answered=bool(contact_conf),
+            slot_label=slot_label,
+            pending_slots=[update_slot] if collects_replacement else None,
+            extra_updates={update_slot: on_file, pending_key: pending_value},
+            ask_next_on_answered=collects_replacement,
+        )
+        return live, {}
+
     async def _handle_benefits_response(self, state: State, messages: list, result) -> dict:
         """Process the member's yes/no response to the benefits offer."""
         extracted = (result.extracted or {}) if result else {}
         benefits_raw = extracted.get("benefits_response", "")
         benefits_conf = normalize_yes_no(benefits_raw) if benefits_raw else ""
 
+        # ── Phase 2: the confirmation turn flows through the shared resolver ──
+        # A "yes"/"no" completes this agent (no side-effecting action beyond the
+        # signal), so an answered turn only merges parked owners into the
+        # completion; a non-answer with a side request gets the resolver's
+        # spoken outcome + re-ask instead of burning a retry.
+        live, queue_update = await self._confirmation_resolver_outcome(
+            state,
+            result,
+            slot_name="benefits_response",
+            slot_label="whether you'd like to hear about related benefits",
+            contact_conf=benefits_conf,
+            update_slot="provider_list_sent",
+            on_file=True,
+            pending_key="benefits_offer_made",
+            pending_value=True,
+            completes_on=("yes", "no"),
+        )
+        if live is not None:
+            return live
+
         if benefits_conf in ("yes", "no"):
-            return self.signal_complete(
+            done = self.signal_complete(
                 state,
                 message="",
                 resolved_intents=["delivery_management"],
@@ -405,6 +528,8 @@ class DeliveryManagementAgent(BaseAgent):
                 ),
                 proactive_offer_available=(benefits_conf == "yes"),
             )
+            done.update(queue_update)
+            return done
 
         if stall := self.check_stalling(state, messages, result, "benefits_response"):
             return stall
