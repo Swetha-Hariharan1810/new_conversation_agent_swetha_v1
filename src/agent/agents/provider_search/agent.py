@@ -222,6 +222,62 @@ class ProviderSearchAgent(BaseAgent):
                 ask_result["dirty_artifacts"] = mark_dirty(state.get("dirty_artifacts"), "zip_code")
                 return ask_result
 
+            # ── Phase 2: the confirmation turn flows through the shared resolver ──
+            # The turn gate already decoded this user message once (in the
+            # guards); the cached understanding decides whether the turn carried
+            # more than the yes/no — a parked side request, a correction, a
+            # cross-slot answer. When the resolver owns the turn, its interrupt
+            # speaks accept → park-ack → next-step ask in ONE sentence, the
+            # accept still takes effect, and the next turn routes to the next
+            # step's agent (Bug 2). When it returns None, the existing
+            # accept/decline logic below runs unchanged.
+            from agent.orchestration.turn_gate import understand_turn
+
+            plan, outcome = await understand_turn(
+                state,
+                utterance=last_user,
+                awaiting_slot="zip_confirmed",
+                decision=result,
+                agent_name=self.AGENT_NAME,
+            )
+            if outcome is not None:
+                ctx = ConversationContext.from_state(state)
+                extra: dict = {"provider_type": provider_type, "zip_code": zip_on_file}
+                pending: list[str] = []
+                next_node_when_done = None
+                if zip_conf == "yes":
+                    # Accept-completion: the same updates _signal_done applies —
+                    # the ZIP is resolved, the list is clean, delivery is next.
+                    extra.update(
+                        {
+                            "zip_code_used": zip_on_file,
+                            "dirty_artifacts": clear_dirty(state.get("dirty_artifacts"), "provider_list"),
+                        }
+                    )
+                    pending = ["delivery_method"]
+                    next_node_when_done = "delivery_management_agent"
+                elif zip_conf == "no":
+                    # Decline-completion: the ZIP is disputed — mark the derived
+                    # list stale and collect the new ZIP as the next step.
+                    extra["dirty_artifacts"] = mark_dirty(state.get("dirty_artifacts"), "zip_code")
+                    pending = ["zip_code"]
+                live = await self._apply_resolver_outcome(
+                    state,
+                    ctx,
+                    "zip_confirmed",
+                    zip_conf or None,
+                    plan,
+                    outcome,
+                    slot_answered=bool(zip_conf),
+                    slot_label="ZIP code confirmation",
+                    pending_slots=pending or None,
+                    extra_updates=extra,
+                    next_node_when_done=next_node_when_done,
+                    ask_next_on_answered=bool(zip_conf),
+                )
+                if live is not None:
+                    return live
+
             if zip_conf == "yes":
                 logger.info(LOG_ZIP_CONFIRMED, extra={"zip_code": zip_on_file})
                 return self._signal_done(state, provider_type, zip_on_file)
@@ -251,6 +307,7 @@ class ProviderSearchAgent(BaseAgent):
             if slot.is_exhausted():
                 return self.signal_escalate(state, pick(MSG_ZIP_EXHAUST), reason="zip_confirmed_exhausted")
             from agent.llm.response_generator import generate_recovery_message
+            from agent.responses.grounding import turn_grounding_allowlist
 
             spoken_zip = " ".join(zip_on_file)
             ctx = ConversationContext.from_state(state)
@@ -259,13 +316,22 @@ class ProviderSearchAgent(BaseAgent):
                 attempt=slot.attempt_count,
                 guard="RETRY",
                 last_messages=messages[-4:],
-                slot_label_override=(
-                    f"whether the ZIP code {spoken_zip} on file is correct (yes or no) — "
-                    f"if they say their address changed, ask for their current ZIP"
+                slot_label_override="ZIP code confirmation",
+                generator_directive=(
+                    f"Ask whether the ZIP code {spoken_zip} on file is correct (yes or no) — "
+                    f"if they say their address changed, ask for their current ZIP."
                 ),
                 caller_name=ctx.caller_first_name,
                 confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
                 user_utterance=last_user,
+                grounded_values=turn_grounding_allowlist(
+                    state,
+                    ctx,
+                    extracted_value=None,
+                    answered_inline=None,
+                    slot_name="zip_confirmed",
+                    readback_values=[zip_on_file],
+                ),
             )
             retry_result = self.ask_member(state, retry_msg)
             retry_result["awaiting_slot"] = "zip_confirmed"

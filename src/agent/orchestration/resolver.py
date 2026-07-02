@@ -34,7 +34,12 @@ from agent.orchestration.invalidation import (
     mark_dirty,
     owner_of,
 )
-from agent.orchestration.registry import ALL_AGENTS
+from agent.orchestration.registry import (
+    AGENT_SLOTS,
+    ALL_AGENTS,
+    queue_entry,
+    queue_entry_owner,
+)
 from agent.slots import normalizers as _N
 from agent.slots import validators as _V
 
@@ -45,9 +50,20 @@ CORRECTION_ACK = "correction_ack"
 UNSUPPORTED_DECLINE = "unsupported_decline"
 MULTI_INTENT_ACK = "multi_intent_ack"
 OPEN_REDIRECT = "open_redirect"
+# Phase 2: the utterance answered a DIFFERENT pending slot of the active agent —
+# accept that value (no attempt counted on the awaiting slot), then re-ask.
+CROSS_SLOT_ACCEPT = "cross_slot_accept"
 
 SPEECH_ACTS = frozenset(
-    {RE_ASK, CLARIFY, CORRECTION_ACK, UNSUPPORTED_DECLINE, MULTI_INTENT_ACK, OPEN_REDIRECT}
+    {
+        RE_ASK,
+        CLARIFY,
+        CORRECTION_ACK,
+        UNSUPPORTED_DECLINE,
+        MULTI_INTENT_ACK,
+        OPEN_REDIRECT,
+        CROSS_SLOT_ACCEPT,
+    }
 )
 
 # Below this, the decode is too uncertain to act on — ask instead.
@@ -166,15 +182,63 @@ def _invalidating_field_for_owner(agent: Optional[str]) -> Optional[str]:
     return None
 
 
+# Free-text-permissive slots (validate_name accepts any short alphabetic text):
+# a cross-slot match against these may come only from the STRUCTURED
+# ``plan.slot_answer``, never the raw utterance, or any rambling non-answer
+# would "validate" as a name.
+_FREE_TEXT_SLOTS = frozenset({"first_name", "last_name"})
+
+
+def _cross_slot_match(plan: TurnPlan, state: dict, awaiting: str, *, utterance: str) -> Optional[object]:
+    """Does this non-answer actually answer a DIFFERENT pending slot of the
+    active agent? Returns ``(slot, normalized_value)`` on exactly one match,
+    the string ``"ambiguous"`` when several pending slots validate (never
+    guess), or ``None`` when nothing matches.
+
+    Candidates tried per slot: the structured ``plan.slot_answer`` first, then
+    the raw utterance (strict-validator slots only). Yes/no confirmation slots
+    are excluded — a bare "yes" out of context must never confirm a value that
+    was not read back this turn.
+    """
+    if not awaiting:
+        return None
+    agent = state.get("active_agent") or ""
+    matches: dict[str, str] = {}
+    for slot in AGENT_SLOTS.get(agent, []):
+        if slot == awaiting or (state.get(slot) or ""):
+            continue  # not this agent's other slot, or already filled
+        spec = SLOT_SPEC.get(slot)
+        if not spec or spec[0] is _N.normalize_yes_no:
+            continue
+        candidates = [plan.slot_answer]
+        if slot not in _FREE_TEXT_SLOTS:
+            candidates.append(utterance)
+        for candidate in candidates:
+            ok, normalized = validate_slot_answer(slot, candidate)
+            if ok:
+                matches[slot] = normalized
+                break
+    if len(matches) > 1:
+        return "ambiguous"
+    if matches:
+        return next(iter(matches.items()))
+    return None
+
+
 def _park(independents: list, state: dict) -> tuple[list, list]:
-    """Enqueue each independent's owner into intent_queue (dedup, order-preserving).
+    """Enqueue each independent into intent_queue (dedup by owner, order-
+    preserving). Entries carry the caller's verbatim span alongside the owner
+    ({"owner": …, "span": …}) so draining can acknowledge the parked request in
+    the caller's own words; legacy bare-string entries are left untouched.
     Returns (parked_owners, new_queue)."""
     queue = list(state.get("intent_queue") or [])
+    owners_in_queue = {queue_entry_owner(e) for e in queue}
     parked: list = []
-    for _si, owner in independents:
+    for si, owner in independents:
         parked.append(owner)
-        if owner not in queue:
-            queue.append(owner)
+        if owner not in owners_in_queue:
+            queue.append(queue_entry(owner, si.verbatim_span or ""))
+            owners_in_queue.add(owner)
     return parked, queue
 
 
@@ -342,5 +406,17 @@ def resolve_turn(plan: TurnPlan, state: dict, *, utterance: str) -> ResolverOutc
         # We had a secondary signal we could not safely act on — ask, never act.
         return ResolverOutcome(CLARIFY if awaiting else OPEN_REDIRECT)
 
-    # (g) Genuine non-answer.
+    # (g) Cross-slot answer (Phase 2, Bug 1's trigger): before treating this as a
+    # genuine non-answer, check whether it validates against exactly one OTHER
+    # pending slot of the active agent. If so, accept that value and re-ask the
+    # original awaiting slot — no failed attempt is counted on it. Multiple
+    # plausible slots → CLARIFY (never guess).
+    cross = _cross_slot_match(plan, state, awaiting, utterance=utter)
+    if cross == "ambiguous":
+        return ResolverOutcome(CLARIFY)
+    if cross:
+        slot, value = cross
+        return ResolverOutcome(CROSS_SLOT_ACCEPT, {slot: value})
+
+    # (h) Genuine non-answer.
     return ResolverOutcome(RE_ASK if awaiting else OPEN_REDIRECT)

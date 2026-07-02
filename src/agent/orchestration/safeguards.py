@@ -74,9 +74,11 @@ def apply_safeguards(
         and state.get("intent_queue")
         and len(state["intent_queue"]) > 0
     ):
+        from agent.orchestration.registry import queue_owners
+
         decision.next_agent = "escalation_agent"
         decision.reasoning = (
-            f"Safeguard: unresolved intent queue {state['intent_queue']} — "
+            f"Safeguard: unresolved intent queue {queue_owners(state['intent_queue'])} — "
             "no domain agent available → escalation_agent"
         )
 

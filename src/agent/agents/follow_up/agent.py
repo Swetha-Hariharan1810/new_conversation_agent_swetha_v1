@@ -407,10 +407,17 @@ class FollowUpAgent(BaseAgent):
 
         logger.info("follow_up_agent: cross-domain side request parked", extra={"owners": action_owners})
         result = self.ask_member(state, turn_acts.render_multi_intent_ack(action_owners))
+        from agent.orchestration.registry import queue_entry, queue_entry_owner
+
+        spans = {
+            d.get("owner"): d.get("span") or "" for d in (getattr(outcome, "independents_detail", None) or [])
+        }
         queue = list(state.get("intent_queue") or [])
+        owners_in_queue = {queue_entry_owner(e) for e in queue}
         for owner in action_owners:
-            if owner not in queue:
-                queue.append(owner)
+            if owner not in owners_in_queue:
+                queue.append(queue_entry(owner, spans.get(owner, "")))
+                owners_in_queue.add(owner)
         result["intent_queue"] = queue
         result["follow_up_turn_count"] = turn_count
         result["follow_up_cannot_answer_count"] = 0

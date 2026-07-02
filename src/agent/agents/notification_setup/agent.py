@@ -415,6 +415,7 @@ class NotificationSetupAgent(BaseAgent):
                     state, pick(MSG_CONTACT_EXHAUST), reason="email_confirmed_exhausted_in_notification"
                 )
             from agent.llm.response_generator import generate_recovery_message
+            from agent.responses.grounding import turn_grounding_allowlist
 
             display_email = speak_email(pending_email or email_on_file)
             ctx = ConversationContext.from_state(state)
@@ -423,13 +424,22 @@ class NotificationSetupAgent(BaseAgent):
                 attempt=self.get_slot("email_confirmed").attempt_count,
                 guard="RETRY",
                 last_messages=messages[-4:],
-                slot_label_override=f"email confirmation — ASK the member to confirm whether the "
+                slot_label_override="email address confirmation",
+                generator_directive=f"ASK the member to confirm whether the "
                 f"email address {display_email} is correct for notifications (yes or no). Do NOT "
                 f"claim the email is already confirmed and do NOT say 'I've confirmed' — you are "
                 f"still waiting on their yes/no.",
                 caller_name=ctx.caller_first_name,
                 confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
                 user_utterance=_last_user_msg(messages),
+                grounded_values=turn_grounding_allowlist(
+                    state,
+                    ctx,
+                    extracted_value=None,
+                    answered_inline=None,
+                    slot_name="email_confirmed",
+                    readback_values=[pending_email or email_on_file, display_email],
+                ),
             )
             retry_result = self.ask_member(state, retry_msg)
             retry_result["awaiting_slot"] = "email_confirmed"

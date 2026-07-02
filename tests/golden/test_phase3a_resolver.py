@@ -219,7 +219,8 @@ def test_slot_answered_with_independent_parks_and_acks():
     )
     assert out.speech_act == MULTI_INTENT_ACK
     assert out.parked == ["benefits_agent"]
-    assert out.state_updates["intent_queue"] == ["benefits_agent"]
+    # Phase 3: queue entries carry the caller's verbatim span alongside the owner.
+    assert out.state_updates["intent_queue"] == [{"owner": "benefits_agent", "span": "deductible"}]
     assert out.state_updates["provider_type"] == "Pediatrician"
 
 
@@ -296,4 +297,5 @@ def test_speech_acts_are_from_closed_set():
         "unsupported_decline",
         "multi_intent_ack",
         "open_redirect",
+        "cross_slot_accept",
     }

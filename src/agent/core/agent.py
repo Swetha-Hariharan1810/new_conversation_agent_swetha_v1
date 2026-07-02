@@ -49,7 +49,35 @@ class BaseAgent(ConversationGuardsMixin, SlotManagerMixin, SignalsMixin, ABC):
         return instance
 
     async def execute(self, state: State) -> dict:
-        return await self.run(state)
+        result = await self.run(state)
+        return self._bridge_drained_intent(state, result)
+
+    def _bridge_drained_intent(self, state: State, result: dict) -> dict:
+        """Phase 3: when this agent was routed here by DRAINING a parked side
+        request, its first spoken message opens with a one-clause bridge that
+        acknowledges the request in the caller's own words ("Now, about the
+        other thing you mentioned — a refund on my last bill."). The span was
+        stored verbatim at parking time, so the bridge is grounded by
+        construction. Spoken only when UNIFIED_VOICE is on; the reason is
+        consumed either way so it can never bridge a later, unrelated turn.
+        """
+        if not state.get("drained_intent_reason"):
+            return result
+        try:
+            from agent.core import flags
+            from agent.responses.turn_acts import render_drain_bridge
+
+            message = result.get("messages")
+            if flags.unified_voice() and isinstance(message, dict) and (message.get("content") or "").strip():
+                bridge = render_drain_bridge(span=state.get("drained_intent_reason"))
+                result = {
+                    **result,
+                    "messages": {**message, "content": f"{bridge} {message['content']}"},
+                }
+        except Exception:  # a bridge must never break the drained turn
+            self.logger.debug("_bridge_drained_intent failed", exc_info=True)
+        result["drained_intent_reason"] = ""  # consumed — speak the bridge once
+        return result
 
     @abstractmethod
     async def run(self, state: State) -> dict: ...

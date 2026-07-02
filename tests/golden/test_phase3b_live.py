@@ -54,7 +54,8 @@ def test_unsupported_decline_renders_non_empty():
 # ── live invalidating-correction (UAT-007) end to end ────────────────────────
 
 
-async def test_uat_007_invalidating_correction_live():
+async def test_uat_007_invalidating_correction_live(monkeypatch):
+    monkeypatch.setenv("MULTI_INTENT_LIVE", "false")   # templated-speech kill switch
     from tests.golden.driver import load_fixture
 
     run = await run_fixture(load_fixture("uat_007_multi_intent"))

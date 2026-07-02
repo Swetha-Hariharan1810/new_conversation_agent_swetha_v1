@@ -15,34 +15,68 @@ from agent.utils import build_generation_prompt, build_history
 
 logger = get_logger(__name__)
 
+# SHORT NOUN PHRASES only. A label appears both in the prompt context line
+# ``Collecting:`` and interpolated into the spoken _FALLBACKS templates, so it
+# must never carry instruction-style text — that belongs in _SLOT_DIRECTIVES /
+# the ``generator_directive`` parameter, which is never interpolated anywhere.
 _SLOT_LABELS: dict[str, str] = {
     "first_name": "first name",
     "last_name": "last name",
-    "member_id": "Member ID — Must begin with m followed by 6 digit",
-    "dob": "date of birth — Must include year, month, and day",
-    "relationship": "whether they are the plan holder or dependent",
-    "phone_confirmed": "phone number on file — yes or no",
-    "phone_confirmation": "phone number on file — yes or no",
+    "member_id": "Member ID",
+    "dob": "date of birth",
+    "relationship": "relationship to the plan holder",
+    "phone_confirmed": "phone number confirmation",
+    "phone_confirmation": "phone number confirmation",
     "caller_role": "relationship to the plan",
     "provider_type": "type of provider they are looking for",
     "zip_code": "five-digit ZIP code",
-    "delivery_method": "fax or email",
-    "intent": "what they need help with today — ask openly, never list options",
+    "zip_confirmed": "ZIP code confirmation",
+    "delivery_method": "delivery method (fax or email)",
+    "fax": "fax number",
+    "fax_confirmed": "fax number confirmation",
+    "benefits_response": "interest in related benefits",
+    "intent": "reason for calling today",
     "topic": "what they need help with",
-    "reference_number": "reference number — should be 8 digits",
-    "upload_method": "how they want to provide the medical records — upload "
-    "themselves, have their doctor send them, or have us contact their provider",
-    "upload_consent": "whether they want to receive a secure upload link via email (yes or no)",
-    "personal_guide_consent": "yes or no — whether they want a Personal Guide to "
-    "contact their provider and request the medical records on their behalf",
-    "email": "correct email address for the upload link",
-    "notification_method": "preferred notification channel — SMS or email",
-    "phone": "correct phone number",
-    "n2_notification_method": "preferred channel for claim progress updates — SMS or email",
-    "timeline_question": (
-        "whether they have questions about the timeline — "
-        "say yes to hear it, no to skip, or ask their question directly"
+    "reference_number": "reference number",
+    "upload_method": "way to provide the medical records",
+    "upload_consent": "secure upload link consent",
+    "personal_guide_consent": "Personal Guide consent",
+    "email": "email address",
+    "email_confirmed": "email address confirmation",
+    "notification_method": "notification channel (SMS or email)",
+    "phone": "phone number",
+    "n2_notification_method": "channel for claim progress updates (SMS or email)",
+    "timeline_question": "timeline question",
+}
+
+# Default instruction-style guidance per slot, rendered as its own ``Guidance:``
+# context line for the model. NEVER interpolated into a _FALLBACKS template —
+# the caller only ever hears the noun-phrase label from _SLOT_LABELS.
+_SLOT_DIRECTIVES: dict[str, str] = {
+    "member_id": "The Member ID must begin with M followed by 6 digits.",
+    "dob": "The date of birth must include year, month, and day.",
+    "relationship": "Ask whether they are the plan holder or a dependent.",
+    "phone_confirmed": "Ask whether the phone number on file is correct — yes or no.",
+    "phone_confirmation": "Ask whether the phone number on file is correct — yes or no.",
+    "zip_confirmed": "Ask whether the ZIP code on file is correct — yes or no.",
+    "intent": "Ask openly what they need help with today — never list options.",
+    "reference_number": "The reference number should be 8 digits.",
+    "upload_method": (
+        "Ask how they want to provide the medical records — upload themselves, "
+        "have their doctor send them, or have us contact their provider."
     ),
+    "upload_consent": "Ask whether they want to receive a secure upload link via email — yes or no.",
+    "personal_guide_consent": (
+        "Ask yes or no — whether they want a Personal Guide to contact their "
+        "provider and request the medical records on their behalf."
+    ),
+    "notification_method": "Ask for their preferred notification channel — SMS or email.",
+    "n2_notification_method": "Ask for their preferred channel for claim progress updates — SMS or email.",
+    "timeline_question": (
+        "Ask whether they have questions about the timeline — they can say yes "
+        "to hear it, no to skip, or ask their question directly."
+    ),
+    "delivery_method": "Ask whether they'd like it by fax or email.",
 }
 
 # ── Recovery guard labels ────────────────────────────────────────────────────
@@ -95,6 +129,26 @@ def _owner_label(owner: str) -> str:
         return "that"
 
 
+# Instruction-style tells: a label carrying any of these was written for the
+# MODEL, not the caller, and must never be spoken via a fallback template.
+_DIRECTIVE_MARKERS: tuple[str, ...] = ("—", "(yes or no)", "ask for", "if they")
+
+
+def _fallback_safe_label(slot_name: str, label: str) -> str:
+    """Belt-and-suspenders for the static fallback path: a call site that hasn't
+    migrated to ``generator_directive`` may still pass instruction-style text as
+    the label. Detect it and interpolate the plain slot name instead, so an
+    internal instruction can never reach the caller."""
+    lowered = (label or "").lower()
+    if len(label) > 60 or any(marker in lowered for marker in _DIRECTIVE_MARKERS):
+        logger.warning(
+            "generate_recovery_message: directive-style label blocked from fallback template",
+            extra={"metric": "directive_label_blocked", "slot": slot_name},
+        )
+        return (slot_name or "that").replace("_", " ")
+    return label
+
+
 def build_recovery_context(
     *,
     slot_label: str,
@@ -110,21 +164,27 @@ def build_recovery_context(
     answered_inline: list[str] | None = None,
     next_ask: str | None = None,
     correction_field: str | None = None,
+    directive: str | None = None,
 ) -> str:
     """Build the STRUCTURED decision context handed to the generator.
 
     The model does not infer the decision — it reads these labelled lines and
     phrases them into ONE sentence (composing across clauses in precedence order
-    for a multi-intent turn). Only grounded, this-turn values ever appear as
-    concrete values (``Validated answer this turn`` and ``Answer to include``);
-    ``Confirmed`` lists slot *names*, never their values, so the generator cannot
-    restate a prior identifier it was never given.
+    for a multi-intent turn). ``Collecting`` carries a short noun-phrase label;
+    instruction-style guidance travels on its own ``Guidance:`` line (never in
+    the label, so it can never leak into a spoken fallback template). Only
+    grounded, this-turn values ever appear as concrete values (``Validated
+    answer this turn`` and ``Answer to include``); ``Confirmed`` lists slot
+    *names*, never their values, so the generator cannot restate a prior
+    identifier it was never given.
     """
     lines = [
         f"Speech act: {speech_act}",
         f"Collecting: {slot_label}",
         f"Attempt: {attempt}",
     ]
+    if directive:
+        lines.append(f"Guidance: {directive}")
     if validated_answer is not None:
         lines.append(f"Validated answer this turn: {validated_answer}")
     if correction_field:
@@ -158,6 +218,7 @@ async def generate_recovery_message(
     guard: str,
     last_messages: list[dict],
     slot_label_override: str | None = None,
+    generator_directive: str | None = None,
     caller_name: str | None = None,
     confirmed_slots: dict | None = None,
     user_utterance: str | None = None,
@@ -182,6 +243,15 @@ async def generate_recovery_message(
       "OFFTOPIC_AGENT". ``guard`` is the legacy name; when ``speech_act`` is given
       it is what's shown to the model (``guard`` still selects the static fallback).
     last_messages: recent conversation history (role/content dicts).
+    slot_label_override: SHORT NOUN PHRASE only (e.g. "ZIP code confirmation") —
+      it is spoken via the fallback templates. Instruction-style text belongs in
+      ``generator_directive``.
+    generator_directive: instruction-style guidance for the model (format hints,
+      what to confirm, a grounded value to read back). Rendered as its own
+      ``Guidance:`` context line; NEVER interpolated into a fallback template.
+      Any concrete value it asks the model to speak MUST be in ``grounded_values``
+      (enforced by a debug assertion), or the grounding guard would veto the very
+      read-back the directive asked for.
     caller_name: caller's first name if known, for personalisation.
     confirmed_slots: dict of already-confirmed slot names (values are not sent).
     user_utterance: the caller's most recent utterance.
@@ -197,13 +267,15 @@ async def generate_recovery_message(
     """
     history_text = "\n".join(build_history(last_messages, n=4))
 
-    # Use the live prompt text when provided (dynamic slots such as relationship
-    # and phone_confirmed whose options are only known at runtime from SF).
-    # Fall back to the static label dict for fixed slots.
+    # Use the live label when provided (dynamic slots such as relationship and
+    # phone_confirmed whose phrasing is only known at runtime from SF). Fall
+    # back to the static noun-phrase dict for fixed slots. Instruction-style
+    # guidance travels separately on the directive, never in the label.
     slot_label = slot_label_override or _SLOT_LABELS.get(
         slot_name,
         (slot_name or _SLOT_LABELS["intent"]).replace("_", " "),
     )
+    directive = generator_directive or _SLOT_DIRECTIVES.get(slot_name)
 
     user_content = build_recovery_context(
         slot_label=slot_label,
@@ -219,12 +291,33 @@ async def generate_recovery_message(
         answered_inline=answered_inline,
         next_ask=next_ask,
         correction_field=correction_field,
+        directive=directive,
     )
+
+    # Concrete values the generated text may state this turn. Computed up front
+    # so the directive invariant below and the post-generation guard agree.
+    allowed = _grounded_allowed(
+        grounded_values=grounded_values,
+        extracted_value=extracted_value,
+        caller_name=caller_name,
+        answered_inline=answered_inline,
+    )
+    # Invariant: if the prompt/directive asks the model to SPEAK a value, that
+    # value must be grounded — otherwise the guard would veto the legitimate
+    # read-back and the fallback would contradict what was asked (Bug 1).
+    if __debug__ and directive:
+        _directive_leaks = find_ungrounded_values(directive, allowed)
+        assert not _directive_leaks, (
+            f"generator_directive asks the model to speak ungrounded value(s) "
+            f"{_directive_leaks!r} — pass them via grounded_values= "
+            f"(see agent.responses.grounding.turn_grounding_allowlist)"
+        )
 
     def _fallback() -> str:
         if fallback_text:
             return fallback_text
-        return _FALLBACKS.get(guard, "Could you try again?").format(slot_label=slot_label)
+        safe_label = _fallback_safe_label(slot_name, slot_label)
+        return _FALLBACKS.get(guard, "Could you try again?").format(slot_label=safe_label)
 
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
@@ -247,12 +340,6 @@ async def generate_recovery_message(
             # email) that wasn't grounded this turn. On violation, use the
             # deterministic template for this act — an invented sensitive value can
             # never reach the caller even if the prompt is imperfect.
-            allowed = _grounded_allowed(
-                grounded_values=grounded_values,
-                extracted_value=extracted_value,
-                caller_name=caller_name,
-                answered_inline=answered_inline,
-            )
             leaked = find_ungrounded_values(text, allowed)
             if leaked:
                 logger.warning(

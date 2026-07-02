@@ -62,13 +62,13 @@ async def handle_unclear_intent(agent, state: State, result=None) -> dict:
     if attempts == 0:
         # First failure — pure open question, no hint yet
         # Caller may know exactly what they want, just said it vaguely
-        label_override = "the caller's reason for calling today — ask warmly and openly"
+        directive = "Ask warmly and openly for the caller's reason for calling today."
     else:
         # Second failure — caller genuinely does not know what this service offers
         # Natural hint is appropriate now, but must not sound like a phone tree menu
         # Frame it as "I can help with X or Y — what brings you in?" not "Press 1 for X"
-        label_override = (
-            "the caller's reason for calling — they seem unsure what this service offers. "
+        directive = (
+            "The caller seems unsure what this service offers. "
             "Mention naturally that you can help with finding an in-network doctor "
             "or following up on a health insurance claim, then invite them to share "
             "what they need. Keep it warm and conversational, not a menu."
@@ -78,7 +78,7 @@ async def handle_unclear_intent(agent, state: State, result=None) -> dict:
         attempt=attempts + 1,
         guard="RETRY",
         last_messages=messages[-4:],
-        slot_label_override=label_override,
+        generator_directive=directive,
         caller_name=None,
         confirmed_slots={},
         user_utterance=_last_user_msg(messages),

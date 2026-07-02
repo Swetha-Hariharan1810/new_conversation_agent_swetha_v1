@@ -279,6 +279,7 @@ class RecordsCoordinationAgent(BaseAgent):
 
             # Re-read the email on file and ask again using CLARIFY (gentle tone)
             from agent.llm.response_generator import generate_recovery_message
+            from agent.responses.grounding import turn_grounding_allowlist
 
             display_email = speak_email(pending_email or email_on_file)
             ctx = ConversationContext.from_state(state)
@@ -287,13 +288,22 @@ class RecordsCoordinationAgent(BaseAgent):
                 attempt=self.get_slot("email_confirmed").attempt_count,
                 guard="CLARIFY",
                 last_messages=messages[-4:],
-                slot_label_override=(
-                    f"whether the email address {display_email} is correct "
-                    f"for sending the upload link (yes or no)"
+                slot_label_override="email address confirmation",
+                generator_directive=(
+                    f"Ask whether the email address {display_email} is correct "
+                    f"for sending the upload link (yes or no)."
                 ),
                 caller_name=ctx.caller_first_name,
                 confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
                 user_utterance=_last_user_msg(messages),
+                grounded_values=turn_grounding_allowlist(
+                    state,
+                    ctx,
+                    extracted_value=None,
+                    answered_inline=None,
+                    slot_name="email_confirmed",
+                    readback_values=[pending_email or email_on_file, display_email],
+                ),
             )
             retry_result = self.ask_member(state, retry_msg)
             retry_result["awaiting_slot"] = "email_confirmed"
