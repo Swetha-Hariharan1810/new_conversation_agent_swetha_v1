@@ -95,6 +95,9 @@ class ResolverOutcome:
     # They get a decline appended to the dominant act's speech, so a multi-intent
     # turn never silently drops an unanswerable request (S5).
     declined: list = field(default_factory=list)
+    # Phase 3: per surviving in-scope independent — {owner, span, answer, answerable}.
+    # Lets the generator answer a relevant question inline (grounded) or park it.
+    independents_detail: list = field(default_factory=list)
 
     def to_log_dict(self) -> dict:
         """PII-safe summary for shadow logging (no verbatim spans)."""
@@ -253,6 +256,22 @@ def resolve_turn(plan: TurnPlan, state: dict, *, utterance: str) -> ResolverOutc
     # (so a multi-intent turn never silently drops an unanswerable request).
     declined = [si.type.value for si in unsupported]
 
+    # Per-independent detail for the Phase 3 generator composition: the resolved
+    # owner, the verbatim span, and any grounded inline answer the decode produced
+    # from the session snapshot. The compose layer (which reads PARK_ANSWERABLE)
+    # decides inline-answer vs. park; the resolver stays pure and always parks.
+    independents_detail = [
+        {
+            "owner": own,
+            "span": si.verbatim_span,
+            "answer": (getattr(si, "answer", None) or "").strip(),
+            "answerable": bool(
+                getattr(si, "answerable_from_snapshot", False) and (getattr(si, "answer", None) or "").strip()
+            ),
+        }
+        for si, own in independents
+    ]
+
     if inv_field:
         updates: dict = {}
         if slot_ok:
@@ -263,7 +282,13 @@ def resolve_turn(plan: TurnPlan, state: dict, *, utterance: str) -> ResolverOutc
         if parked:
             updates["intent_queue"] = queue
         return ResolverOutcome(
-            CORRECTION_ACK, updates, rewind_target=inv_owner, parked=parked, dirty=dirty, declined=declined
+            CORRECTION_ACK,
+            updates,
+            rewind_target=inv_owner,
+            parked=parked,
+            dirty=dirty,
+            declined=declined,
+            independents_detail=independents_detail,
         )
 
     # (d) Non-invalidating correction — acknowledge + rewind to its owner.
@@ -275,7 +300,12 @@ def resolve_turn(plan: TurnPlan, state: dict, *, utterance: str) -> ResolverOutc
         if parked:
             updates["intent_queue"] = queue
         return ResolverOutcome(
-            CORRECTION_ACK, updates, rewind_target=correction_owner, parked=parked, declined=declined
+            CORRECTION_ACK,
+            updates,
+            rewind_target=correction_owner,
+            parked=parked,
+            declined=declined,
+            independents_detail=independents_detail,
         )
 
     # (e) Current-step completion (slot answered cleanly).
@@ -284,16 +314,28 @@ def resolve_turn(plan: TurnPlan, state: dict, *, utterance: str) -> ResolverOutc
         if independents:
             parked, queue = _park(independents, state)
             updates["intent_queue"] = queue
-            return ResolverOutcome(MULTI_INTENT_ACK, updates, parked=parked, declined=declined)
+            return ResolverOutcome(
+                MULTI_INTENT_ACK,
+                updates,
+                parked=parked,
+                declined=declined,
+                independents_detail=independents_detail,
+            )
         if unsupported:
-            return ResolverOutcome(UNSUPPORTED_DECLINE, updates)
+            return ResolverOutcome(UNSUPPORTED_DECLINE, updates, declined=declined)
         # Clean single-intent answer — nothing for the resolver to add; proceed.
         return ResolverOutcome(None, updates)
 
     # (f) Slot NOT answered.
     if independents:
         parked, queue = _park(independents, state)
-        return ResolverOutcome(MULTI_INTENT_ACK, {"intent_queue": queue}, parked=parked, declined=declined)
+        return ResolverOutcome(
+            MULTI_INTENT_ACK,
+            {"intent_queue": queue},
+            parked=parked,
+            declined=declined,
+            independents_detail=independents_detail,
+        )
     if unsupported:
         return ResolverOutcome(UNSUPPORTED_DECLINE)
     if dropped_for_span or dropped_for_owner:

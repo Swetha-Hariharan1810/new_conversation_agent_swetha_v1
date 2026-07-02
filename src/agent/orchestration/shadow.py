@@ -233,12 +233,55 @@ def decode_and_resolve(
     if decoder is None:
         return (None, None)
 
-    plan = decoder(state, utterance, decision)
+    import inspect
+
+    if inspect.iscoroutinefunction(decoder):
+        # An async decoder (the LLM decode) can't run on the sync path — fall back
+        # to the deterministic heuristic so this path stays synchronous. The async
+        # chokepoint (decode_and_resolve_async) awaits the real async decoder.
+        plan = heuristic_decoder(state, utterance, decision)
+    else:
+        plan = decoder(state, utterance, decision)
     if plan is None:
         return (None, None)
+    outcome = _resolve_and_log(
+        plan, state, utterance=utterance, awaiting_slot=awaiting_slot, agent_name=agent_name
+    )
+    return (plan, outcome)
 
+
+async def decode_and_resolve_async(
+    state: dict,
+    *,
+    utterance: str,
+    awaiting_slot: str,
+    decision: Any = None,
+    agent_name: str = "",
+) -> tuple[Optional[TurnPlan], Optional[ResolverOutcome]]:
+    """Async-capable live decode+resolve. Awaits an async decoder (the LLM
+    TurnPlan decode when TURNPLAN_DECODE=live), or runs a sync decoder inline.
+    Same logging contract as decode_and_resolve; guarded by the caller."""
+    import inspect
+
+    decoder = _decoder
+    if decoder is None:
+        return (None, None)
+    if inspect.iscoroutinefunction(decoder):
+        plan = await decoder(state, utterance, decision)
+    else:
+        plan = decoder(state, utterance, decision)
+    if plan is None:
+        return (None, None)
+    outcome = _resolve_and_log(
+        plan, state, utterance=utterance, awaiting_slot=awaiting_slot, agent_name=agent_name
+    )
+    return (plan, outcome)
+
+
+def _resolve_and_log(
+    plan: TurnPlan, state: dict, *, utterance: str, awaiting_slot: str, agent_name: str
+) -> ResolverOutcome:
     outcome = resolve_turn(plan, {**state, "awaiting_slot": awaiting_slot}, utterance=utterance)
-
     logger.info(
         "turnplan_shadow",
         extra={
@@ -250,7 +293,7 @@ def decode_and_resolve(
             **outcome.to_log_dict(),
         },
     )
-    return (plan, outcome)
+    return outcome
 
 
 def run_shadow(

@@ -66,6 +66,7 @@ _SLOT_LABELS: dict[str, str] = {
 # are the recovery acts the generator already spoke.
 SPEECH_ACT_ASK = "ask"
 SPEECH_ACT_TRANSITION = "transition"
+SPEECH_ACT_MULTI_INTENT = "multi_intent"
 
 _FALLBACKS: dict[str, str] = {
     "ask": "Could you provide your {slot_label}?",
@@ -104,13 +105,18 @@ def build_recovery_context(
     pending_slots: list[str] | None,
     parked: list[str] | None,
     declined: bool,
+    answered_inline: list[str] | None = None,
+    next_ask: str | None = None,
+    correction_field: str | None = None,
 ) -> str:
     """Build the STRUCTURED decision context handed to the generator.
 
     The model does not infer the decision — it reads these labelled lines and
-    phrases them. Only grounded, this-turn values ever appear as concrete values
-    (``Validated answer this turn``); ``Confirmed`` lists slot *names*, never their
-    values, so the generator cannot restate a prior identifier it was never given.
+    phrases them into ONE sentence (composing across clauses in precedence order
+    for a multi-intent turn). Only grounded, this-turn values ever appear as
+    concrete values (``Validated answer this turn`` and ``Answer to include``);
+    ``Confirmed`` lists slot *names*, never their values, so the generator cannot
+    restate a prior identifier it was never given.
     """
     lines = [
         f"Speech act: {speech_act}",
@@ -119,16 +125,24 @@ def build_recovery_context(
     ]
     if validated_answer is not None:
         lines.append(f"Validated answer this turn: {validated_answer}")
+    if correction_field:
+        lines.append(f"Correction acknowledged: {correction_field}")
+    if answered_inline:
+        for ans in answered_inline:
+            lines.append(f"Answer to include (grounded, say verbatim): {ans}")
+    if parked:
+        parked_str = ", ".join(_owner_label(o) for o in parked)
+        lines.append(f"Parked (say you'll get to it in a moment): {parked_str}")
+    if declined:
+        lines.append("Declined (briefly say you can't help with that one here): yes")
+    if next_ask:
+        lines.append(f"Next, ask for: {next_ask}")
     if confirmed_slots:
         lines.append("Confirmed: " + ", ".join(str(k) for k in confirmed_slots))
     elif confirmed_slots is not None:
         lines.append("Confirmed: nothing yet")
     if pending_slots:
         lines.append("Pending: " + ", ".join(pending_slots))
-    if parked:
-        lines.append("Parked: " + ", ".join(_owner_label(o) for o in parked))
-    if declined:
-        lines.append("Declined: yes")
     if user_utterance:
         lines.append(f'Caller just said: "{user_utterance}"')
     lines += ["", "Conversation:", history_text]
@@ -151,6 +165,9 @@ async def generate_recovery_message(
     speech_act: str | None = None,
     parked: list[str] | None = None,
     declined: bool = False,
+    answered_inline: list[str] | None = None,
+    next_ask: str | None = None,
+    correction_field: str | None = None,
     fallback_text: str | None = None,
 ) -> str:
     """
@@ -196,6 +213,9 @@ async def generate_recovery_message(
         pending_slots=pending_slots,
         parked=parked,
         declined=declined,
+        answered_inline=answered_inline,
+        next_ask=next_ask,
+        correction_field=correction_field,
     )
 
     try:

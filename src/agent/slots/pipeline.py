@@ -155,6 +155,15 @@ class SlotPipeline:
                 slot_type=config.slot_type,
             )
 
+            # Remaining slots after this one (still to collect) — lets the shared
+            # collector compose the "next ask" clause of a Phase 3 multi-intent turn.
+            idx = self.order.index(slot_name)
+            pending_slots = [
+                s
+                for s in self.order[idx + 1 :]
+                if not (collected.get(s) and self.configs[s].validator(collected[s]).valid)
+            ]
+
             value, interrupt = await self._agent._collect_slot(
                 state,
                 sm_config,
@@ -163,6 +172,7 @@ class SlotPipeline:
                 context=ctx,
                 is_transition=prev_slot_just_confirmed,
                 decision=decision,
+                pending_slots=pending_slots,
             )
 
             if interrupt:
