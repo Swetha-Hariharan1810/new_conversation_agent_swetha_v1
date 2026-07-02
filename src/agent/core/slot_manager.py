@@ -24,6 +24,7 @@ from agent.responses.builder import (
     build_initial_prompt,
     build_transition_prompt,
 )
+from agent.responses.grounding import turn_grounding_allowlist
 from agent.responses.static import build_slot_exhausted_message
 from agent.slots.types import SlotType
 from agent.state import State
@@ -206,19 +207,28 @@ class SlotManagerMixin:
     # -------------------------------------------------------------------------
 
     @staticmethod
-    def _dynamic_slot_label(state: State, slot_name: str) -> str | None:
-        """Runtime slot-label override for slots whose phrasing depends on live
-        state (relationship options, the phone number on file). Returns None for
-        fixed slots, which use the static label dict."""
+    def _dynamic_slot_label(state: State, slot_name: str) -> tuple[str | None, str | None]:
+        """Runtime ``(label, directive)`` override for slots whose phrasing
+        depends on live state (relationship options, the phone number on file).
+        The label is a SHORT NOUN PHRASE (safe to interpolate into a spoken
+        fallback template); the directive carries the instruction-style guidance
+        and is only ever rendered as the generator's ``Guidance:`` context line.
+        Returns ``(None, None)`` for fixed slots, which use the static dicts."""
         if slot_name == "relationship" and state.get("relationship"):
-            return "relationship — whether they are the plan holder or dependent"
+            return (
+                "relationship to the plan holder",
+                "Ask whether they are the plan holder or a dependent.",
+            )
         if slot_name in ("phone_confirmed", "phone_confirmation") and state.get("phone_number"):
             digits = "".join(c for c in state["phone_number"] if c.isdigit())
             formatted = (
                 f"{digits[:3]}-{digits[3:6]}-{digits[6:]}" if len(digits) == 10 else state["phone_number"]
             )
-            return f"phone confirmation — whether {formatted} is still the number on file (yes or no)"
-        return None
+            return (
+                "phone number confirmation",
+                f"Ask whether {formatted} is still the number on file (yes or no).",
+            )
+        return None, None
 
     async def _generate_slot_retry_response(
         self,
@@ -236,21 +246,24 @@ class SlotManagerMixin:
         from agent.llm.response_generator import generate_recovery_message
 
         slot_state = self.get_slot(slot_name)
-        slot_label_override = self._dynamic_slot_label(state, slot_name)
+        label_override, directive = self._dynamic_slot_label(state, slot_name)
         sc = session_context or {}
+        extracted = extracted_this_turn if extracted_this_turn is not None else sc.get("extracted_val")
         text = await generate_recovery_message(
             slot_name=slot_name,
             attempt=slot_state.attempt_count,
             guard=guard,
             last_messages=messages[-4:],
-            slot_label_override=slot_label_override,
+            slot_label_override=label_override,
+            generator_directive=directive,
             caller_name=ctx.caller_first_name,
             confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
             user_utterance=_last_user_msg(messages),
-            extracted_value=extracted_this_turn
-            if extracted_this_turn is not None
-            else sc.get("extracted_val"),
+            extracted_value=extracted,
             pending_slots=sc.get("pending_slots"),
+            grounded_values=turn_grounding_allowlist(
+                state, ctx, extracted_value=extracted, answered_inline=None, slot_name=slot_name
+            ),
         )
         return text
 
@@ -277,27 +290,31 @@ class SlotManagerMixin:
                 norm(str(raw.get(corrected_fields[0], ""))) if norm else str(raw.get(corrected_fields[0], ""))
             )
 
-        # explicit correction ack for name slots
+        # The label stays a plain noun phrase (the slot still being collected);
+        # the correction instruction travels on the directive, never the label.
+        readback: list[str] = []
         if corrected_fields and corrected_fields[0] in ("first_name", "last_name") and corrected_value:
             # Names: read back explicitly so caller hears their name confirmed
-            slot_label_override = (
-                f"caller corrected their {corrected_label} to '{corrected_value}' — "
+            directive = (
+                f"The caller corrected their {corrected_label} to '{corrected_value}' — "
                 f"acknowledge by explicitly saying the corrected {corrected_label} "
                 f"is '{corrected_value}', "
-                f"then ask for their {awaiting_slot.replace('_', ' ')}"
+                f"then ask for their {awaiting_slot.replace('_', ' ')}."
             )
+            readback.append(corrected_value)
         elif corrected_value:
             # Sensitive slots (member_id, dob etc.): acknowledge WITHOUT reading
             # the value back out loud — just confirm the update and re-ask
-            slot_label_override = (
-                f"caller corrected their {corrected_label} — "
+            directive = (
+                f"The caller corrected their {corrected_label} — "
                 f"acknowledge the correction without repeating the value, "
-                f"then ask for their {awaiting_slot.replace('_', ' ')}"
+                f"then ask for their {awaiting_slot.replace('_', ' ')}."
             )
         else:
             # No new value provided: re-ask naturally for awaiting_slot
-            slot_label_override = (
-                f"caller corrected {corrected_label}" + f" — now re-ask for {awaiting_slot.replace('_', ' ')}"
+            directive = (
+                f"The caller corrected {corrected_label} — now re-ask for "
+                f"their {awaiting_slot.replace('_', ' ')}."
             )
 
         return await generate_recovery_message(
@@ -305,10 +322,18 @@ class SlotManagerMixin:
             attempt=0,
             guard="CORRECTION",
             last_messages=messages[-6:],
-            slot_label_override=slot_label_override,
+            generator_directive=directive,
             caller_name=ctx.caller_first_name,
             confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
             user_utterance=_last_user_msg(messages[-6:]),
+            grounded_values=turn_grounding_allowlist(
+                state,
+                ctx,
+                extracted_value=None,
+                answered_inline=None,
+                slot_name=awaiting_slot,
+                readback_values=readback or None,
+            ),
         )
 
     # -------------------------------------------------------------------------
@@ -441,9 +466,16 @@ class SlotManagerMixin:
 
         # Grounding guardrail is enforced inside generate_recovery_message (Phase 4):
         # the composed sentence may state only values grounded this turn (accepted
-        # answer + inline answers + a known first name); on any leak it returns the
+        # answer + inline answers + a known first name + any value deliberately
+        # read back for the slot being asked); on any leak it returns the
         # deterministic ``fallback`` template instead.
-        allowed = [v for v in ([slot_value] + list(answered_inline) + [ctx.caller_first_name]) if v]
+        allowed = turn_grounding_allowlist(
+            state,
+            ctx,
+            extracted_value=slot_value,
+            answered_inline=answered_inline or None,
+            slot_name=next_ask_slot or slot_name,
+        )
         msg = await generate_recovery_message(
             slot_name=next_ask_slot or slot_name,
             attempt=slot.attempt_count,
@@ -670,16 +702,21 @@ class SlotManagerMixin:
         )
 
         speech_act = SPEECH_ACT_TRANSITION if is_transition else SPEECH_ACT_ASK
+        label_override, directive = self._dynamic_slot_label(state, config.slot_name)
         return await generate_recovery_message(
             slot_name=config.slot_name,
             attempt=0,
             guard=speech_act,
             speech_act=speech_act,
             last_messages=messages[-4:],
-            slot_label_override=self._dynamic_slot_label(state, config.slot_name),
+            slot_label_override=label_override,
+            generator_directive=directive,
             caller_name=ctx.caller_first_name,
             confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
             user_utterance=_last_user_msg(messages),
+            grounded_values=turn_grounding_allowlist(
+                state, ctx, extracted_value=None, answered_inline=None, slot_name=config.slot_name
+            ),
             fallback_text=template_text,
         )
 
@@ -986,15 +1023,20 @@ class SlotManagerMixin:
                 else:
                     from agent.llm.response_generator import generate_recovery_message
 
+                    label_override, directive = self._dynamic_slot_label(state, slot_name)
                     msg = await generate_recovery_message(
                         slot_name=slot_name,
                         attempt=0,
                         guard="CLARIFY",
                         last_messages=messages[-6:],
-                        slot_label_override=self._dynamic_slot_label(state, slot_name),
+                        slot_label_override=label_override,
+                        generator_directive=directive,
                         caller_name=ctx.caller_first_name,
                         confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
                         user_utterance=_last_user_msg(messages),
+                        grounded_values=turn_grounding_allowlist(
+                            state, ctx, extracted_value=None, answered_inline=None, slot_name=slot_name
+                        ),
                     )
                 interrupt = self.ask_member_with_context(state, msg, ctx)
                 interrupt["awaiting_slot"] = slot_name

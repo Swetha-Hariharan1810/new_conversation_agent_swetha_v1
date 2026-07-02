@@ -251,6 +251,7 @@ class ProviderSearchAgent(BaseAgent):
             if slot.is_exhausted():
                 return self.signal_escalate(state, pick(MSG_ZIP_EXHAUST), reason="zip_confirmed_exhausted")
             from agent.llm.response_generator import generate_recovery_message
+            from agent.responses.grounding import turn_grounding_allowlist
 
             spoken_zip = " ".join(zip_on_file)
             ctx = ConversationContext.from_state(state)
@@ -259,13 +260,22 @@ class ProviderSearchAgent(BaseAgent):
                 attempt=slot.attempt_count,
                 guard="RETRY",
                 last_messages=messages[-4:],
-                slot_label_override=(
-                    f"whether the ZIP code {spoken_zip} on file is correct (yes or no) — "
-                    f"if they say their address changed, ask for their current ZIP"
+                slot_label_override="ZIP code confirmation",
+                generator_directive=(
+                    f"Ask whether the ZIP code {spoken_zip} on file is correct (yes or no) — "
+                    f"if they say their address changed, ask for their current ZIP."
                 ),
                 caller_name=ctx.caller_first_name,
                 confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
                 user_utterance=last_user,
+                grounded_values=turn_grounding_allowlist(
+                    state,
+                    ctx,
+                    extracted_value=None,
+                    answered_inline=None,
+                    slot_name="zip_confirmed",
+                    readback_values=[zip_on_file],
+                ),
             )
             retry_result = self.ask_member(state, retry_msg)
             retry_result["awaiting_slot"] = "zip_confirmed"
