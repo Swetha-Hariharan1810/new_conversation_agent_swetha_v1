@@ -27,6 +27,7 @@ from agent.llm.schema import (
 )
 from agent.orchestration import shadow as shadow_mod
 from agent.orchestration.fast_path import drain_next_intent
+from agent.orchestration.registry import queue_owners
 from agent.orchestration.resolver import (
     CORRECTION_ACK,
     MULTI_INTENT_ACK,
@@ -140,7 +141,7 @@ async def test_s2_mid_verification_identity_correction():
 async def test_s3_slot_answer_plus_independent_parked_then_drained():
     run = await run_fixture(load_fixture("slot_interrupt_fresh_request"), print_latency=False)
     # benefits parked + acknowledged this turn.
-    assert "benefits_agent" in (run.final_state.get("intent_queue") or [])
+    assert "benefits_agent" in queue_owners(run.final_state.get("intent_queue"))
     assert re.search(r"benefits", run.turns[0].ai, re.IGNORECASE)
     assert run.dropped_request_count == 0
     # actioned (drained) on a subsequent turn.
@@ -265,7 +266,7 @@ async def test_s5_quad_intent_every_request_gets_spoken_outcome():
     ai = run.turns[0].ai.lower()
     # The acknowledgement covers the ZIP correction, the parked fax, AND declines the copay.
     assert "zip" in ai
-    assert "delivery_management_agent" in (run.final_state.get("intent_queue") or [])
+    assert "delivery_management_agent" in queue_owners(run.final_state.get("intent_queue"))
     assert re.search(r"not able|can't|outside", ai)  # pharmacy copay declined inline
     assert run.recorder.count("dispatch_provider_list") == 0  # never on the disputed ZIP
     assert run.dropped_request_count == 0

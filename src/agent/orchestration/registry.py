@@ -15,6 +15,8 @@ is derived below.
 
 from __future__ import annotations
 
+import re
+
 # Each agent → the slots it collects. Order matters only for shared-field owner
 # resolution (first declarer wins), so the canonical writer is listed first.
 AGENT_SLOTS: dict[str, list[str]] = {
@@ -92,3 +94,91 @@ def owner_of(name: str) -> str | None:
 
 def slots_for(agent: str) -> list[str]:
     return list(AGENT_SLOTS.get(agent, []))
+
+
+# ── Intent-phrase vocabulary (Phase 3: never guess an owner) ────────────────────
+# Deterministic keyword STEMS → owning agent. Stems match at a word boundary and
+# extend through the word ("reimburs" → "reimbursement", "claim" → "claims"), so
+# spoken variants resolve without a model call. A phrase that matches NOTHING
+# here has no owner — the decoder must emit UNKNOWN and downstream asks, it
+# never routes to "the closest" agent.
+INTENT_PHRASES: dict[str, str] = {
+    # claims / billing / money back
+    "refund": "claim_adjustment_agent",
+    "bill": "claim_adjustment_agent",
+    "billing": "claim_adjustment_agent",
+    "charge": "claim_adjustment_agent",
+    "claim": "claim_adjustment_agent",
+    "reimburs": "claim_adjustment_agent",
+    # benefits / plan coverage
+    "deductible": "benefits_agent",
+    "copay": "benefits_agent",
+    "coverage": "benefits_agent",
+    "benefit": "benefits_agent",
+    # medical records
+    "records": "records_coordination_agent",
+    "medical record": "records_coordination_agent",
+    "upload": "records_coordination_agent",
+    # notifications
+    "notify": "notification_setup_agent",
+    "notification": "notification_setup_agent",
+    "text me": "notification_setup_agent",
+    "sms": "notification_setup_agent",
+    # provider search
+    "provider": "provider_search_agent",
+    "doctor": "provider_search_agent",
+    "specialist": "provider_search_agent",
+    "physician": "provider_search_agent",
+    # delivery of the provider list
+    "fax": "delivery_management_agent",
+    "email": "delivery_management_agent",
+    "delivery": "delivery_management_agent",
+}
+
+
+def owner_for_phrase(text: str) -> str | None:
+    """Deterministic owner for a side-request phrase, or None (never guess).
+
+    Longest matching stem wins; matching is case-insensitive and anchored at a
+    word boundary (the stem may continue through the word, so "reimburs"
+    matches "reimbursement"). Returns None when no stem matches — the caller
+    must treat that as UNKNOWN, not pick a default owner.
+    """
+    lowered = (text or "").lower()
+    if not lowered:
+        return None
+    best: tuple[int, str] | None = None
+    for stem, owner in INTENT_PHRASES.items():
+        if re.search(rf"\b{re.escape(stem)}", lowered) and (best is None or len(stem) > best[0]):
+            best = (len(stem), owner)
+    return best[1] if best else None
+
+
+# ── Intent-queue entry shape (Phase 3: park the caller's own words) ─────────────
+# ``intent_queue`` entries are {"owner": <agent>, "span": <verbatim user words>}
+# so draining can acknowledge the parked request in the caller's own words.
+# Bare-string entries (pre-Phase-3 checkpoints) are accepted everywhere.
+
+
+def queue_entry(owner: str, span: str = "") -> dict:
+    """Build an intent-queue entry: the owning agent + the caller's verbatim span."""
+    return {"owner": owner, "span": span or ""}
+
+
+def queue_entry_owner(entry) -> str:
+    """Owner agent of a queue entry (dict entry or legacy bare string)."""
+    if isinstance(entry, dict):
+        return str(entry.get("owner") or "")
+    return str(entry or "")
+
+
+def queue_entry_span(entry) -> str:
+    """Verbatim caller span of a queue entry ("" for legacy bare strings)."""
+    if isinstance(entry, dict):
+        return str(entry.get("span") or "")
+    return ""
+
+
+def queue_owners(queue) -> list[str]:
+    """Owner agents of every entry in an intent queue (any entry shape)."""
+    return [queue_entry_owner(e) for e in (queue or [])]

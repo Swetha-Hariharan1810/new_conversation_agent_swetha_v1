@@ -105,6 +105,20 @@ _NEXT_ASK = [
     "And your {slot_label}?",
 ]
 
+# Draining bridge (Phase 3): the one-clause opener spoken when a parked side
+# request is finally served. {span} is the caller's OWN verbatim words (stored
+# in the queue entry when parking), so the bridge is grounded by construction.
+_DRAIN_BRIDGE_WITH_SPAN = [
+    "Now, about the other thing you mentioned — {span}.",
+    "Coming back to what you brought up — {span}.",
+    "Let's get to what you mentioned earlier — {span}.",
+]
+
+# Template fallback when no span was stored (legacy bare-string queue entries).
+_DRAIN_BRIDGE = [
+    "Now, for the other thing you mentioned —",
+]
+
 # Caller asked for time — acknowledge ONLY. Never re-ask the slot here (the slot
 # stays pending), and never count a retry attempt against it.
 _STALLING_ACK = [
@@ -205,6 +219,15 @@ def render_next_ask(*, slot_label: str, attempt: int = 0) -> str:
     """Ask for the NEXT step's slot after a completed confirmation (no retry
     framing — this is a first ask, not a re-ask)."""
     return _rotate(_NEXT_ASK, attempt).format(slot_label=slot_label)
+
+
+def render_drain_bridge(*, span: str | None = None, attempt: int = 0) -> str:
+    """One-clause opener acknowledging a parked request as it is served.
+    ``span`` must be the caller's verbatim words from the parking turn."""
+    cleaned = (span or "").strip().strip('"').rstrip(".?!")
+    if cleaned:
+        return _rotate(_DRAIN_BRIDGE_WITH_SPAN, attempt).format(span=cleaned)
+    return _rotate(_DRAIN_BRIDGE, attempt)
 
 
 def owner_label(owner: str) -> str:

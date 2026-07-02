@@ -22,6 +22,7 @@ import re
 import pytest
 
 import tests.golden  # noqa: F401 — ensures src/ is on sys.path
+from agent.orchestration.registry import queue_owners
 from tests.golden.driver import (
     build_result,
     load_fixture,
@@ -90,7 +91,7 @@ async def test_provider_search_fresh_request_acknowledged():
     # Secondary acknowledged (multi-intent ack mentions the benefits question)...
     assert re.search(r"benefits", turn0.ai, re.IGNORECASE), f"benefits not acknowledged: {turn0.ai!r}"
     # ...and parked for draining (enqueued), not dropped.
-    assert "benefits_agent" in (run.final_state.get("intent_queue") or [])
+    assert "benefits_agent" in queue_owners(run.final_state.get("intent_queue"))
     assert run.dropped_request_count == 0
 
 

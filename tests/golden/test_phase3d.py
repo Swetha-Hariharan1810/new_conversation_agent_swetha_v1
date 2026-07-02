@@ -15,6 +15,7 @@ import tests.golden  # noqa: F401 — ensures src/ is on sys.path
 from agent.llm.schema import SecondaryIntent, SecondaryIntentType, TurnPlan
 from agent.orchestration import shadow as shadow_mod
 from agent.orchestration.fast_path import drain_next_intent
+from agent.orchestration.registry import queue_owners
 from tests.golden.driver import load_fixture, run_fixture
 
 pytestmark = pytest.mark.regression
@@ -135,7 +136,7 @@ async def test_independent_on_unanswered_slot_is_parked_and_reasks():
     }
     run = await run_fixture(fixture, print_latency=False)
 
-    assert "delivery_management_agent" in (run.final_state.get("intent_queue") or [])
+    assert "delivery_management_agent" in queue_owners(run.final_state.get("intent_queue"))
     assert run.turns[0].awaiting_slot == "provider_type"  # re-asked, not abandoned
 
 
@@ -148,6 +149,7 @@ def test_drain_next_intent_pops_owner():
         "next_node": "benefits_agent",
         "intent_queue": ["delivery_management_agent"],
         "is_interrupt": False,
+        "drained_intent_reason": "",  # legacy bare-string entry carries no span
     }
     assert drain_next_intent({"intent_queue": []}) is None
     assert drain_next_intent({}) is None
@@ -158,12 +160,12 @@ def test_drain_next_intent_pops_owner():
 async def test_parked_independent_is_drained_on_a_later_turn():
     # Park a benefits question during provider_type collection (Phase 3C live).
     run = await run_fixture(load_fixture("slot_interrupt_fresh_request"), print_latency=False)
-    assert "benefits_agent" in (run.final_state.get("intent_queue") or [])
+    assert "benefits_agent" in queue_owners(run.final_state.get("intent_queue"))
 
     # On a later (completion) turn, the orchestrator drains it to its owner.
     drain = drain_next_intent(run.final_state)
     assert drain["next_node"] == "benefits_agent"
-    assert "benefits_agent" not in drain["intent_queue"]
+    assert "benefits_agent" not in queue_owners(drain["intent_queue"])
 
 
 # ── follow_up migrated onto the unified path ─────────────────────────────────
@@ -178,7 +180,7 @@ def test_follow_up_parks_cross_domain_side_request():
         state, "Sounds good, but can you send the list to a different fax number?", 2
     )
     assert out is not None
-    assert "delivery_management_agent" in out["intent_queue"]
+    assert "delivery_management_agent" in queue_owners(out["intent_queue"])
 
 
 def test_follow_up_leaves_answerable_questions_to_qa_path():

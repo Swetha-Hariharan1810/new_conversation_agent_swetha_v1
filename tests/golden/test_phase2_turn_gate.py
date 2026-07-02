@@ -28,6 +28,7 @@ import pytest
 import tests.golden  # noqa: F401 — ensures src/ is on sys.path
 from agent.llm.schema import EventType, GuardType, SecondaryIntent, SecondaryIntentType, TurnPlan
 from agent.orchestration import shadow as shadow_mod
+from agent.orchestration.registry import queue_owners
 from tests.golden.driver import run_fixture
 
 pytestmark = pytest.mark.regression
@@ -217,7 +218,7 @@ async def test_zip_yes_with_parked_secondary_accepts_and_asks_next_step():
     assert run.final_state.get("zip_code_used") == "94107"
     assert not (run.final_state.get("dirty_artifacts") or {}).get("provider_list")
     # The parked owner is enqueued for draining.
-    assert "benefits_agent" in (run.final_state.get("intent_queue") or [])
+    assert "benefits_agent" in queue_owners(run.final_state.get("intent_queue"))
     # One sentence: park-ack + the NEXT step's ask — not a zip_confirmed re-ask.
     assert "benefits" in turn0.ai.lower()
     assert "delivery method" in turn0.ai.lower()
@@ -244,7 +245,7 @@ async def test_zip_no_with_parked_secondary_marks_dirty_and_asks_new_zip():
     run = await run_fixture(fixture, print_latency=False)
     turn0 = run.turns[0]
 
-    assert "benefits_agent" in (run.final_state.get("intent_queue") or [])
+    assert "benefits_agent" in queue_owners(run.final_state.get("intent_queue"))
     # The dispute took effect: derived list stale, and the new ZIP is asked next.
     assert (run.final_state.get("dirty_artifacts") or {}).get("provider_list") is True
     assert turn0.awaiting_slot == "zip_code"

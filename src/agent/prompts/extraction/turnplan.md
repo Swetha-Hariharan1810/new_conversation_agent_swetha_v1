@@ -34,7 +34,8 @@ answer). For each:
   - `invalidating_correction` — changes an upstream value that a pending action
     depends on (e.g. a ZIP change after a provider list, a reference-number change).
   - `in_scope_independent` — a separate request this call CAN handle (a benefits
-    question, a delivery change, another provider search).
+    question, a delivery change, another provider search, a refund / billing
+    dispute → claim_adjustment_agent).
   - `out_of_scope` — a request member services does not handle here.
   - `in_domain_unsupported` — health-plan related but not something this system does.
   - `safety` — self-harm / crisis.
@@ -43,6 +44,8 @@ answer). For each:
   verification_agent, provider_search_agent, delivery_management_agent,
   benefits_agent, care_wellness_agent, claim_adjustment_agent,
   records_coordination_agent, notification_setup_agent, follow_up_agent.
+  If the request does not clearly belong to one of these owners, use type
+  `unknown` and owner null; NEVER pick the closest owner.
 
 ### Answering an in-scope secondary from the snapshot (no extra round-trip)
 For an `in_scope_independent` (or in-domain) secondary that is a QUESTION:

@@ -15,6 +15,7 @@ from contextlib import contextmanager
 import pytest
 
 import tests.golden  # noqa: F401 — ensures src/ is on sys.path
+from agent.orchestration.registry import queue_owners
 from agent.orchestration.shadow import clear_shadow_decoder, get_shadow_decoder, heuristic_decoder
 from tests.golden.driver import load_fixture, run_fixture
 
@@ -124,7 +125,7 @@ async def test_shadow_catches_independent_on_provider_search():
 
     # Phase 3C: the independent is now acted live — acknowledged and parked.
     assert run.final_state.get("provider_type") == "Pediatrician"
-    assert "benefits_agent" in (run.final_state.get("intent_queue") or [])
+    assert "benefits_agent" in queue_owners(run.final_state.get("intent_queue"))
 
 
 # ── shadow does not change behavior anywhere ─────────────────────────────────

@@ -427,11 +427,13 @@ class SlotManagerMixin:
         park_all = flags.park_answerable()
         answered_inline: list[str] = []
         parked_owners: list[str] = []
+        parked_entries: list[tuple[str, str]] = []  # (owner, verbatim span)
         for d in getattr(outcome, "independents_detail", []) or []:
             if d.get("answerable") and not park_all:
                 answered_inline.append(d["answer"])
             else:
                 parked_owners.append(d["owner"])
+                parked_entries.append((d["owner"], d.get("span") or ""))
         declined = bool(outcome.declined)
 
         # Next ask (deterministic, from the pipeline order).
@@ -447,11 +449,17 @@ class SlotManagerMixin:
 
         # State updates: accept the slot; enqueue ONLY parked owners (inline-answered
         # are handled this turn, not queued); carry dirty flags from the resolver.
+        # Queue entries carry the caller's verbatim span so draining can open by
+        # acknowledging the parked request in the caller's own words (Phase 3).
+        from agent.orchestration.registry import queue_entry, queue_entry_owner
+
         updates = dict(outcome.state_updates or {})
         queue = list(state.get("intent_queue") or [])
-        for o in parked_owners:
-            if o not in queue:
-                queue.append(o)
+        owners_in_queue = {queue_entry_owner(e) for e in queue}
+        for owner, span in parked_entries:
+            if owner not in owners_in_queue:
+                queue.append(queue_entry(owner, span))
+                owners_in_queue.add(owner)
         if parked_owners:
             updates["intent_queue"] = queue
         else:

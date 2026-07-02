@@ -34,7 +34,12 @@ from agent.orchestration.invalidation import (
     mark_dirty,
     owner_of,
 )
-from agent.orchestration.registry import AGENT_SLOTS, ALL_AGENTS
+from agent.orchestration.registry import (
+    AGENT_SLOTS,
+    ALL_AGENTS,
+    queue_entry,
+    queue_entry_owner,
+)
 from agent.slots import normalizers as _N
 from agent.slots import validators as _V
 
@@ -221,14 +226,19 @@ def _cross_slot_match(plan: TurnPlan, state: dict, awaiting: str, *, utterance: 
 
 
 def _park(independents: list, state: dict) -> tuple[list, list]:
-    """Enqueue each independent's owner into intent_queue (dedup, order-preserving).
+    """Enqueue each independent into intent_queue (dedup by owner, order-
+    preserving). Entries carry the caller's verbatim span alongside the owner
+    ({"owner": …, "span": …}) so draining can acknowledge the parked request in
+    the caller's own words; legacy bare-string entries are left untouched.
     Returns (parked_owners, new_queue)."""
     queue = list(state.get("intent_queue") or [])
+    owners_in_queue = {queue_entry_owner(e) for e in queue}
     parked: list = []
-    for _si, owner in independents:
+    for si, owner in independents:
         parked.append(owner)
-        if owner not in queue:
-            queue.append(owner)
+        if owner not in owners_in_queue:
+            queue.append(queue_entry(owner, si.verbatim_span or ""))
+            owners_in_queue.add(owner)
     return parked, queue
 
 

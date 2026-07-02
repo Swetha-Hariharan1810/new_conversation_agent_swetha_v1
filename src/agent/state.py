@@ -46,7 +46,9 @@ class State(TypedDict):
     last_agent_signal: dict
     active_agent: str
     previous_agents: list[str]
-    intent_queue: list[str]
+    # Parked side requests, each {"owner": <agent>, "span": <caller's verbatim
+    # words>}; legacy checkpoints may hold bare owner strings (readers accept both).
+    intent_queue: list
     orchestrator_reasoning: str
     router_loop_count: int
     call_intent: str
@@ -105,6 +107,12 @@ class State(TypedDict):
     # dropped (not actioned or parked). Observability only — see
     # agent.orchestration.observability.
     dropped_request_count: int
+
+    # ── Intent draining (Phase 3) ─────────────────────────────────────────────
+    # The caller's verbatim words for the parked request being drained this
+    # turn; the receiving agent opens with a one-clause bridge acknowledging it
+    # (grounded by construction), then clears the field.
+    drained_intent_reason: str
 
     # ── Verification restart boundary ────────────────────────────────────────
     verification_restart_index: int

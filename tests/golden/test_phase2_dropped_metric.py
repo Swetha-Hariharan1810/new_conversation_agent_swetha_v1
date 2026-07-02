@@ -13,6 +13,7 @@ from contextlib import contextmanager
 import pytest
 
 import tests.golden  # noqa: F401 — ensures src/ is on sys.path
+from agent.orchestration.registry import queue_owners
 from tests.golden.driver import run_fixture
 
 pytestmark = pytest.mark.regression
@@ -212,7 +213,7 @@ async def test_later_fax_redirect_turn_is_parked_not_dropped():
         if getattr(r, "metric", None) == "dropped_request" and getattr(r, "outcome", None) == "parked"
     ]
     assert parked, "expected the fax-redirect to be recorded as parked (handled)"
-    assert "delivery_management_agent" in (run.final_state.get("intent_queue") or [])
+    assert "delivery_management_agent" in queue_owners(run.final_state.get("intent_queue"))
     # The agent stays in the benefits offer; nothing dispatched.
     assert run.final_state.get("awaiting_slot") == "benefits_response"
     assert run.recorder.count("dispatch_provider_list") == 0

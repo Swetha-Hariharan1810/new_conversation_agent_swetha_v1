@@ -189,14 +189,29 @@ def heuristic_decoder(state: dict, utterance: str, decision: Any) -> Optional[Tu
                 )
             )
         else:
-            # Generic in-scope side question (e.g. "also what's my deductible?").
-            secondary_intents.append(
-                SecondaryIntent(
-                    type=SecondaryIntentType.IN_SCOPE_INDEPENDENT,
-                    owner="benefits_agent",
-                    verbatim_span=span,
+            # Phase 3: NEVER guess an owner. Resolve the phrase against the
+            # deterministic intent vocabulary; when nothing matches, emit
+            # UNKNOWN with no owner — the resolver turns that into CLARIFY
+            # (ask, never act, never misroute).
+            from agent.orchestration.registry import owner_for_phrase
+
+            owner = owner_for_phrase(utterance)
+            if owner:
+                secondary_intents.append(
+                    SecondaryIntent(
+                        type=SecondaryIntentType.IN_SCOPE_INDEPENDENT,
+                        owner=owner,
+                        verbatim_span=span,
+                    )
                 )
-            )
+            else:
+                secondary_intents.append(
+                    SecondaryIntent(
+                        type=SecondaryIntentType.UNKNOWN,
+                        owner=None,
+                        verbatim_span=span,
+                    )
+                )
 
     if not (slot_answer or secondary_intents or correction or guard != GuardType.NONE):
         return None

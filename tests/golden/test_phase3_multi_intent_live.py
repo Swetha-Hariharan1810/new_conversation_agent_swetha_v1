@@ -36,6 +36,7 @@ from agent.llm.schema import (
     SecondaryIntentType,
     TurnPlan,
 )
+from agent.orchestration.registry import queue_owners
 
 pytestmark = pytest.mark.regression
 
@@ -284,7 +285,7 @@ async def test_answerable_followup_answered_inline_by_default(monkeypatch):
 async def test_answerable_followup_parked_when_flag_set(monkeypatch):
     counter, interrupt, _v = await _run_side_question(monkeypatch, park_answerable=True)
     # Parked → enqueued for draining, and NOT answered inline this turn.
-    assert "benefits_agent" in (interrupt.get("intent_queue") or [])
+    assert "benefits_agent" in queue_owners(interrupt.get("intent_queue"))
     assert "Answer to include" not in counter.gen_context
     assert "Parked" in counter.gen_context
 
@@ -486,7 +487,7 @@ async def test_phase0_followup_case_now_parked_not_dropped(monkeypatch):
 
     assert value == "M123456"
     # The follow-up is now PARKED for draining — not acknowledged-only/dropped.
-    assert "follow_up_agent" in (interrupt.get("intent_queue") or [])
+    assert "follow_up_agent" in queue_owners(interrupt.get("intent_queue"))
 
 
 # ── never guess: unresolved owner isn't routed; low confidence asks ───────────
@@ -535,7 +536,7 @@ async def test_unresolved_owner_secondary_not_routed(monkeypatch):
 
     assert value == "Pediatrician"
     # The unresolved owner was dropped — never parked, never routed.
-    assert "moon_department_agent" not in (interrupt.get("intent_queue") or [])
+    assert "moon_department_agent" not in queue_owners(interrupt.get("intent_queue"))
     assert interrupt.get("next_node") != "moon_department_agent"
 
 
