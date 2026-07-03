@@ -104,3 +104,14 @@ MSG_CONTACT_EXHAUST = [
     "I wasn't able to confirm your contact details for notifications. "
     "Let me connect you with a representative.",
 ]
+# Static slot collection order (all awaiting_slot phases, in flow sequence) —
+# used to build the "Pending:" extraction context line.
+NOTIFICATION_SLOT_ORDER = [
+    "notification_method",
+    "phone_confirmed",
+    "phone",
+    "email_confirmed",
+    "email",
+    "timeline_question",
+    "n2_notification_method",
+]

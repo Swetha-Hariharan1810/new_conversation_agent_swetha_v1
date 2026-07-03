@@ -187,6 +187,7 @@ class VerificationAgent(BaseAgent):
             last_agent_message=last_agent,
             last_user_message=last_user,
             confirmed_slots=confirmed_slots,
+            pending_slots=[s for s in slot_order if not str(state.get(s) or "").strip()],
             attempt=attempt_count,
             recent_messages=recent_messages,
         )
@@ -474,6 +475,7 @@ class VerificationAgent(BaseAgent):
             build_extraction_prompt_extraction("extraction/name_confirmation.md"),
             last_agent_message=last_agent,
             last_user_message=last_user,
+            pending_slots=[s for s in IDENTITY_SLOT_ORDER if not str(state.get(s) or "").strip()],
             attempt=attempt_count,
             recent_messages=messages[-4:],
         )
@@ -551,6 +553,7 @@ class VerificationAgent(BaseAgent):
             build_extraction_prompt_extraction("extraction/name_confirmation.md"),
             last_agent_message=last_agent,
             last_user_message=last_user,
+            pending_slots=[s for s in IDENTITY_SLOT_ORDER if not str(state.get(s) or "").strip()],
             attempt=attempt_count,
             recent_messages=messages[-4:],
         )

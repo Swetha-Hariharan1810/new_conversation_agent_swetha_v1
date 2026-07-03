@@ -24,6 +24,7 @@ async def extract_notification_decision(
     last_agent_message: str,
     last_user_message: str,
     confirmed_slots: dict | None = None,
+    pending_slots: list[str] | None = None,
     attempt: int = 0,
     recent_messages: list | None = None,
 ) -> WorkerResult:
@@ -34,6 +35,7 @@ async def extract_notification_decision(
         last_agent_message=last_agent_message,
         last_user_message=last_user_message,
         confirmed_slots=confirmed_slots,
+        pending_slots=pending_slots,
         attempt=attempt,
         recent_messages=recent_messages,
     )

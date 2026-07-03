@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from agent.agents.delivery_management.constants import (
     BENEFITS_OFFER_TEMPLATES,
+    DELIVERY_SLOT_ORDER,
     DELIVERY_WINDOW_MSG,
     DELIVERY_WINDOW_MSG_ZIP_UPDATED,
     EMAIL_READBACK_TEMPLATES,
@@ -37,6 +38,7 @@ from agent.agents.delivery_management.pipelines import (
 )
 from agent.core.agent import BaseAgent
 from agent.llm.config import get_extraction_llm
+from agent.llm.extractor import remaining_slots
 from agent.logger import get_logger
 from agent.slots.normalizers import normalize_email, normalize_fax_number, normalize_yes_no
 from agent.slots.validators import validate_email, validate_fax_number
@@ -117,6 +119,7 @@ class DeliveryManagementAgent(BaseAgent):
             last_agent_message=last_agent,
             last_user_message=last_user,
             confirmed_slots=confirmed_slots,
+            pending_slots=remaining_slots(DELIVERY_SLOT_ORDER, current_awaiting),
             attempt=attempt_count,
             recent_messages=messages[-4:],
         )

@@ -132,6 +132,7 @@ class BenefitsAgent(BaseAgent):
             last_agent_message=last_agent,
             last_user_message=last_user,
             confirmed_slots={},
+            pending_slots=[_CARE_COACH_SLOT],
             attempt=attempt_count,
             recent_messages=messages[-6:],
         )

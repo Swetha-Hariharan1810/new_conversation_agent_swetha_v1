@@ -30,6 +30,7 @@ async def extract_verification_decision(
     last_user_message: str,
     *,
     confirmed_slots: dict | None = None,
+    pending_slots: list[str] | None = None,
     attempt: int = 0,
     recent_messages: list | None = None,
 ) -> WorkerResult:
@@ -38,6 +39,8 @@ async def extract_verification_decision(
 
     confirmed_slots: already-confirmed slot values to include as context so
         the LLM can classify corrections for slots it has seen before.
+    pending_slots: slots still to be collected later this call, so the LLM
+        can classify parkable follow-up questions.
     attempt: how many collection attempts have been made for awaiting_slot.
     recent_messages: recent conversation turns (dicts with "role"/"content")
         passed through to build_worker_input for history context.
@@ -51,6 +54,7 @@ async def extract_verification_decision(
         last_agent_message=last_agent_message,
         last_user_message=last_user_message,
         confirmed_slots=confirmed_slots,
+        pending_slots=pending_slots,
         attempt=attempt,
         recent_messages=recent_messages,
     )
@@ -68,6 +72,7 @@ async def extract_name_confirmation(
     *,
     last_agent_message: str,
     last_user_message: str,
+    pending_slots: list[str] | None = None,
     attempt: int = 0,
     recent_messages: list | None = None,
 ) -> WorkerResult:
@@ -87,6 +92,7 @@ async def extract_name_confirmation(
         last_agent_message=last_agent_message,
         last_user_message=last_user_message,
         confirmed_slots=None,
+        pending_slots=pending_slots,
         attempt=attempt,
         recent_messages=recent_messages,
     )

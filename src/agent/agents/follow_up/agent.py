@@ -251,6 +251,7 @@ class FollowUpAgent(BaseAgent):
             build_extraction_prompt_extraction(prompt_file),
             last_agent_message=last_agent,
             last_user_message=last_user,
+            pending_slots=None,  # post-flow Q&A: no slots left to collect
             recent_messages=messages[-6:],
             state=state,
         )

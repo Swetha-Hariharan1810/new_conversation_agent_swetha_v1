@@ -81,3 +81,10 @@ MSG_EMAIL_UPDATE_PROMPT = [
     "Got it — could I get the updated email address?",
     "Sure — what email address should we use?",
 ]
+# Static slot collection order — used to build the "Pending:" extraction
+# context line.
+RECORDS_SLOT_ORDER = [
+    "upload_method",
+    "upload_consent",
+    "personal_guide_consent",
+]

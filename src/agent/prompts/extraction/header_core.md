@@ -18,6 +18,18 @@ Add caller_type to extracted{} only on direct statements:
   "I am a member"                           → member
 If not explicitly stated → omit caller_type from extracted{}.
 
+## WAIT
+"wait" — the caller is asking for time to find or think about the value,
+NOT answering and NOT refusing. Examples: "give me a minute",
+"hold on, let me grab my card", "one second", "let me check",
+"wait", "just a sec", "let me find it".
+Set extracted:{}, event_type:"wait".
+Do NOT classify as ambiguous. Do NOT classify as answered.
+If the utterance ALSO contains a valid value ("hold on... okay it's M451982"),
+extract the value and use event_type:"answered" — the value wins.
+"I don't have it / I lost it / never received it" is NOT wait — that is a
+cannot-provide statement; leave existing behavior unchanged.
+
 ## Return
 Return JSON only — no markdown, no explanation.
 
@@ -27,9 +39,10 @@ When a classifiable intent is found:
 When no intent is classifiable:
 {"extracted": {}, "event_type": "answered", "guard": null, "guard_confidence": 0.0}
 
-event_type: "answered" | "none"
+event_type: "answered" | "wait" | "none"
   answered — default; the caller responded to the question, even if
              extracted{} is empty (e.g. "Hi", "not sure")
+  wait     — the caller asked for time (see WAIT above); extracted{} empty
   none     — a guard fired; set extracted: {} and populate guard fields
 
 guard: null when no guard fired; the guard label string when one fires

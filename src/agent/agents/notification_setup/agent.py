@@ -32,6 +32,7 @@ from agent.agents.notification_setup.constants import (
     N2_METHOD_ASK,
     N2_PHONE_CONFIRM,
     NOTIFICATION_METHOD_ASK,
+    NOTIFICATION_SLOT_ORDER,
     PHONE_READBACK_TEMPLATES,
     PHONE_UPDATE_PROMPTS,
     PREFERENCE_SAVED_TEMPLATES,
@@ -45,6 +46,7 @@ from agent.agents.notification_setup.llm import extract_notification_decision
 from agent.conversation.context import ConversationContext
 from agent.core.agent import BaseAgent
 from agent.llm.config import get_extraction_llm
+from agent.llm.extractor import remaining_slots
 from agent.logger import get_logger
 from agent.slots.normalizers import (
     normalize_email,
@@ -120,6 +122,7 @@ class NotificationSetupAgent(BaseAgent):
             last_agent_message=last_agent,
             last_user_message=last_user,
             confirmed_slots=confirmed_slots,
+            pending_slots=remaining_slots(NOTIFICATION_SLOT_ORDER, current_awaiting),
             attempt=attempt_count,
             recent_messages=messages[-4:],
         )

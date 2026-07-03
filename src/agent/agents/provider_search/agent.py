@@ -23,6 +23,7 @@ from agent.agents.provider_search.constants import (
     MSG_PROVIDER_TYPE_UNSUPPORTED,
     MSG_ZIP_EXHAUST,
     PROVIDER_SEARCH_BRIDGE_MSGS,
+    PROVIDER_SEARCH_SLOT_ORDER,
     ZIP_CONFIRM_TEMPLATES,
     ZIP_UPDATE_PROMPT,
 )
@@ -128,6 +129,7 @@ class ProviderSearchAgent(BaseAgent):
             last_agent_message=last_agent,
             last_user_message=last_user,
             confirmed_slots=confirmed_slots,
+            pending_slots=[s for s in PROVIDER_SEARCH_SLOT_ORDER if s not in confirmed_slots],
             attempt=attempt_count,
             recent_messages=messages[-6:],
         )

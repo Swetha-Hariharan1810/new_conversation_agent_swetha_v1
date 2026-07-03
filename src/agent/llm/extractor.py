@@ -5,6 +5,17 @@ from agent.utils import build_history
 logger = logging.getLogger(__name__)
 
 
+def remaining_slots(order: list[str], current: str) -> list[str]:
+    """Slice of ``order`` from ``current`` onward — the pending slots this turn.
+
+    Falls back to the full order when ``current`` is not in it (e.g. a
+    transient confirmation sub-slot not listed in the agent's static order).
+    """
+    if current in order:
+        return list(order[order.index(current) :])
+    return list(order)
+
+
 def build_worker_input(
     system_prompt: str,
     awaiting_slot: str,
@@ -12,6 +23,7 @@ def build_worker_input(
     last_user_message: str,
     *,
     confirmed_slots: dict | None = None,
+    pending_slots: list[str] | None = None,
     attempt: int = 0,
     recent_messages: list | None = None,
 ) -> list[dict]:
@@ -34,6 +46,11 @@ def build_worker_input(
         Dict of slot name → value for all slots already confirmed. Only
         entries with non-empty string values are included in the prompt.
         Omitted entirely when None or empty.
+    pending_slots:
+        Slot names still to be collected later in this call, in order.
+        Rendered as a "Pending:" context line so the extraction LLM can
+        classify follow-up questions as parkable (followup_disposition
+        "park"). Omitted entirely when None or empty.
     attempt:
         How many collection attempts have been made for awaiting_slot so far.
     recent_messages:
@@ -58,6 +75,8 @@ def build_worker_input(
         if filled:
             confirmed_str = ", ".join(f"{k}={v}" for k, v in filled.items())
             context_lines.append(f"Confirmed: {confirmed_str}")
+    if pending_slots:
+        context_lines.append(f"Pending: {', '.join(pending_slots)}")
 
     # Explicitly surface the most recent caller utterance so the extraction
     # LLM does not have to re-parse it from the history block. This prevents

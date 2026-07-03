@@ -91,3 +91,13 @@ MSG_DISPATCH_FAIL = [
     "I'm sorry, I was unable to send the provider list. Let me connect you with a representative.",
     "I wasn't able to dispatch the list. Connecting you with a specialist.",
 ]
+# Static slot collection order (all awaiting_slot phases, in flow sequence) —
+# used to build the "Pending:" extraction context line.
+DELIVERY_SLOT_ORDER = [
+    "delivery_method",
+    "fax_confirmed",
+    "fax",
+    "email_confirmed",
+    "email",
+    "benefits_response",
+]

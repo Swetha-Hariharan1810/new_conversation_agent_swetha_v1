@@ -37,12 +37,14 @@ from agent.agents.records_coordination.constants import (
     MSG_PERSONAL_GUIDE_OFFER,
     MSG_UPLOAD_OFFER,
     MSG_UPLOAD_SENT,
+    RECORDS_SLOT_ORDER,
 )
 from agent.agents.records_coordination.handlers import dispatch_personal_guide, dispatch_upload_link
 from agent.agents.records_coordination.llm import extract_records_decision
 from agent.conversation.context import ConversationContext
 from agent.core.agent import BaseAgent
 from agent.llm.config import get_extraction_llm
+from agent.llm.extractor import remaining_slots
 from agent.logger import get_logger
 from agent.slots.normalizers import normalize_email, normalize_yes_no
 from agent.slots.validators import validate_email
@@ -92,6 +94,7 @@ class RecordsCoordinationAgent(BaseAgent):
             last_agent_message=last_agent,
             last_user_message=last_user,
             confirmed_slots={},
+            pending_slots=remaining_slots(RECORDS_SLOT_ORDER, current_awaiting),
             attempt=attempt_count,
             recent_messages=messages[-4:],
         )

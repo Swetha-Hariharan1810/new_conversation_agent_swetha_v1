@@ -91,6 +91,7 @@ class IntakeAgent(BaseAgent):
             self.get_system_prompt(state),
             last_agent_message=last_agent,
             last_user_message=last_user,
+            pending_slots=["intent"],
             attempt=attempts,
             recent_messages=messages,
         )

@@ -88,3 +88,9 @@ MSG_PROVIDER_TYPE_UNSUPPORTED = [
         "and Orthopedic Specialists at this time."
     ),
 ]
+# Static slot collection order — used to build the "Pending:" extraction
+# context line (agent.llm.extractor.build_worker_input pending_slots kwarg).
+PROVIDER_SEARCH_SLOT_ORDER = [
+    "provider_type",
+    "zip_code",
+]

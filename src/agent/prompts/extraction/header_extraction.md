@@ -57,8 +57,44 @@ extracted{} may only contain values the caller actually spoke this turn.
                                         "do you speak Spanish", "what are your hours"
                 format uncertainty about their own answer —
                                         "I think it's...", "not sure if that's right"
+"wait"      — caller is asking for time, not answering — see WAIT below
 "ambiguous" — genuinely nothing extractable, garbled, or uncertain — do not guess
 "none"      — a guard fired; set when guard != NONE
+
+## WAIT
+"wait" — caller asks for time to find or think about the value, NOT answering
+and NOT refusing: "give me a minute", "hold on, let me grab my card",
+"one second", "let me check", "wait", "just a sec", "let me find it".
+Set extracted:{}, event_type:"wait". NOT ambiguous, NOT answered.
+If the utterance ALSO contains a valid value ("hold on... okay it's M451982"),
+extract it and use event_type:"answered" — the value wins.
+"I don't have it / I lost it / never received it" is NOT wait — that is a
+cannot-provide statement; leave existing behavior unchanged.
+
+## Update requests
+Caller wants to change a previously accepted value. Three shapes:
+1. New value, no answer to awaiting slot ("actually my last name is Smith")
+   → corrections:{last_name:"Smith"}, event_type:"corrected"
+2. New value PLUS a valid answer to the awaiting slot
+   ("it's 90210 — and actually my email is a@b.com")
+   → extracted:{zip_code:"90210"}, corrections:{email:"a@b.com"},
+     event_type:"answered_with_followup", followup_disposition:"answer_now"
+3. No value given ("I need to change my email")
+   → update_target:"email"; if awaiting slot answered, extract it and use
+     event_type:"answered_with_followup" + disposition "answer_now";
+     if not answered, event_type:"corrected" with empty corrections{}.
+update_target / corrections keys MUST be a slot listed in Confirmed:.
+Never a locked field. Asks to change something not in Confirmed: and not a
+known slot → treat as a follow-up question (usually disposition "decline").
+
+## Followup disposition
+Only when event_type = answered_with_followup. Set followup_query to the
+side question (short paraphrase). Set followup_disposition:
+  answer_now — answerable purely from values in Confirmed: (or a repeat /
+               read-back request, or an update request per above)
+  park       — maps to a slot in Pending: or a later stage of this call
+  decline    — anything else: unrelated, never-collected data, general knowledge
+When event_type != answered_with_followup, omit or set "none".
 
 ## Caller type detection
 Only extract when caller explicitly states who they are. Never infer.
@@ -71,14 +107,21 @@ If not explicitly stated → omit caller_type from extracted{}.
 
 ## Return
 Return JSON only — no markdown, no explanation.
-{"extracted": {}, "event_type": "answered", "guard": null, "guard_confidence": 0.0}
+{"extracted": {}, "event_type": "answered", "guard": null, "guard_confidence": 0.0, "followup_disposition": "none", "followup_query": null, "update_target": null}
 
-event_type: "answered" | "answered_with_followup" | "ambiguous" | "none"
+event_type: "answered" | "answered_with_followup" | "wait" | "ambiguous" | "none"
   answered  — caller directly provided a value for the slot
   answered_with_followup — caller provided a value for the slot AND added a
               secondary signal; extracted{} must hold the slot value
+  wait      — caller asked for time; extracted{} empty
   ambiguous — genuinely nothing extractable, garbled, or uncertain — do not guess
   none      — a guard fired; set extracted: {} and populate guard fields
+
+followup_disposition: "answer_now" | "park" | "decline" | "none" — "none"
+  unless event_type is "answered_with_followup"
+followup_query: the side question, condensed, verbatim-ish; null when none
+update_target: slot the caller wants to change when NO new value was given;
+  null otherwise
 
 guard: null when no guard fired; the guard label string when one fires
   e.g. "TRANSFER_REQUEST" | "ABUSE" | "SELF_HARM" | "OFFTOPIC_GLOBAL"

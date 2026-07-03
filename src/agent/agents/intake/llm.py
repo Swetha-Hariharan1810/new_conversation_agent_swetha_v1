@@ -28,6 +28,7 @@ async def extract_intake_intent(
     system_prompt: str,
     last_agent_message: str,
     last_user_message: str,
+    pending_slots: list[str] | None = None,
     attempt: int = 0,
     recent_messages: list | None = None,
 ) -> WorkerResult:
@@ -42,6 +43,7 @@ async def extract_intake_intent(
         awaiting_slot="intent",
         last_agent_message=last_agent_message,
         last_user_message=last_user_message,
+        pending_slots=pending_slots,
         attempt=0,
         recent_messages=recent_messages,
     )

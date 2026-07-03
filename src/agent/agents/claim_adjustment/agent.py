@@ -112,6 +112,7 @@ class ClaimAdjustmentAgent(BaseAgent):
                 last_agent_message=last_agent,
                 last_user_message=last_user,
                 confirmed_slots={},
+                pending_slots=["reference_number"],
                 attempt=attempt_count,
                 recent_messages=messages[-6:],
             )

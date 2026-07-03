@@ -156,6 +156,7 @@ async def extract_follow_up_decision(
     *,
     last_agent_message: str,
     last_user_message: str,
+    pending_slots: list[str] | None = None,
     recent_messages: list | None = None,
     state: State | None = None,
 ) -> FollowUpResult:
@@ -175,6 +176,7 @@ async def extract_follow_up_decision(
         awaiting_slot="",
         last_agent_message=last_agent_message,
         last_user_message=last_user_message,
+        pending_slots=pending_slots,
         recent_messages=recent_messages,
     )
 
