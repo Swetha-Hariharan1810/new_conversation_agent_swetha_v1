@@ -92,6 +92,8 @@ class State(TypedDict):
     awaiting_slot: str
     correction_return_to: str
     ambiguous_counts: dict
+    parked_followups: list[str]  # questions parked for later in the call
+    wait_count: int  # consecutive WAIT turns for the current awaiting slot (reset on non-WAIT)
 
     # ── Verification restart boundary ────────────────────────────────────────
     verification_restart_index: int
@@ -205,6 +207,8 @@ def reset_for_new_intent(state: State, new_intent: Optional[str]) -> dict:
         "slot_attempts": {},
         "correction_return_to": "",
         "ambiguous_counts": {},
+        "parked_followups": [],
+        "wait_count": 0,
         "verification_restart_index": 0,
         # ── Provider search ──────────────────────────────────────────────────
         "provider_type": "",
