@@ -19,15 +19,16 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional, Tuple
 
 from agent.conversation.context import ConversationContext
+from agent.core.constants import MAX_WAIT_TURNS
 from agent.core.models import SlotAttempt
 from agent.responses.builder import (
     build_initial_prompt,
     build_transition_prompt,
 )
-from agent.responses.static import build_slot_exhausted_message
+from agent.responses.static import MSG_WAIT_ACK, MSG_WAIT_NUDGE, build_slot_exhausted_message
 from agent.slots.types import SlotType
 from agent.state import State
-from agent.utils import _last_user_msg, detect_cannot_provide
+from agent.utils import _last_user_msg, detect_cannot_provide, detect_wait_request, pick
 
 # ── Empathetic "cannot provide" escalation message ────────────────────────────
 # Slot-aware: {slot_label} is filled at runtime from the SlotType label.
@@ -343,6 +344,7 @@ class SlotManagerMixin:
                         interrupt = self.ask_member_with_context(state, msg, ctx)
                         # awaiting_slot is empty — slot is confirmed, not waiting again
                         interrupt["awaiting_slot"] = ""
+                        interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
                         # Return normalized so pipeline records it in collected
                         return normalized, interrupt
 
@@ -381,6 +383,7 @@ class SlotManagerMixin:
             msg = await self._generate_slot_retry_response(state, slot_name, ctx, messages)
             interrupt = self.ask_member_with_context(state, msg, ctx)
             interrupt["awaiting_slot"] = slot_name
+            interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
             return None, interrupt
 
         # ------------------------------------------------------------------
@@ -391,6 +394,31 @@ class SlotManagerMixin:
 
             event_type = getattr(decision, "event_type", None)
             event_value = event_type.value if event_type is not None else EventType.ANSWERED.value
+
+            # ── WAIT: caller asked for time — not a failure, not ambiguous ─
+            # Detection is deliberately post-extraction only: a pre-GPT regex
+            # short-circuit in agent.run() would swallow utterances like
+            # "hold on... it's M451982" where a valid value follows the wait
+            # phrase — extraction must see the turn first so the value wins
+            # (a turn with a valid value never reaches this block).
+            # The regex fallback also rescues waits the LLM mislabels as
+            # ambiguous. cannot-provide outranks wait: "I don't have it"
+            # falls through to the escalation checks below.
+            last_user = _last_user_msg(messages)
+            if (
+                event_value == EventType.WAIT.value or detect_wait_request(last_user)
+            ) and not detect_cannot_provide(last_user):
+                wait_count = int(state.get("wait_count") or 0) + 1
+                if wait_count < MAX_WAIT_TURNS:
+                    msg = pick(MSG_WAIT_ACK)
+                else:
+                    msg = pick(MSG_WAIT_NUDGE).format(slot_label=slot_label)
+                # Static response only: no slot_fail, no ambiguous_counts,
+                # no generation-LLM call — waiting is not a failed attempt.
+                interrupt = self.ask_member_with_context(state, msg, ctx)
+                interrupt["awaiting_slot"] = slot_name
+                interrupt["wait_count"] = wait_count
+                return None, interrupt
 
             # ── CORRECTED: caller fixed a confirmed slot, not answering us ─
             if event_value == EventType.CORRECTED.value:
@@ -411,6 +439,7 @@ class SlotManagerMixin:
                     ambiguous_counts = dict(state.get("ambiguous_counts") or {})
                     ambiguous_counts[slot_name] = 0
                     interrupt["ambiguous_counts"] = ambiguous_counts
+                    interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
                     return None, interrupt
 
             # ── AMBIGUOUS: caller signalled correction intent with no value ─
@@ -449,6 +478,7 @@ class SlotManagerMixin:
                     interrupt = self.ask_member_with_context(state, msg, ctx)
                     interrupt["awaiting_slot"] = slot_name
                     interrupt["ambiguous_counts"] = ambiguous_counts
+                    interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
                     return None, interrupt
 
                 # First AMBIGUOUS turn — ask for clarification without counting a failure
@@ -487,6 +517,7 @@ class SlotManagerMixin:
                 interrupt = self.ask_member_with_context(state, msg, ctx)
                 interrupt["awaiting_slot"] = slot_name
                 interrupt["ambiguous_counts"] = ambiguous_counts
+                interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
                 return None, interrupt
 
             # ── ANSWERED (default): genuine non-answer — check cannot-provide
@@ -521,6 +552,7 @@ class SlotManagerMixin:
             interrupt = self.ask_member_with_context(state, msg, ctx)
             interrupt["awaiting_slot"] = slot_name
             interrupt["ambiguous_counts"] = ambiguous_counts
+            interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
             return None, interrupt
 
         # ------------------------------------------------------------------
@@ -528,4 +560,5 @@ class SlotManagerMixin:
         # ------------------------------------------------------------------
         interrupt = self.ask_member_with_context(state, _ask_first(), ctx)
         interrupt["awaiting_slot"] = slot_name
+        interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
         return None, interrupt

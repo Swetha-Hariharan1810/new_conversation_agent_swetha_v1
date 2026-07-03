@@ -5,6 +5,7 @@ import re as _re
 from functools import lru_cache
 from typing import Any
 
+from agent.core.constants import WAIT_PATTERNS
 from agent.logger import get_logger
 
 logger = get_logger(__name__)
@@ -432,3 +433,53 @@ def detect_cannot_provide(text: str | None) -> bool:
     if not text:
         return False
     return any(pat.search(text.strip()) for pat in _CANNOT_PROVIDE_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# WAIT detection — "give me a minute", "hold on", "let me grab my card"
+#
+# Regex fallback for the WAIT event in _collect_slot (core/slot_manager.py):
+# fires when the extraction LLM returns event_type "wait" OR mislabels a
+# wait as ambiguous. Compiled once at import time.
+# ---------------------------------------------------------------------------
+
+_WAIT_PATTERNS: list = [_re.compile(p, _re.IGNORECASE) for p in WAIT_PATTERNS]
+
+
+def detect_wait_request(text: str | None) -> bool:
+    """
+    Return True when the caller is asking for time to find or think about
+    the value — NOT answering and NOT refusing.
+
+    Examples that return True:
+      "give me a minute"      "hold on, let me grab my card"
+      "one second"            "let me check"
+      "wait"                  "just a sec"        "bear with me"
+
+    Examples that return False:
+      "hold on, it's M451982"   — a plausible value follows; extraction wins
+      "I don't have my card"    — cannot-provide outranks wait
+      "M110781"                 — plain answer, no wait phrase
+
+    Precedence rules:
+      1. detect_cannot_provide() outranks wait — "I don't have it" must
+         route to the cannot-provide escalation, never a wait ack.
+      2. If, after removing every matched wait phrase, a plausible slot-value
+         continuation remains (>= 3 word tokens or >= 4 digits), return False
+         and let extraction handle the turn — the value wins.
+    """
+    if not text:
+        return False
+    if detect_cannot_provide(text):
+        return False
+    lowered = text.lower().strip()
+    remainder = lowered
+    for pat in _WAIT_PATTERNS:
+        remainder = pat.sub(" ", remainder)
+    if remainder == lowered:
+        return False  # no wait phrase matched
+    word_tokens = _re.findall(r"[a-z']+", remainder)
+    digit_count = sum(c.isdigit() for c in remainder)
+    if len(word_tokens) >= 3 or digit_count >= 4:
+        return False  # plausible slot-value continuation — extraction decides
+    return True

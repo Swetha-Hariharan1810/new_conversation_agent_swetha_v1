@@ -43,6 +43,18 @@ MSG_SELF_HARM_ESCALATION = [
 ]
 
 
+# ── WAIT acknowledgements — static-only by design (zero generation-LLM calls);
+#    delivered from the WAIT branch in _collect_slot (core/slot_manager.py) ────
+MSG_WAIT_ACK = [
+    "Of course — take your time.",
+    "No rush, take your time. I'm here when you're ready.",
+    "Sure, take all the time you need.",
+]
+MSG_WAIT_NUDGE = [
+    "No problem — whenever you're ready, I still need your {slot_label}.",
+]
+
+
 # ── Slot exhaustion — legal; max-retry escalation must fire reliably ──────────
 def build_slot_exhausted_message(slot_name: str = "") -> str:
     """Return a warm, slot-aware escalation message for retry exhaustion."""

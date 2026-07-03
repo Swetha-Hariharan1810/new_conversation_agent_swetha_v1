@@ -132,8 +132,25 @@ SPELLING_PATTERNS = [
 
 # Keyword fallback for INTERRUPTION guard — used by guards.py when LLM confidence < 0.7.
 # Only unambiguous phrases are included; broader interruption detection is LLM-based.
+# "hold on a second" was removed: it overlaps WAIT_PATTERNS ("hold on") and the
+# WAIT classification must win — a caller asking for time is not interrupting.
 INTERRUPTION_PATTERNS: list[str] = [
     "one more thing",
     "before you continue",
-    "hold on a second",
 ]
+
+# ---------------------------------------------------------------------------
+# WAIT detection — caller asks for time to find/think about the value
+# Raw strings; compiled once in agent.utils (detect_wait_request).
+# ---------------------------------------------------------------------------
+WAIT_PATTERNS: list[str] = [
+    r"\b(give me|gimme)\s+(a|one)\s+(sec|second|minute|min|moment)\b",
+    r"\bhold on\b",
+    r"\bone (sec|second|moment|minute)\b",
+    r"\bjust a (sec|second|moment|minute)\b",
+    r"\blet me (check|look|find|grab|get)\b",
+    r"\bbear with me\b",
+    r"^\s*wait\W*$",
+    r"\bhang on\b",
+]
+MAX_WAIT_TURNS = 3  # consecutive waits before a gentle nudge/escalation check
