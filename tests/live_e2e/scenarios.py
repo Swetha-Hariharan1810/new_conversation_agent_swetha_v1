@@ -3300,6 +3300,173 @@ from tests.live_e2e.test_fax_indirect_decline import (  # noqa: E402
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
+# O. Production-transcript regressions (LLM-2 hygiene, Phases 1-4)
+#    Each scenario mirrors one real production transcript that exposed a bug.
+# ──────────────────────────────────────────────────────────────────────────────
+
+emily_carter_correction_single_ask = Scenario(
+    name="emily_carter_correction_single_ask",
+    flow="pcp",
+    timeout_s=360,
+    retries=2,  # CORRECTED-event classification is LLM-driven
+    user_turns=[
+        "I need to find a primary care physician in my area.",
+        "emily",
+        "carson",  # WRONG last name, confirmed at the read-back
+        "yes correct",  # read-back "Emily Carson" confirmed
+        "m nine zero seven five zero three",
+        # Production transcript (Bug A): pure name correction at the DOB ask.
+        # The broken behavior acknowledged the correction and then DOUBLE-asked
+        # ("…could you confirm your Member ID number again? And what's your
+        # date of birth?"). The fixed turn must re-ask DOB and nothing else.
+        "wait — actually my name is Emily Carter, not Carson",
+        "April twelfth nineteen eighty-eight",
+        "I'm calling for myself",
+    ]
+    + _PCP_TAIL,
+    turn_expectations={
+        5: TurnExpectation(ai_contains=[r"(date of birth|birth\s*date|dob)"], slot_awaiting="dob"),
+        # The correction ack re-asks DOB ONLY — awaiting must still be dob and
+        # the confirmed member_id must not be re-asked (transcript_count below).
+        6: TurnExpectation(ai_contains=[r"(date of birth|birth\s*date|dob)"], slot_awaiting="dob"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "member_status_verify": True,  # lookup matched the CORRECTED name
+            "first_name": "Emily",
+            "last_name": "Carter",
+            "provider_list_sent": True,
+        },
+        transcript_count={
+            # The exact production double-ask: a re-ask/re-confirm of the
+            # already-confirmed member_id must never appear anywhere.
+            r"member\s*id[^.?!]*again": 0,
+            r"confirm your member\s*id": 0,
+        },
+    ),
+    notes=(
+        "Mirrors the Emily Carter production transcript (Bug A, Phase 2). A "
+        "confirmed-name correction arrives at the DOB ask; the response must "
+        "acknowledge and re-ask DOB in one sentence — the single-ask sanitizer "
+        "strips any re-ask of the confirmed member_id, asserted via the zero "
+        "transcript_count entries and slot_awaiting staying on dob."
+    ),
+)
+
+notification_followup_not_declined = Scenario(
+    name="notification_followup_not_declined",
+    flow="pcp",
+    timeout_s=360,
+    retries=2,  # park disposition classification is LLM-driven
+    user_turns=[
+        "I need to find a primary care physician in my area.",
+        "emily",
+        "carter",
+        "yes correct",
+        # Production transcript (Bug B): a notification question asked during
+        # member_id collection was DECLINED ("that part I can't help with").
+        # It concerns a later stage of this same call → must PARK, then be
+        # answered by follow_up at the end.
+        "m nine zero seven five zero three — will I get a notification when the list is sent out?",
+        "April twelfth nineteen eighty-eight",
+        "I'm calling for myself",
+    ]
+    + _PCP_TAIL
+    + [
+        "no, that's all, thanks",  # spare: follow_up answers the parked question first
+    ],
+    turn_expectations={
+        # The park ack must not stall the pipeline: the same turn ends on the
+        # appended DOB ask.
+        5: TurnExpectation(ai_contains=[r"(date of birth|birth\s*date|dob)"], slot_awaiting="dob"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "member_status_verify": True,
+            "provider_list_sent": True,
+            "parked_followups": falsy,  # surfaced and consumed by follow_up
+        },
+        transcript_count={
+            # The production decline wording, in either its old or new form —
+            # a later-stage notification question must never be declined.
+            r"(can'?t|cannot|not able to)\s+(help|assist)": 0,
+            r"representative will need to (help|make that change)": 0,
+        },
+    ),
+    notes=(
+        "Mirrors the notification-question production transcript (Bug B, "
+        "Phase 3). 'Will I get a notification when it's sent?' during member_id "
+        "must park (header.md: delivery/notification/timeline questions are "
+        "never declined), keep the flow moving to DOB, and be answered by "
+        "follow_up before close — final parked_followups empty, zero decline "
+        "phrasings anywhere in the transcript."
+    ),
+)
+
+zip_update_during_fax_confirmation = Scenario(
+    name="zip_update_during_fax_confirmation",
+    flow="pcp",
+    mutating=True,
+    timeout_s=420,
+    retries=2,  # update_target extraction mid-delivery is LLM-driven
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",  # ZIP on file confirmed
+        "send it to my fax",  # delivery method
+        # Production transcript run-df1e16a9 (Bug C): at the fax read-back the
+        # member says their ZIP changed. The broken behavior repeated the fax
+        # question over the request; the fix routes to provider_search NOW.
+        "wait — actually my ZIP code changed, I moved recently",
+        "zero two one four one",  # new ZIP, collected by provider_search
+        "yes that's correct",  # fax read-back re-asked on resume → confirm
+        "no thanks",  # decline benefits
+        "no thank you",  # decline Care Coach
+        "no that's all, thanks",  # close
+    ],
+    turn_expectations={
+        # Before the ZIP interjection: the fax read-back question.
+        10: TurnExpectation(ai_contains=[r"fax"], slot_awaiting="fax_confirmed"),
+        # The hand-off: honest "update your ZIP first" ask — awaiting flips to
+        # zip_code and the next turn is owned by provider_search.
+        11: TurnExpectation(ai_contains=[r"zip"], slot_awaiting="zip_code"),
+        # The resume: ZIP-update acknowledgement naming the NEW ZIP plus the
+        # re-asked fax read-back — dispatch never fired from the disputed ZIP.
+        12: TurnExpectation(ai_contains=[r"02141", r"fax"], slot_awaiting="fax_confirmed"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "provider_list_sent": True,
+            "delivery_method": "fax",
+            "zip_code_used": "02141",
+            "zip_code_updated": True,
+            "pending_slot_update": falsy,  # round-trip fully consumed
+        },
+        transcript_contains=[
+            # Dispatch confirmation names the NEW ZIP (list rebuilt from it).
+            _zip_dispatch_regex("02141"),
+        ],
+    ),
+    post_checks=[sf_field_check("M907503", "zip_code", "02141")],
+    notes=(
+        "Mirrors production run-df1e16a9 (Bug C, Phase 4). Mutates Emily's zip "
+        "in Salesforce; teardown restores the snapshot. A ZIP update requested "
+        "at the fax read-back routes to provider_search (pending_slot_update), "
+        "collects + persists the new ZIP, and the orchestrator fast-path "
+        "returns to delivery_management at fax_confirmed with the update "
+        "acknowledged. The provider list must be dispatched from the NEW ZIP "
+        "only — asserted by the ZIP-aware dispatch message, zip_code_used, and "
+        "the Salesforce post-check."
+    ),
+)
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Registry — run order matters (scenarios share Salesforce data; run serially)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -3400,6 +3567,10 @@ SCENARIOS: list[Scenario] = [
     update_loop_guard_escalates,  # N-8 — per-target loop guard escalation
     wait_ack_then_answer,  # N-9 — static wait ack, value wins after
     wait_nudge_after_three,  # N-10 — 3 waits → slot-naming nudge
+    # O. Production-transcript regressions (LLM-2 hygiene, Phases 1-4)
+    emily_carter_correction_single_ask,  # O-1 — Bug A: correction double-ask
+    notification_followup_not_declined,  # O-2 — Bug B: later-stage question declined
+    zip_update_during_fax_confirmation,  # O-3 — Bug C: zip-update routing (mutating)
 ]
 
 SCENARIOS_BY_NAME: dict[str, Scenario] = {s.name: s for s in SCENARIOS}
