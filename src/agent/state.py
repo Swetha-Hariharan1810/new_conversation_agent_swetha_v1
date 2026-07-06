@@ -92,7 +92,11 @@ class State(TypedDict):
     awaiting_slot: str
     correction_return_to: str
     ambiguous_counts: dict
-    parked_followups: list[str]  # questions parked for later in the call
+    # Follow-ups parked for later in the call. Structured entries:
+    # {"query": str, "kind": "question" | "action", "target": str} — legacy
+    # plain strings still appear in old checkpoints; every read site must go
+    # through normalize_parked_followups().
+    parked_followups: list
     wait_count: int  # consecutive WAIT turns for the current awaiting slot (reset on non-WAIT)
 
     # ── Verification restart boundary ────────────────────────────────────────
@@ -152,6 +156,30 @@ class State(TypedDict):
     claim_timeline_notification_channel: str  # "sms"|"email"|"not_set" — for progress updates
     claim_timeline_notification_contact: str  # contact for progress update notifications
     claim_flow_complete: bool  # True once both notification preferences are saved
+
+
+def normalize_parked_followups(items: Optional[list]) -> list[dict]:
+    """Normalize parked_followups entries to their structured form.
+
+    New entries are {"query": str, "kind": "question" | "action", "target": str}.
+    Legacy checkpoints hold plain strings — normalized to
+    {"query": s, "kind": "question", "target": ""}. Empty/garbage entries are
+    dropped; unknown kinds coerce to "question". Every read site of
+    parked_followups must go through this helper.
+    """
+    normalized: list[dict] = []
+    for item in items or []:
+        if isinstance(item, str):
+            query = item.strip()
+            if query:
+                normalized.append({"query": query, "kind": "question", "target": ""})
+        elif isinstance(item, dict):
+            query = str(item.get("query") or "").strip()
+            if not query:
+                continue
+            kind = item.get("kind") if item.get("kind") in ("question", "action") else "question"
+            normalized.append({"query": query, "kind": kind, "target": str(item.get("target") or "").strip()})
+    return normalized
 
 
 def reset_for_new_intent(state: State, new_intent: Optional[str]) -> dict:

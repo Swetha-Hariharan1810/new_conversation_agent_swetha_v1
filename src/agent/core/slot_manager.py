@@ -27,7 +27,7 @@ from agent.responses.builder import (
 )
 from agent.responses.static import MSG_WAIT_ACK, MSG_WAIT_NUDGE, build_slot_exhausted_message
 from agent.slots.types import SlotType
-from agent.state import State
+from agent.state import State, normalize_parked_followups
 from agent.utils import _last_user_msg, detect_cannot_provide, detect_wait_request, pick
 
 # ── Empathetic "cannot provide" escalation message ────────────────────────────
@@ -326,11 +326,9 @@ class SlotManagerMixin:
 
         A target is updatable only when it is already confirmed (in ctx or
         non-empty in state), is not a caller-locked field, and is collectable
-        by the current pipeline. Anything else is treated as a decline.
-        A target owned by a LATER agent could instead be parked, but that needs
-        a slot→owning-agent registry which doesn't exist yet.
-        TODO(followup-routing): park instead of decline once a SLOT_OWNERSHIP
-        map is introduced.
+        by the current pipeline. Targets that fail this check are parked as
+        kind="action" items when core.slot_ownership names an owner for them
+        (follow_up routes those); only ownerless/human-only slots decline.
         """
         from agent.agents.verification.handlers import CALLER_LOCKED_SLOTS
 
@@ -591,8 +589,17 @@ class SlotManagerMixin:
                 if clear_verify:
                     detour.setdefault("member_status_verify", False)
                 return normalized, detour
-            # Target not updatable here — fall through as a decline.
-            disposition_value = "decline"
+            # Target not updatable by THIS pipeline. If the ownership registry
+            # names an owner (a later flow or re-verification), park the update
+            # as an action for follow_up to route — never blanket-decline the
+            # caller's own request. Only human-only slots decline.
+            from agent.core.slot_ownership import OWNER_HUMAN, slot_update_owner
+
+            if slot_update_owner(update_target) != OWNER_HUMAN:
+                disposition_value = "park"
+                followup_query = followup_query or f"update {update_target.replace('_', ' ')}"
+            else:
+                disposition_value = "decline"
 
         # ── Answer + INVALID corrected value: the awaiting slot IS confirmed,
         # but the correction was never applied — open a detour to re-collect
@@ -657,8 +664,18 @@ class SlotManagerMixin:
         if clear_verify:
             interrupt["member_status_verify"] = False
         if guard == "FOLLOWUP_PARK" and followup_query:
-            parked = list(state.get("parked_followups") or [])
-            parked.append(followup_query)
+            # Structured parked item: an unhonored update_target parks as an
+            # actionable item follow_up routes via the ownership registry;
+            # plain side questions park as kind="question".
+            parked = normalize_parked_followups(state.get("parked_followups"))
+            is_action = bool(update_target and update_target not in applied)
+            parked.append(
+                {
+                    "query": followup_query,
+                    "kind": "action" if is_action else "question",
+                    "target": update_target if is_action else "",
+                }
+            )
             interrupt["parked_followups"] = parked
         # Return normalized so slot_ok's persistence carries the value forward;
         # with no next_slot this matches the pre-Phase-4 return exactly, so the

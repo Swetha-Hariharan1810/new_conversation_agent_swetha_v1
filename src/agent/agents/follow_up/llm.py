@@ -169,6 +169,8 @@ async def extract_follow_up_decision(
 
     parked_followups: questions the member asked earlier in the call that were
     parked with a promise to answer later — injected so the answer covers them.
+    Plain query strings: callers pass the "query" values of kind="question"
+    parked items (kind="action" items are routed in agent.py, never sent here).
 
     The answer field on WorkerResult carries the generated response back.
     Falls back to an empty WorkerResult on any exception.
