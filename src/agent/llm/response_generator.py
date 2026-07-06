@@ -7,9 +7,8 @@ Input is intentionally minimal. Output is one spoken sentence.
 
 from __future__ import annotations
 
-import re
-
 from agent.llm.config import get_generation_llm
+from agent.llm.redaction import mask_confirmed
 from agent.logger import get_logger
 from agent.utils import build_generation_prompt, build_history
 
@@ -87,50 +86,37 @@ _FALLBACKS: dict[str, str] = {
     "FOLLOWUP_DECLINE": "Got it — that part I can't help with on this call.",
 }
 
-# Defensive re-mask for the Confirmed: line. Callers (Phase 4) already mask
-# member_id/dob as "on file" before passing real values; if a raw value slips
-# through anyway, catch member_id-style (M123456) and dob-style (MM/DD/YYYY)
-# values here so they are never handed to the generation LLM.
-_RAW_SENSITIVE_VALUE_RE = re.compile(r"^\s*(?:[Mm]\d{6}|\d{2}/\d{2}/\d{4})\s*$")
+# Guards fired AFTER this turn's value was captured — the model must never
+# ask for or re-confirm a slot on these turns; Python appends the next ask.
+_POST_CAPTURE_GUARDS = ("FOLLOWUP_ANSWER", "FOLLOWUP_PARK", "FOLLOWUP_DECLINE")
+
+_COLLECTING_NOTHING = "(nothing — this turn's value was captured; do not ask for or re-confirm any slot)"
 
 
-def _mask_sensitive(value: object) -> str:
-    v = str(value)
-    return "on file" if _RAW_SENSITIVE_VALUE_RE.match(v) else v
+def _tone_hint(attempt: int) -> str:
+    """Coarse Python-derived tone label — raw attempt counts never reach LLM 2."""
+    if attempt <= 1:
+        return "first ask"
+    if attempt == 2:
+        return "gentle retry"
+    return "patient retry"
 
 
-async def generate_recovery_message(
+def _render_payload(
     *,
     slot_name: str,
     attempt: int,
     guard: str,
     last_messages: list[dict],
     slot_label_override: str | None = None,
-    caller_name: str | None = None,
     confirmed_slots: dict | None = None,
     user_utterance: str | None = None,
     extracted_value: str | None = None,
-    pending_slots: list[str] | None = None,
     followup_query: str | None = None,
     ask_for_new_value: bool = False,
     allow_followup_event: bool = False,
 ) -> str:
-    """
-    Generate a natural recovery response via LLM 2 (Gemini).
-
-    guard: "CORRECTION" | "CLARIFY" | "INTERRUPTION" | "OFFTOPIC" | "RETRY" | "OFFTOPIC_AGENT"
-    last_messages: recent conversation history (role/content dicts); up to 8 messages used.
-    caller_name: caller's first name if already confirmed, for personalisation.
-    confirmed_slots: dict of slot names → confirmed values for this session.
-    user_utterance: the caller's most recent utterance, so the LLM knows what was said.
-    extracted_value: value successfully extracted this turn, if any.
-    pending_slots: ordered list of slot names still to be collected, if known.
-    followup_query: the caller's side question this turn (FOLLOWUP_* guards only).
-    ask_for_new_value: FOLLOWUP_ANSWER update detours — the sentence must end
-        by asking for the new value (renders "Ask for new value: yes").
-
-    Falls back to static string on any exception.
-    """
+    """Render the LLM-2 user payload. Pure function — unit-testable without an LLM."""
     history_text = "\n".join(build_history(last_messages, n=4))
 
     # Use the live prompt text when provided (dynamic slots such as relationship
@@ -140,6 +126,10 @@ async def generate_recovery_message(
         slot_name,
         (slot_name or _SLOT_LABELS["intent"]).replace("_", " "),
     )
+    # Post-confirmation guards with a captured value: nothing is being
+    # collected this turn — the real label would invite a spurious re-ask.
+    if guard in _POST_CAPTURE_GUARDS and extracted_value is not None:
+        slot_label = _COLLECTING_NOTHING
 
     content_lines = [
         "Conversation:",
@@ -150,17 +140,15 @@ async def generate_recovery_message(
         content_lines.append(f"Caller just said: {user_utterance}")
     content_lines += [
         f"Collecting: {slot_label}",
-        f"Attempt:    {attempt}",
+        f"Tone:       {_tone_hint(attempt)}",
     ]
     if confirmed_slots is not None and len(confirmed_slots) > 0:
-        # Accepts real values (Phase 4 sends them for FOLLOWUP_ANSWER);
-        # defensively re-mask anything member_id/dob-shaped that slipped through.
-        filled = ", ".join(f"{k}={_mask_sensitive(v)}" for k, v in confirmed_slots.items())
+        # Centralized masking: whatever a call site passes, masked slots (and
+        # anything member_id/dob-shaped) render as "on file" — no site can leak.
+        filled = ", ".join(f"{k}={v}" for k, v in mask_confirmed(confirmed_slots).items())
         content_lines.append(f"Confirmed:  {filled}")
     elif confirmed_slots is not None:
         content_lines.append("Confirmed:  nothing yet")
-    if pending_slots:
-        content_lines.append(f"Pending:    {', '.join(pending_slots)}")
     if extracted_value is not None:
         content_lines.append(f"Extracted this turn: {extracted_value}")
     if followup_query:
@@ -180,7 +168,56 @@ async def generate_recovery_message(
     if guard in _event_guards:
         content_lines.append(f"Event:      {guard}")
 
-    user_content = "\n".join(content_lines)
+    return "\n".join(content_lines)
+
+
+async def generate_recovery_message(
+    *,
+    slot_name: str,
+    attempt: int,
+    guard: str,
+    last_messages: list[dict],
+    slot_label_override: str | None = None,
+    caller_name: str | None = None,
+    confirmed_slots: dict | None = None,
+    user_utterance: str | None = None,
+    extracted_value: str | None = None,
+    followup_query: str | None = None,
+    ask_for_new_value: bool = False,
+    allow_followup_event: bool = False,
+) -> str:
+    """
+    Generate a natural recovery response via LLM 2 (Gemini).
+
+    guard: "CORRECTION" | "CLARIFY" | "INTERRUPTION" | "OFFTOPIC" | "RETRY" | "OFFTOPIC_AGENT"
+    last_messages: recent conversation history (role/content dicts); up to 8 messages used.
+    caller_name: caller's first name if already confirmed, for personalisation.
+    confirmed_slots: dict of slot names → confirmed values for this session;
+        masked centrally here (see llm.redaction) before reaching the LLM.
+    user_utterance: the caller's most recent utterance, so the LLM knows what was said.
+    extracted_value: value successfully extracted this turn, if any.
+    followup_query: the caller's side question this turn (FOLLOWUP_* guards only).
+    ask_for_new_value: FOLLOWUP_ANSWER update detours — the sentence must end
+        by asking for the new value (renders "Ask for new value: yes").
+
+    attempt is consumed in Python only (coarse Tone: hint); the raw count is
+    never forwarded to the LLM.
+
+    Falls back to static string on any exception.
+    """
+    user_content = _render_payload(
+        slot_name=slot_name,
+        attempt=attempt,
+        guard=guard,
+        last_messages=last_messages,
+        slot_label_override=slot_label_override,
+        confirmed_slots=confirmed_slots,
+        user_utterance=user_utterance,
+        extracted_value=extracted_value,
+        followup_query=followup_query,
+        ask_for_new_value=ask_for_new_value,
+        allow_followup_event=allow_followup_event,
+    )
 
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
@@ -198,4 +235,8 @@ async def generate_recovery_message(
     except Exception:
         logger.exception("generate_recovery_message: LLM 2 failed — using fallback")
 
-    return _FALLBACKS.get(guard, "Could you try again?").format(slot_label=slot_label)
+    fallback_label = slot_label_override or _SLOT_LABELS.get(
+        slot_name,
+        (slot_name or _SLOT_LABELS["intent"]).replace("_", " "),
+    )
+    return _FALLBACKS.get(guard, "Could you try again?").format(slot_label=fallback_label)

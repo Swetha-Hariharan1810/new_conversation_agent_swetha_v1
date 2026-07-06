@@ -222,7 +222,7 @@ async def warm_llm_connections() -> None:
             await llm.ainvoke(
                 [
                     SystemMessage(content=system_prompt_text),
-                    HumanMessage(content="Collecting: first_name\nAttempt: 0\nEvent: RETRY"),
+                    HumanMessage(content="Collecting: first_name\nTone: first ask\nEvent: RETRY"),
                 ]
             )
         except Exception:

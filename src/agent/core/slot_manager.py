@@ -39,7 +39,6 @@ _CANNOT_PROVIDE_MSG = "No problem — let me connect you with a representative "
 def _mk_session_ctx(
     *,
     extracted_val: str | None = None,
-    pending_slots: list[str] | None = None,
     followup_query: str | None = None,
     confirmed_values: dict | None = None,
 ) -> dict:
@@ -47,19 +46,12 @@ def _mk_session_ctx(
     ctx: dict = {}
     if extracted_val is not None:
         ctx["extracted_val"] = extracted_val
-    if pending_slots is not None:
-        ctx["pending_slots"] = pending_slots
     if followup_query:
         ctx["followup_query"] = followup_query
     if confirmed_values is not None:
         ctx["confirmed_values"] = confirmed_values
     return ctx
 
-
-# Slots whose raw values must never be spoken back or handed to the generation
-# LLM. When building the Confirmed: line for FOLLOWUP_ANSWER we substitute the
-# placeholder "on file" for these.
-_MASKED_VALUE_SLOTS: frozenset[str] = frozenset({"member_id", "dob"})
 
 # WorkerResult.followup_disposition → generation-LLM guard label.
 # Missing/none defaults to FOLLOWUP_DECLINE: acknowledge and move on is always
@@ -215,7 +207,6 @@ class SlotManagerMixin:
             extracted_value=extracted_this_turn
             if extracted_this_turn is not None
             else sc.get("extracted_val"),
-            pending_slots=sc.get("pending_slots"),
             followup_query=sc.get("followup_query"),
         )
         return text
@@ -332,9 +323,11 @@ class SlotManagerMixin:
 
         member_id / dob are never passed raw — masked as "on file".
         """
+        from agent.llm.redaction import MASKED_SLOTS
+
         values: dict = {}
         for s in ctx.confirmed_slots:
-            if s in _MASKED_VALUE_SLOTS:
+            if s in MASKED_SLOTS:
                 values[s] = "on file"
                 continue
             v = (collected or {}).get(s) or state.get(s) or ""
@@ -371,7 +364,6 @@ class SlotManagerMixin:
         flavor: str,
         collected: Optional[dict] = None,
         extracted_this_turn: str | None = None,
-        pending_slots: list[str] | None = None,
         followup_query: str = "",
     ) -> dict:
         """Open a detour to re-collect ``target`` before returning to ``return_to``.
@@ -430,7 +422,6 @@ class SlotManagerMixin:
             confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
             user_utterance=_last_user_msg(messages),
             extracted_value=extracted_this_turn,
-            pending_slots=pending_slots,
             followup_query=followup_query or None,
             # Case B (FOLLOWUP_ANSWER flavor): the sentence must end by asking
             # for the new value — followup_answer.md keys off this line.
@@ -566,7 +557,6 @@ class SlotManagerMixin:
                     flavor="answer",
                     collected=collected,
                     extracted_this_turn=normalized,
-                    pending_slots=remaining,
                     followup_query=followup_query,
                 )
                 for cleared in cascade_cleared:
@@ -592,7 +582,6 @@ class SlotManagerMixin:
                 flavor="invalid",
                 collected=collected,
                 extracted_this_turn=normalized,
-                pending_slots=remaining,
                 followup_query=followup_query,
             )
             for cleared in cascade_cleared:
@@ -605,7 +594,6 @@ class SlotManagerMixin:
         guard = _DISPOSITION_GUARDS.get(disposition_value, "FOLLOWUP_DECLINE")
         session_context = _mk_session_ctx(
             extracted_val=normalized,
-            pending_slots=remaining,
             followup_query=followup_query,
             confirmed_values=(
                 self._confirmed_slot_values(ctx, state, collected) if guard == "FOLLOWUP_ANSWER" else None
@@ -835,7 +823,6 @@ class SlotManagerMixin:
                             messages,
                             flavor="bare",
                             collected=collected,
-                            pending_slots=pending_slots,
                         )
                         return None, detour
                     # Target not updatable here — decline: acknowledge without
@@ -847,7 +834,6 @@ class SlotManagerMixin:
                         messages,
                         guard="FOLLOWUP_DECLINE",
                         session_context=_mk_session_ctx(
-                            pending_slots=pending_slots,
                             followup_query=f"update {update_target.replace('_', ' ')}",
                         ),
                     )
@@ -879,7 +865,6 @@ class SlotManagerMixin:
                             messages,
                             flavor="invalid",
                             collected=collected,
-                            pending_slots=pending_slots,
                         )
                         return None, detour
 

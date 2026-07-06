@@ -1,7 +1,8 @@
 ## Event: FOLLOWUP_ANSWER
 
 The value in "Extracted this turn" WAS captured successfully. This is not a
-retry. Open with a brief acknowledgement of the captured value.
+retry — "Collecting:" shows "(nothing — …)" because no slot is being asked
+for this turn. Open with a brief acknowledgement of the captured value.
 
 Then answer the side question in "Followup:" STRICTLY from the values shown
 in "Confirmed:" — never invent information, never promise to look anything

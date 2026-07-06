@@ -65,6 +65,7 @@ class ConversationGuardsMixin:
     async def _generate_guard_response(
         self, state: State, guard: str, *, attempt_override: int | None = None
     ) -> str:
+        from agent.llm.redaction import _is_reportable_slot, mask_confirmed
         from agent.llm.response_generator import generate_recovery_message
         from agent.utils import _last_user_msg
 
@@ -76,17 +77,20 @@ class ConversationGuardsMixin:
             else (slot_state.get("attempt_count", 0) if isinstance(slot_state, dict) else 0)
         )
         messages = list(state.get("messages") or [])
+        # Values only — never the attempt dicts. Counter/flag pseudo-slots
+        # (name_confirmed, update_*, *_cycles …) are not reportable values.
+        confirmed = {
+            k: attempt_rec.get("last_value") or "confirmed"
+            for k, attempt_rec in (state.get("slot_attempts") or {}).items()
+            if isinstance(attempt_rec, dict) and attempt_rec.get("confirmed") and _is_reportable_slot(k)
+        }
         return await generate_recovery_message(
             slot_name=awaiting,
             attempt=attempt,
             guard=guard,
             last_messages=messages[-4:],
             user_utterance=_last_user_msg(messages),
-            confirmed_slots={
-                k: v
-                for k, v in (state.get("slot_attempts") or {}).items()
-                if isinstance(v, dict) and v.get("confirmed")
-            },
+            confirmed_slots=mask_confirmed(confirmed),
         )
 
     def _handle_non_member_caller(
