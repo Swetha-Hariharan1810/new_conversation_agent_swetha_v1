@@ -86,11 +86,20 @@ class Orchestrator:
         )
         if fast_route:
             logger.info("orchestrator: fast-path", extra={"route": fast_route})
-            return {
+            updates = {
                 "next_node": fast_route,
                 "is_interrupt": False,
                 "orchestrator_reasoning": f"fast-path → {fast_route}",
             }
+            # Routed slot update return hop (Phase 4): consume the pending
+            # marker, restore the requester's awaiting slot, and arm the
+            # one-shot resume flag the requester acknowledges the update with.
+            pending_update = state.get("pending_slot_update") or {}
+            if pending_update.get("return_to_agent") == fast_route:
+                updates["pending_slot_update"] = {}
+                updates["slot_update_resume"] = True
+                updates["awaiting_slot"] = pending_update.get("return_awaiting", "")
+            return updates
 
         utterance = _last_user_msg(list(state.get("messages") or []))
 

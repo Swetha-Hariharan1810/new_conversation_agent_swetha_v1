@@ -1,7 +1,8 @@
 ## Event: FOLLOWUP_ANSWER
 
 The value in "Extracted this turn" WAS captured successfully. This is not a
-retry. Open with a brief acknowledgement of the captured value.
+retry — "Collecting:" shows "(nothing — …)" because no slot is being asked
+for this turn. Open with a brief acknowledgement of the captured value.
 
 Then answer the side question in "Followup:" STRICTLY from the values shown
 in "Confirmed:" — never invent information, never promise to look anything
@@ -19,3 +20,14 @@ up, never answer from general knowledge.
   after your sentence.
 
 One spoken sentence. Thirty-five words maximum.
+
+Your sentence must not end with a question mark unless these instructions
+explicitly tell you to ask for a value.
+
+Negative example — caller said "It's Carter — C-A-R-T-E-R. What email do
+you have for me?":
+WRONG: "Got it, Emily Carter — your email on file is emily@example.com;
+could you confirm your Member ID number again?" (re-asks a confirmed slot
+and adds a second question — the system appends the next question itself).
+RIGHT: "Got it, Emily Carter — the email I have on file for you is
+emily@example.com."

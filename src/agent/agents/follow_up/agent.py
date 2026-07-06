@@ -41,11 +41,12 @@ from agent.agents.follow_up.constants import (
 )
 from agent.agents.follow_up.llm import extract_follow_up_decision
 from agent.core.agent import BaseAgent
+from agent.core.slot_ownership import OWNER_HUMAN, OWNER_VERIFICATION, slot_update_owner
 from agent.llm.config import get_follow_up_llm
 from agent.llm.schema import FollowUpIntent
 from agent.logger import get_logger
 from agent.orchestration.orchestration import AgentNode
-from agent.state import State, reset_for_new_intent
+from agent.state import State, normalize_parked_followups, reset_for_new_intent
 from agent.utils import (
     _last_assistant_msg,
     _last_user_msg,
@@ -156,12 +157,19 @@ class FollowUpAgent(BaseAgent):
         last_user = _last_user_msg(messages)
         last_agent = _last_assistant_msg(messages)
 
-        # ── Parked follow-ups (Phase 6) ──────────────────────────────────────
-        # Questions parked earlier in the call (FOLLOWUP_PARK during slot
-        # collection / intake). Surface them to the LLM this turn so the
-        # existing QUESTION machinery answers them, then clear the list on
-        # every post-LLM outcome.
-        parked_followups = [q.strip() for q in (state.get("parked_followups") or []) if q and q.strip()]
+        # ── Parked follow-ups (Phase 6, structured in Phase 3) ──────────────
+        # Items parked earlier in the call (FOLLOWUP_PARK during slot
+        # collection / intake). kind="question" items are surfaced to the LLM
+        # this turn so the existing QUESTION machinery answers them; the list
+        # is cleared on every post-LLM outcome. kind="action" items are update
+        # requests — routed via the slot ownership registry below, never
+        # blanket-escalated.
+        parked_items = normalize_parked_followups(state.get("parked_followups"))
+        parked_questions = [p["query"] for p in parked_items if p["kind"] == "question"]
+        parked_actions = [p for p in parked_items if p["kind"] == "action"]
+
+        if parked_actions:
+            return self._route_parked_action(state, parked_actions[0])
 
         # ── PHASE 0: First entry — ask opening question ───────────────────────
         if not state.get("follow_up_turn_count"):
@@ -187,7 +195,7 @@ class FollowUpAgent(BaseAgent):
                 # human turn) or is a bare affirmation that carries no intent.
                 # Parked follow-ups force the LLM path too — the member was
                 # promised an answer, so answer before asking "anything else?".
-                if _last_user_is_question(last_user) or parked_followups:
+                if _last_user_is_question(last_user) or parked_questions:
                     # Fall through to LLM classification.
                     # Seed counters so the rest of the function runs correctly.
                     state = {
@@ -243,7 +251,7 @@ class FollowUpAgent(BaseAgent):
         # ── FAST PATH: bare affirmations — zero LLM calls ───────────────────
         # Skipped when parked follow-ups are pending: those need the LLM to
         # generate the promised answer, not a nudge.
-        if last_user and last_user.lower().strip() in BARE_AFFIRMATIONS and not parked_followups:
+        if last_user and last_user.lower().strip() in BARE_AFFIRMATIONS and not parked_questions:
             logger.info("follow_up_agent: bare affirmation — nudging")
             result = self.ask_member(state, pick(MSG_NUDGE))
             result["follow_up_turn_count"] = turn_count
@@ -265,14 +273,14 @@ class FollowUpAgent(BaseAgent):
             pending_slots=None,  # post-flow Q&A: no slots left to collect
             recent_messages=messages[-6:],
             state=state,
-            parked_followups=parked_followups,
+            parked_followups=parked_questions,
         )
 
         # Parked follow-ups were surfaced to the LLM this turn — consumed.
         # Every return path below carries the cleared list (reroutes clear it
         # via reset_for_new_intent already).
         def _consume_parked(result: dict) -> dict:
-            if parked_followups and "parked_followups" not in result:
+            if parked_items and "parked_followups" not in result:
                 result["parked_followups"] = []
             return result
 
@@ -390,6 +398,46 @@ class FollowUpAgent(BaseAgent):
         result["follow_up_last_question"] = last_user
         result["follow_up_cannot_answer_count"] = 0
         return _consume_parked(result)
+
+    def _route_parked_action(self, state: State, action: dict) -> dict:
+        """Route a parked kind="action" update request via the slot ownership
+        registry (core.slot_ownership) instead of blanket-escalating.
+
+        - OWNER_VERIFICATION slots (identity): re-run verification for the
+          current intent — re-verification re-collects the slot.
+        - Intent-owned slots: re-run the owning flow, respecting the intake
+          re-screen split exactly like a NEW_INTENT hand-off.
+        - OWNER_HUMAN slots (or verification-owned with no intent to resume):
+          escalate with the update-request message — the only case that still
+          reaches MSG_UPDATE_REQUEST_ESCALATE for a parked item.
+
+        Reroutes clear parked_followups via reset_for_new_intent, matching the
+        pre-existing behavior of every mid-call reroute.
+        """
+        target = (action.get("target") or "").strip()
+        owner = slot_update_owner(target)
+        logger.info(
+            "follow_up_agent: parked update action — routing via slot ownership",
+            extra={"target": target, "owner": owner, "query": action.get("query", "")},
+        )
+        if owner == OWNER_VERIFICATION:
+            intent = (state.get("call_intent") or "").strip()
+            if intent:
+                return self._reroute_through_verification(state, intent)
+            owner = OWNER_HUMAN  # no flow to resume after re-verifying
+        if owner != OWNER_HUMAN:
+            # Owner is an intake intent — re-run the owning flow.
+            if owner in INTAKE_RESCREEN_INTENTS:
+                return self._reroute_through_intake(state, owner)
+            return self._reroute_through_verification(state, owner)
+        result = self.signal_escalate(
+            state,
+            MSG_UPDATE_REQUEST_ESCALATE,
+            reason=f"parked_update_{target or 'unknown'}_human_only",
+            initiator="Agent",
+        )
+        result["parked_followups"] = []
+        return result
 
     def _reroute_through_verification(self, state: State, detected_intent: str) -> dict:
         """

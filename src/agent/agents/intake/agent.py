@@ -170,8 +170,10 @@ class IntakeAgent(BaseAgent):
             bridge["next_node"] = AgentNode.VERIFICATION.value
             bridge["metadata_events"] = []
             if guard == "FOLLOWUP_PARK" and followup_query:
-                parked = list(state.get("parked_followups") or [])
-                parked.append(followup_query)
+                from agent.state import normalize_parked_followups
+
+                parked = normalize_parked_followups(state.get("parked_followups"))
+                parked.append({"query": followup_query, "kind": "question", "target": ""})
                 bridge["parked_followups"] = parked
             if provider_type:
                 bridge["provider_type"] = provider_type

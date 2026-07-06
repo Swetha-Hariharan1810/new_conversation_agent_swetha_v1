@@ -26,6 +26,7 @@ from agent.core.constants import ABUSE_PATTERNS, INTERRUPTION_PATTERNS, MAX_SLOT
 from agent.responses.static import (
     MSG_ABUSE_ESCALATION,
     MSG_OFFTOPIC_GLOBAL,
+    MSG_REPEATED_REQUEST_ESCALATE,
     MSG_SELF_HARM_ESCALATION,
     MSG_TRANSFER_REQUEST,
 )
@@ -43,6 +44,12 @@ _NON_MEMBER_ROUTING: dict[str, tuple[str, str]] = {
 
 _NON_MEMBER_FALLBACK_LABEL = "callers with this type of enquiry"
 _NON_MEMBER_FALLBACK_NUMBER = "1-800-555-0200"
+
+
+def _normalize_request_key(text: str) -> str:
+    """Stable counter key for an ignored/deflected caller request."""
+    return re.sub(r"[^a-z0-9]+", "_", (text or "").lower()).strip("_")[:48]
+
 
 _NON_MEMBER_MSG_TEMPLATES = [
     (
@@ -65,6 +72,7 @@ class ConversationGuardsMixin:
     async def _generate_guard_response(
         self, state: State, guard: str, *, attempt_override: int | None = None
     ) -> str:
+        from agent.llm.redaction import _is_reportable_slot, mask_confirmed
         from agent.llm.response_generator import generate_recovery_message
         from agent.utils import _last_user_msg
 
@@ -76,17 +84,20 @@ class ConversationGuardsMixin:
             else (slot_state.get("attempt_count", 0) if isinstance(slot_state, dict) else 0)
         )
         messages = list(state.get("messages") or [])
+        # Values only — never the attempt dicts. Counter/flag pseudo-slots
+        # (name_confirmed, update_*, *_cycles …) are not reportable values.
+        confirmed = {
+            k: attempt_rec.get("last_value") or "confirmed"
+            for k, attempt_rec in (state.get("slot_attempts") or {}).items()
+            if isinstance(attempt_rec, dict) and attempt_rec.get("confirmed") and _is_reportable_slot(k)
+        }
         return await generate_recovery_message(
             slot_name=awaiting,
             attempt=attempt,
             guard=guard,
             last_messages=messages[-4:],
             user_utterance=_last_user_msg(messages),
-            confirmed_slots={
-                k: v
-                for k, v in (state.get("slot_attempts") or {}).items()
-                if isinstance(v, dict) and v.get("confirmed")
-            },
+            confirmed_slots=mask_confirmed(confirmed),
         )
 
     def _handle_non_member_caller(
@@ -202,6 +213,8 @@ class ConversationGuardsMixin:
                 result["offtopic_global_count"] = offtopic_count
                 return result
             if guard == "OFFTOPIC_AGENT":
+                if escalation := self._repeated_ignored_request(state, user_text):
+                    return escalation
                 msg = await self._generate_guard_response(state, "OFFTOPIC_AGENT")
                 return self.ask_member(state, msg)
             # guard == "NONE"
@@ -236,6 +249,21 @@ class ConversationGuardsMixin:
             msg = await self._generate_guard_response(state, "INTERRUPTION")
             return self.ask_member(state, msg)
         return None
+
+    def _repeated_ignored_request(self, state: State, user_text: str) -> Optional[dict]:
+        """Repeated-ignored-request guard (Phase 4): the second time the caller
+        repeats the same deflected request, stop re-asking the same thing
+        verbatim — escalate honestly instead."""
+        request_key = _normalize_request_key(user_text)
+        if not request_key:
+            return None
+        return self.guard_loop_limit(
+            state,
+            f"ignored_request_{request_key}",
+            2,
+            escalate_message=pick(MSG_REPEATED_REQUEST_ESCALATE),
+            escalate_reason="repeated_ignored_request_offtopic",
+        )
 
     def _detect_abuse(self, text: str) -> bool:
         t = (text or "").lower().strip()

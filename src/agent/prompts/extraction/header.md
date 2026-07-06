@@ -100,12 +100,38 @@ Set followup_query to the caller's side question (short paraphrase).
 Set followup_disposition:
   answer_now — the question is answerable purely from values in Confirmed:
                (or is a request to repeat/read back something already said,
-               or is an update request per UPDATE REQUESTS above)
+               or is an update request per UPDATE REQUESTS above).
+               Also answer_now when the CURRENT stage itself already answers
+               the question — e.g. a notification-timing question asked while
+               delivery is being arranged is answerable from the delivery
+               window just stated. Never park what the current flow can
+               answer, or what the very next step handles in one turn.
   park       — the question maps to a slot in Pending: or a later stage of
                this same call (e.g. asks about notifications while identity
                is still being verified)
   decline    — anything else: unrelated to this call, requires data the
                system will never collect, or general knowledge
+
+If the question concerns delivery, notifications, timelines, or anything
+this call will reach later, choose park — never decline.
+
+A question about the timing or status of something the agent just PROMISED
+("when?", "when will you update my zip?", "did you change it yet?") is NOT a
+slot answer and must never be extracted as one. Classify it as
+answered_with_followup (or ambiguous when no slot value is present) with
+followup_query = "timing of <promised item>".
+
+### Disposition quick examples
+| Side question                                                | Disposition |
+|--------------------------------------------------------------|-------------|
+| "will I get a text/notification when it's sent?"             | park        |
+| "how long will delivery take?"                               | park        |
+| "when will I hear back about this?"                          | park        |
+| "what's your favorite color?"                                | decline     |
+| "do you sell car insurance?"                                 | decline     |
+| "can you repeat my ZIP?" (zip_code in Confirmed:)            | answer_now  |
+| "what email do you have for me?" (email in Confirmed:)       | answer_now  |
+
 When event_type != answered_with_followup, omit or set "none".
 
 ### ANSWERED vs AMBIGUOUS quick examples

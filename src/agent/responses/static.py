@@ -19,6 +19,19 @@ MSG_TRANSFER_REQUEST = [
     "No problem. Let me connect you to one of our live representatives. Please hold.",
     "Of course. I'll transfer you to a specialist right away. Please hold.",
 ]
+
+# Honest escalation after a caller's request was declined/deflected twice —
+# never repeat the same re-ask a third time (Phase 4 ignored-request guard).
+MSG_REPEATED_REQUEST_ESCALATE = [
+    (
+        "I hear you — I haven't been able to take care of that for you, "
+        "so let me connect you with a representative who can. Please hold."
+    ),
+    (
+        "You've asked about that a couple of times and I can't handle it on this call — "
+        "I'm transferring you to a representative who can help. Please hold."
+    ),
+]
 MSG_OFFTOPIC_GLOBAL = [
     "I can help with provider services or claims — is that what you're calling about today?",
     "Happy to help with provider services or claims. What can I do for you?",
