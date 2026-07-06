@@ -7,6 +7,9 @@ Input is intentionally minimal. Output is one spoken sentence.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
+
 from agent.llm.config import get_generation_llm
 from agent.llm.redaction import mask_confirmed
 from agent.logger import get_logger
@@ -63,9 +66,12 @@ _SLOT_LABELS: dict[str, str] = {
 #                  |                          | for later in the call — acknowledge only
 # "FOLLOWUP_DECLINE"| _collect_slot (Phase 4) | Slot confirmed + side question we cannot
 #                  |                          | answer — acknowledge and move on
+# "CORRECTION_ACK" | _handle_answered_followup| Slot confirmed + correction applied,
+#                  | (Phase 2 hygiene)        | no side question — acknowledge both
 #
-# For all three FOLLOWUP_* labels the model must NOT ask for any slot — Python
-# appends the next static ask (or a detour ask) after the generated sentence.
+# For the FOLLOWUP_* and CORRECTION_ACK labels the model must NOT ask for any
+# slot — Python appends the next static ask (or a detour ask) after the
+# generated sentence.
 #
 # The distinction between RETRY and CLARIFY matters:
 #   RETRY   → attempt_count was just incremented; LLM should re-ask firmly
@@ -84,11 +90,12 @@ _FALLBACKS: dict[str, str] = {
     "FOLLOWUP_ANSWER": "Got it — {slot_label} noted.",
     "FOLLOWUP_PARK": "Got it — and I'll come back to your question shortly.",
     "FOLLOWUP_DECLINE": "Got it — that part I can't help with on this call.",
+    "CORRECTION_ACK": "Got it — I've updated your {slot_label}.",
 }
 
 # Guards fired AFTER this turn's value was captured — the model must never
 # ask for or re-confirm a slot on these turns; Python appends the next ask.
-_POST_CAPTURE_GUARDS = ("FOLLOWUP_ANSWER", "FOLLOWUP_PARK", "FOLLOWUP_DECLINE")
+_POST_CAPTURE_GUARDS = ("FOLLOWUP_ANSWER", "FOLLOWUP_PARK", "FOLLOWUP_DECLINE", "CORRECTION_ACK")
 
 _COLLECTING_NOTHING = "(nothing — this turn's value was captured; do not ask for or re-confirm any slot)"
 
@@ -100,6 +107,101 @@ def _tone_hint(attempt: int) -> str:
     if attempt == 2:
         return "gentle retry"
     return "patient retry"
+
+
+# ── Output sanitizer (Phase 2: single-ask invariant) ─────────────────────────
+# Spoken phrasings the generation LLM uses for each slot, beyond the plain
+# slot name with underscores replaced. Used only for fuzzy ask-detection in
+# sanitize_generated — not for rendering.
+SLOT_ASK_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "dob": ("date of birth", "birth date", "birthdate"),
+    "member_id": ("member id", "member id number", "member number"),
+    "first_name": ("first name",),
+    "last_name": ("last name",),
+    "zip_code": ("zip code", "zip"),
+    "phone": ("phone number",),
+    "phone_confirmed": ("phone number",),
+    "phone_confirmation": ("phone number",),
+    "email": ("email address",),
+    "reference_number": ("reference number",),
+    "notification_method": ("notification channel", "notification method"),
+    "delivery_method": ("delivery method", "fax or email"),
+}
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _slot_match_terms(name_or_label: str) -> tuple[str, ...]:
+    """Fuzzy-match terms for a slot: its name with _ → space (label qualifiers
+    after an em-dash dropped) plus any SLOT_ASK_SYNONYMS entries."""
+    key = (name_or_label or "").strip().lower()
+    base = key.split("—")[0].strip().replace("_", " ")
+    terms = {base} if base else set()
+    terms.update(SLOT_ASK_SYNONYMS.get(key, ()))
+    return tuple(terms)
+
+
+def _mentions(sentence: str, terms: Sequence[str]) -> bool:
+    lowered = sentence.lower()
+    return any(t in lowered for t in terms)
+
+
+def sanitize_generated(
+    text: str,
+    *,
+    guard: str,
+    next_slot_label: str | None = None,
+    confirmed_labels: Sequence[str] = (),
+    will_append_ask: bool = False,
+    fallback_slot_label: str = "",
+) -> str:
+    """Enforce the single-ask invariant on LLM-2 output (Bug A).
+
+    - Any sentence that asks for (contains "?" and fuzzy-matches) a slot in
+      ``confirmed_labels`` is stripped — the model must never re-ask a
+      confirmed slot.
+    - When ``will_append_ask`` is True (Python appends _next_slot_ask after
+      this text), sentences mentioning ``next_slot_label`` and any trailing
+      question sentences are also stripped, so the appended ask is the one
+      and only ask in the combined utterance.
+    - If sanitization empties the text, the guard's _FALLBACKS entry is
+      substituted (formatted with ``fallback_slot_label``).
+
+    Every strip is logged at INFO with the guard and dropped sentence for
+    eval visibility.
+    """
+    sentences = [s for s in _SENTENCE_SPLIT_RE.split((text or "").strip()) if s.strip()]
+    confirmed_terms = [_slot_match_terms(label) for label in confirmed_labels]
+
+    kept: list[str] = []
+    for sentence in sentences:
+        if "?" in sentence and any(_mentions(sentence, terms) for terms in confirmed_terms):
+            logger.info("sanitize_generated: stripped confirmed-slot re-ask [guard=%s]: %r", guard, sentence)
+            continue
+        kept.append(sentence)
+
+    if will_append_ask:
+        if next_slot_label:
+            next_terms = _slot_match_terms(next_slot_label)
+            remaining = []
+            for sentence in kept:
+                if _mentions(sentence, next_terms):
+                    logger.info(
+                        "sanitize_generated: stripped next-slot mention [guard=%s]: %r", guard, sentence
+                    )
+                    continue
+                remaining.append(sentence)
+            kept = remaining
+        while kept and kept[-1].rstrip().endswith("?"):
+            logger.info("sanitize_generated: stripped trailing question [guard=%s]: %r", guard, kept[-1])
+            kept.pop()
+
+    result = " ".join(s.strip() for s in kept).strip()
+    if not result:
+        template = _FALLBACKS.get(guard, "Got it.")
+        result = template.format(slot_label=fallback_slot_label or "that")
+        logger.info("sanitize_generated: text emptied — substituting %s fallback", guard)
+    return result
 
 
 def _render_payload(
@@ -157,6 +259,7 @@ def _render_payload(
         content_lines.append("Ask for new value: yes")
     _event_guards = (
         "CORRECTION",
+        "CORRECTION_ACK",
         "CLARIFY",
         "OFFTOPIC_AGENT",
         "FOLLOWUP_ANSWER",

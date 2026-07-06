@@ -13,3 +13,14 @@ Do NOT ask for any slot — the system appends the next question after your
 sentence.
 
 One spoken sentence. Thirty-five words maximum.
+
+Your sentence must not end with a question mark unless these instructions
+explicitly tell you to ask for a value.
+
+Negative example — caller said "Emily Carter — and will I get text
+updates about my claim?":
+WRONG: "Thanks Emily Carter, I'll cover notifications in just a moment —
+now could you give me your date of birth?" (asks for a slot — the system
+appends the next question itself).
+RIGHT: "Thanks Emily Carter — I'll get to text updates in just a moment
+once we finish verifying you."

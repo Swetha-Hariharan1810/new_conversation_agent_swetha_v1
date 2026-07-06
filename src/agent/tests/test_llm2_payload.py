@@ -122,7 +122,7 @@ def test_payload_has_tone_but_never_attempt_or_pending():
     assert "Pending:" not in payload
 
 
-@pytest.mark.parametrize("guard", ["FOLLOWUP_ANSWER", "FOLLOWUP_PARK", "FOLLOWUP_DECLINE"])
+@pytest.mark.parametrize("guard", ["FOLLOWUP_ANSWER", "FOLLOWUP_PARK", "FOLLOWUP_DECLINE", "CORRECTION_ACK"])
 def test_followup_payload_has_neither_attempt_nor_pending(guard):
     payload = _render_payload(
         slot_name="dob",
@@ -138,7 +138,7 @@ def test_followup_payload_has_neither_attempt_nor_pending(guard):
     assert f"Event:      {guard}" in payload
 
 
-@pytest.mark.parametrize("guard", ["FOLLOWUP_ANSWER", "FOLLOWUP_PARK", "FOLLOWUP_DECLINE"])
+@pytest.mark.parametrize("guard", ["FOLLOWUP_ANSWER", "FOLLOWUP_PARK", "FOLLOWUP_DECLINE", "CORRECTION_ACK"])
 def test_followup_with_captured_value_collects_nothing(guard):
     payload = _render_payload(
         slot_name="dob",

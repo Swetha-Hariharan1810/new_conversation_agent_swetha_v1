@@ -175,10 +175,13 @@ class SlotManagerMixin:
         guard: str = "RETRY",
         session_context: dict | None = None,
         extracted_this_turn: str | None = None,
+        next_slot_label: str | None = None,
+        will_append_ask: bool = False,
+        fallback_slot_label: str | None = None,
     ) -> str:
         # Lazy import: core.slot_manager → llm.response_generator → llm.config → core (via schema);
         # importing at module level would create a core → llm → core cycle.
-        from agent.llm.response_generator import generate_recovery_message
+        from agent.llm.response_generator import generate_recovery_message, sanitize_generated
 
         slot_state = self.get_slot(slot_name)
         slot_label_override: str | None = None
@@ -209,7 +212,19 @@ class SlotManagerMixin:
             else sc.get("extracted_val"),
             followup_query=sc.get("followup_query"),
         )
-        return text
+        # Single-ask invariant: strip re-asks of confirmed slots always; when a
+        # static ask is appended after this text, also strip any competing
+        # question so the appended ask is the only one. slot_name itself is
+        # exempt — it is the slot being collected (RETRY/CLARIFY re-ask it) or
+        # the value just captured (FOLLOWUP acks mention it).
+        return sanitize_generated(
+            text,
+            guard=guard,
+            next_slot_label=next_slot_label,
+            confirmed_labels=tuple(s for s in (ctx.confirmed_slots or []) if s != slot_name),
+            will_append_ask=will_append_ask,
+            fallback_slot_label=fallback_slot_label or slot_name.replace("_", " "),
+        )
 
     async def _generate_correction_ack(
         self,
@@ -222,7 +237,7 @@ class SlotManagerMixin:
         decision=None,
     ) -> str:
         from agent.agents.verification.handlers import _NORMALIZERS
-        from agent.llm.response_generator import generate_recovery_message
+        from agent.llm.response_generator import generate_recovery_message, sanitize_generated
 
         corrected_label = corrected_fields[0].replace("_", " ") if corrected_fields else "that"
 
@@ -257,7 +272,7 @@ class SlotManagerMixin:
                 f"caller corrected {corrected_label}" + f" — now re-ask for {awaiting_slot.replace('_', ' ')}"
             )
 
-        return await generate_recovery_message(
+        text = await generate_recovery_message(
             slot_name=awaiting_slot,
             attempt=0,
             guard="CORRECTION",
@@ -266,6 +281,18 @@ class SlotManagerMixin:
             caller_name=ctx.caller_first_name,
             confirmed_slots=dict.fromkeys(ctx.confirmed_slots, "confirmed"),
             user_utterance=_last_user_msg(messages[-6:]),
+        )
+        # The ack's own re-ask targets awaiting_slot (not confirmed) and it is
+        # explicitly told to read corrected fields back — exempt those; any
+        # OTHER confirmed slot re-asked here is a double-ask and is stripped.
+        return sanitize_generated(
+            text,
+            guard="CORRECTION",
+            confirmed_labels=tuple(
+                s for s in (ctx.confirmed_slots or []) if s not in corrected_fields and s != awaiting_slot
+            ),
+            will_append_ask=False,
+            fallback_slot_label=awaiting_slot.replace("_", " "),
         )
 
     # -------------------------------------------------------------------------
@@ -591,7 +618,13 @@ class SlotManagerMixin:
             return normalized, detour
 
         # ── Disposition routing (answer_now / park / decline / none) ────────
-        guard = _DISPOSITION_GUARDS.get(disposition_value, "FOLLOWUP_DECLINE")
+        # Pure correction (corrections applied, no side question, no
+        # disposition): a decline would wrongly tell the caller "I can't help
+        # with that" about their own correction — acknowledge it instead.
+        if applied and not followup_query and disposition_value in ("none", ""):
+            guard = "CORRECTION_ACK"
+        else:
+            guard = _DISPOSITION_GUARDS.get(disposition_value, "FOLLOWUP_DECLINE")
         session_context = _mk_session_ctx(
             extracted_val=normalized,
             followup_query=followup_query,
@@ -607,6 +640,10 @@ class SlotManagerMixin:
             guard=guard,
             session_context=session_context,
             extracted_this_turn=normalized,
+            # The static ask below must be the ONLY ask in the combined turn.
+            next_slot_label=next_slot or None,
+            will_append_ask=bool(next_slot),
+            fallback_slot_label=applied[0].replace("_", " ") if guard == "CORRECTION_ACK" else None,
         )
 
         if next_slot:
