@@ -115,6 +115,12 @@ Set followup_disposition:
 If the question concerns delivery, notifications, timelines, or anything
 this call will reach later, choose park — never decline.
 
+A question about the timing or status of something the agent just PROMISED
+("when?", "when will you update my zip?", "did you change it yet?") is NOT a
+slot answer and must never be extracted as one. Classify it as
+answered_with_followup (or ambiguous when no slot value is present) with
+followup_query = "timing of <promised item>".
+
 ### Disposition quick examples
 | Side question                                                | Disposition |
 |--------------------------------------------------------------|-------------|

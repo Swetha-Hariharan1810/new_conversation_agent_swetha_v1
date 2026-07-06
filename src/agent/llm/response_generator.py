@@ -89,7 +89,7 @@ _FALLBACKS: dict[str, str] = {
     "ANSWERED_WITH_FOLLOWUP": "Got that — and to confirm, you said {slot_label}.",
     "FOLLOWUP_ANSWER": "Got it — {slot_label} noted.",
     "FOLLOWUP_PARK": "Got it — and I'll come back to your question shortly.",
-    "FOLLOWUP_DECLINE": "Got it — that part I can't help with on this call.",
+    "FOLLOWUP_DECLINE": "Got it — that's something a representative will need to help with.",
     "CORRECTION_ACK": "Got it — I've updated your {slot_label}.",
 }
 

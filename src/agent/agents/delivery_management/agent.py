@@ -103,6 +103,32 @@ class DeliveryManagementAgent(BaseAgent):
 
         state = {**state, "awaiting_slot": current_awaiting}
 
+        # ── RESUME after a routed slot update (Phase 4, Bug C) ───────────────
+        # The orchestrator fast-path sent us back here after the owning agent
+        # (provider_search) finished the ZIP update. Acknowledge it and re-ask
+        # the contact question we were on — no extraction on this hop (the
+        # last user utterance was the new ZIP, already consumed by the owner).
+        if state.get("slot_update_resume"):
+            zip_used = (state.get("zip_code_used") or state.get("zip_code") or "").strip()
+            prefix = (
+                f"All set — I've updated your ZIP code to {zip_used} "
+                "and refreshed your provider list for that area. "
+                if zip_used
+                else ""
+            )
+            if not delivery_method:
+                # Routed away before fax/email was chosen — ask it now.
+                from agent.agents.provider_search.constants import DELIVERY_BRIDGE_TEMPLATES
+
+                result = self.ask_member(state, prefix + pick(DELIVERY_BRIDGE_TEMPLATES))
+                result["awaiting_slot"] = "delivery_method"
+            else:
+                result = self._ask_contact_confirmation(
+                    state, delivery_method, fax_on_file, email_on_file, prefix=prefix
+                )
+            result["slot_update_resume"] = False
+            return result
+
         # LLM extraction
         confirmed_slots: dict = {}
         if delivery_method:
@@ -127,6 +153,26 @@ class DeliveryManagementAgent(BaseAgent):
         # Conversation guards
         if interrupt := await self.run_conversation_guards(state, user_text=last_user, result=result):
             return interrupt
+
+        # ── ROUTED SLOT UPDATE (Phase 4, Bug C) ──────────────────────────────
+        # "Actually my ZIP changed" mid-delivery: zip_code is owned by
+        # provider_search (route_to_owner) — hand off NOW instead of repeating
+        # the fax/email question over the caller's request.
+        update_target = ((getattr(result, "update_target", None) or "").strip()) if result else ""
+        _corrections = (
+            {k: v for k, v in ((getattr(result, "corrections", None) or {}).items()) if v} if result else {}
+        )
+        if not update_target and "zip_code" in _corrections:
+            update_target = "zip_code"
+        if update_target:
+            from agent.conversation.context import ConversationContext
+
+            ctx = ConversationContext.from_state(state)
+            delivery_slots = {"delivery_method": None, "fax": None, "email": None}
+            if self.resolve_update_target(update_target, ctx, state, delivery_slots) == "route":
+                return self._route_slot_update(state, update_target, ctx, return_awaiting=current_awaiting)
+            # allow/decline: fall through — the fax/email branches below handle
+            # in-flow contact updates; human-only targets decline downstream.
 
         # ── BENEFITS RESPONSE PHASE ──────────────────────────────────────────
         if current_awaiting == "benefits_response":
@@ -415,10 +461,56 @@ class DeliveryManagementAgent(BaseAgent):
         retry_result["benefits_offer_made"] = True
         return retry_result
 
+    def _blocking_list_invalidator(self, state: State) -> str:
+        """Target of an unresolved update that invalidates the provider list.
+
+        Checks pending_slot_update and parked kind="action" items against the
+        ownership registry: any target whose entry invalidates
+        provider_list_sent (i.e. zip_code) blocks dispatch until resolved —
+        never send a list generated from a ZIP the caller has disputed.
+        """
+        from agent.core.slot_ownership import get_ownership
+        from agent.state import normalize_parked_followups
+
+        candidates = [(state.get("pending_slot_update") or {}).get("target", "")]
+        candidates += [
+            p.get("target", "")
+            for p in normalize_parked_followups(state.get("parked_followups"))
+            if p.get("kind") == "action"
+        ]
+        for target in candidates:
+            own = get_ownership(target)
+            if own and "provider_list_sent" in own.invalidates:
+                return target
+        return ""
+
     async def _proceed_to_dispatch(
         self, state: State, delivery_method: str, confirmed_destination: str
     ) -> dict:
         """Dispatch the provider list then make the benefits offer."""
+        # ── DISPATCH PRECONDITION (Phase 4, Bug C) ───────────────────────────
+        # A pending/parked update that invalidates the provider list (ZIP) must
+        # be resolved BEFORE dispatch — route it to its owner now.
+        if blocker := self._blocking_list_invalidator(state):
+            from agent.conversation.context import ConversationContext
+            from agent.state import normalize_parked_followups
+
+            logger.info(
+                "delivery_management: dispatch blocked by pending %s update — routing first",
+                blocker,
+            )
+            ctx = ConversationContext.from_state(state)
+            route = self._route_slot_update(
+                state, blocker, ctx, return_awaiting=state.get("awaiting_slot") or "fax_confirmed"
+            )
+            # The routed update consumes the parked action item, if any.
+            route["parked_followups"] = [
+                p
+                for p in normalize_parked_followups(state.get("parked_followups"))
+                if not (p.get("kind") == "action" and p.get("target") == blocker)
+            ]
+            return route
+
         if fail := await dispatch_provider_list(self, state, delivery_method, confirmed_destination):
             return fail
 
@@ -461,16 +553,21 @@ class DeliveryManagementAgent(BaseAgent):
         delivery_method: str,
         fax_on_file: str,
         email_on_file: str,
+        prefix: str = "",
     ) -> dict:
-        """Ask for confirmation of the contact details on file (or collect new ones)."""
+        """Ask for confirmation of the contact details on file (or collect new ones).
+
+        prefix: optional acknowledgement spoken before the question (e.g. the
+        ZIP-updated confirmation on a slot_update_resume hop).
+        """
         if delivery_method == "fax":
             if fax_on_file:
-                msg = random.choice(FAX_READBACK_TEMPLATES).format(fax=fax_on_file)
+                msg = prefix + random.choice(FAX_READBACK_TEMPLATES).format(fax=fax_on_file)
                 result = self.ask_member(state, msg)
                 result["awaiting_slot"] = "fax_confirmed"
                 result["delivery_method"] = delivery_method
             else:
-                result = self.ask_member(state, pick(FAX_UPDATE_PROMPTS))
+                result = self.ask_member(state, prefix + pick(FAX_UPDATE_PROMPTS))
                 result["awaiting_slot"] = "fax"
                 result["delivery_method"] = delivery_method
         elif delivery_method == "email":
@@ -479,12 +576,12 @@ class DeliveryManagementAgent(BaseAgent):
                 # message. Also prevents Azure content filter triggering on
                 # email addresses in conversation history.
                 display_email = speak_email(email_on_file)
-                msg = random.choice(EMAIL_READBACK_TEMPLATES).format(email=display_email)
+                msg = prefix + random.choice(EMAIL_READBACK_TEMPLATES).format(email=display_email)
                 result = self.ask_member(state, msg)
                 result["awaiting_slot"] = "email_confirmed"
                 result["delivery_method"] = delivery_method
             else:
-                result = self.ask_member(state, pick(EMAIL_UPDATE_PROMPTS))
+                result = self.ask_member(state, prefix + pick(EMAIL_UPDATE_PROMPTS))
                 result["awaiting_slot"] = "email"
                 result["delivery_method"] = delivery_method
         else:

@@ -97,6 +97,14 @@ class State(TypedDict):
     # plain strings still appear in old checkpoints; every read site must go
     # through normalize_parked_followups().
     parked_followups: list
+    # Routed slot update in flight (Phase 4): the requesting agent handed off
+    # to the slot's owner and must be resumed when the owner completes.
+    # {"target": str, "return_to_agent": str, "return_awaiting": str}
+    pending_slot_update: dict
+    # One-shot marker set by the orchestrator fast-path when it routes back to
+    # pending_slot_update["return_to_agent"]; the resumed agent acknowledges
+    # the completed update, re-asks its pending question, and clears the flag.
+    slot_update_resume: bool
     wait_count: int  # consecutive WAIT turns for the current awaiting slot (reset on non-WAIT)
 
     # ── Verification restart boundary ────────────────────────────────────────
@@ -236,6 +244,8 @@ def reset_for_new_intent(state: State, new_intent: Optional[str]) -> dict:
         "correction_return_to": "",
         "ambiguous_counts": {},
         "parked_followups": [],
+        "pending_slot_update": {},
+        "slot_update_resume": False,
         "wait_count": 0,
         "verification_restart_index": 0,
         # ── Provider search ──────────────────────────────────────────────────

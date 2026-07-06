@@ -285,7 +285,26 @@ class ProviderSearchAgent(BaseAgent):
         The old signal_complete(is_interrupt=False) caused conditional_routing to
         jump directly to delivery_management_agent with no user pause, so that
         agent had to ask fax/email all over again.
+
+        Routed-update return (Phase 4, Bug C): when pending_slot_update marks
+        this run as a ZIP-update detour from another agent, signal COMPLETE
+        (no interrupt, no delivery bridge ask) so the orchestrator fast-path
+        returns to pending_slot_update["return_to_agent"] in the same
+        super-step with the refreshed zip_code_used — the search re-runs from
+        the new ZIP at dispatch time, which reads zip_code_used.
         """
+        pending = state.get("pending_slot_update") or {}
+        if pending.get("return_to_agent"):
+            result = self.signal_complete(
+                state,
+                message="",
+                resolved_intents=["provider_search"],
+            )
+            result["provider_type"] = provider_type
+            result["zip_code"] = zip_code_used
+            result["zip_code_used"] = zip_code_used
+            return result
+
         msg = pick(DELIVERY_BRIDGE_TEMPLATES)
         result = self.ask_member(state, msg)
         result["next_node"] = "delivery_management_agent"  # human_node reads this

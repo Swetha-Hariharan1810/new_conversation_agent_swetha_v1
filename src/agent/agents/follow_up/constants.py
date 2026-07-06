@@ -63,6 +63,8 @@ NEW_INTENT_CLEAR_FIELDS: list[str] = [
     "ambiguous_counts",
     "wait_count",
     "parked_followups",
+    "pending_slot_update",
+    "slot_update_resume",
     # Provider search
     "provider_type",
     "zip_code_used",

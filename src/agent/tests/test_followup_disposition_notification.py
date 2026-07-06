@@ -69,8 +69,15 @@ def test_notification_slots_owned_by_claims_flow():
     assert slot_update_owner("notification_method") == "claim_services"
 
 
-def test_sf_record_fields_and_unknown_slots_are_human_only():
-    for slot in ("email", "phone_number", "zip_code", "fax", "some_new_slot", ""):
+def test_provider_flow_slots_route_to_provider_services():
+    # Phase 4: zip/fax/email are owned by the provider flow's agents, so a
+    # post-flow parked action re-runs provider_services instead of escalating.
+    for slot in ("zip_code", "fax", "email"):
+        assert slot_update_owner(slot) == "provider_services"
+
+
+def test_human_only_and_unknown_slots_stay_human():
+    for slot in ("phone_number", "member_status_verify", "call_intent", "some_new_slot", ""):
         assert slot_update_owner(slot) == OWNER_HUMAN
 
 
@@ -197,12 +204,12 @@ async def test_unhonorable_update_with_owner_parks_as_action(stub_generation):
 
 
 async def test_unhonorable_update_human_only_still_declines(stub_generation):
-    # email is human-only in the registry → decline, nothing parked.
+    # phone_number is human-only in the registry → decline, nothing parked.
     _, interrupt = await _run_followup(
         _FakeAgent(),
         disposition="none",
         followup_query="",
-        update_target="email",
+        update_target="phone_number",
     )
     assert stub_generation["guard"] == "FOLLOWUP_DECLINE"
     assert "parked_followups" not in interrupt
@@ -219,7 +226,7 @@ def test_parked_action_human_only_escalates():
     agent = _followup_agent()
     result = agent._route_parked_action(
         {"call_intent": "claim_services"},
-        {"query": "update my email", "kind": "action", "target": "email"},
+        {"query": "change my phone number", "kind": "action", "target": "phone_number"},
     )
     assert result["next_node"] == "escalation_agent"
     assert result["escalation_pre_message"] == MSG_UPDATE_REQUEST_ESCALATE

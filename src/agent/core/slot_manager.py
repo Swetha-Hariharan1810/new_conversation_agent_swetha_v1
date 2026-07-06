@@ -15,6 +15,7 @@ See git history for migration notes from v4.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Tuple
 
@@ -315,28 +316,139 @@ class SlotManagerMixin:
 
         return _NORMALIZERS.get(slot_name), _VALIDATORS.get(slot_name)
 
-    def _update_target_allowed(
+    def resolve_update_target(
         self,
         target: str,
         ctx: ConversationContext,
         state: State,
         slot_configs: Optional[dict],
-    ) -> bool:
-        """Belt-and-braces whitelist for caller-requested slot updates.
+    ) -> str:
+        """Three-way routing decision for a caller-requested slot update.
 
-        A target is updatable only when it is already confirmed (in ctx or
-        non-empty in state), is not a caller-locked field, and is collectable
-        by the current pipeline. Targets that fail this check are parked as
-        kind="action" items when core.slot_ownership names an owner for them
-        (follow_up routes those); only ownerless/human-only slots decline.
+        "allow"   — the current agent's pipeline collects the slot and it has
+                    a value to correct: take the existing detour path.
+        "route"   — the ownership registry says route_to_owner and another
+                    agent owns it: hand off NOW via _route_slot_update.
+        "decline" — human-only / unknown slots, or nothing to update here.
+                    Call sites may still park "decline" targets whose registry
+                    entry is in_flow under another agent (Phase 3 behavior).
         """
         from agent.agents.verification.handlers import CALLER_LOCKED_SLOTS
+        from agent.core.slot_ownership import get_ownership
 
+        target = (target or "").strip()
         if not target or target in CALLER_LOCKED_SLOTS:
-            return False
-        if slot_configs is not None and target not in slot_configs:
-            return False
-        return target in (ctx.confirmed_slots or []) or bool(str(state.get(target) or "").strip())
+            return "decline"
+        own = get_ownership(target)
+        if own and own.updatable == "human_only":
+            return "decline"
+        collectable = slot_configs is None or target in slot_configs
+        has_value = target in (ctx.confirmed_slots or []) or bool(str(state.get(target) or "").strip())
+        if collectable and has_value:
+            return "allow"
+        if own and own.updatable == "route_to_owner" and own.agent and own.agent != self.AGENT_NAME:
+            return "route"
+        return "decline"
+
+    def _route_slot_update(
+        self,
+        state: State,
+        target: str,
+        ctx: ConversationContext,
+        *,
+        return_awaiting: str,
+        ack_prefix: str = "",
+    ) -> dict:
+        """Hand off to the slot's owning agent to honor an update NOW (Bug C).
+
+        Asks the caller for the new value, routes the next turn to the owner
+        (next_node), records the way back in pending_slot_update, and clears
+        every state key the registry says the update invalidates — so e.g.
+        provider_search cannot early-exit on a stale zip_code_used and the
+        list is rebuilt from the new ZIP. Never says "later".
+        """
+        from agent.core.slot_ownership import get_ownership, invalidated_state_updates
+        from agent.llm.response_generator import _SLOT_LABELS
+
+        own = get_ownership(target)
+        label = target.replace("_", " ")
+        ask_label = _SLOT_LABELS.get(target, label).split("—")[0].strip()
+        msg = f"{ack_prefix}Sure — let me update your {label} first. Could you give me your {ask_label}?"
+
+        self.logger.info(
+            "%s: routing slot update to owner",
+            self.AGENT_NAME,
+            extra={"target": target, "owner": own.agent if own else "", "return_awaiting": return_awaiting},
+        )
+        interrupt = self.ask_member_with_context(state, msg, ctx)
+        interrupt["next_node"] = own.agent if own else self.AGENT_NAME
+        interrupt["awaiting_slot"] = target
+        interrupt["pending_slot_update"] = {
+            "target": target,
+            "return_to_agent": self.AGENT_NAME,
+            "return_awaiting": return_awaiting,
+        }
+        interrupt.update(invalidated_state_updates(target))
+        interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
+        return interrupt
+
+    def _ignored_request_guard(self, state: State, target: str) -> Optional[dict]:
+        """Escalate honestly on the SECOND identical declined request.
+
+        Counter f"ignored_request_{target}" via guard_loop_limit (max 2): the
+        first decline explains and re-asks; a repeat means the caller is being
+        ignored — never re-ask the same thing verbatim a third time.
+        """
+        from agent.responses.static import MSG_REPEATED_REQUEST_ESCALATE
+
+        return self.guard_loop_limit(
+            state,
+            f"ignored_request_{target}",
+            2,
+            escalate_message=pick(MSG_REPEATED_REQUEST_ESCALATE),
+            escalate_reason=f"repeated_ignored_request_{target}",
+        )
+
+    @staticmethod
+    def _park_action_item(parked: list[dict], target: str, query: str = "") -> list[dict]:
+        """Append a kind="action" item for ``target`` (deduped) to ``parked``."""
+        if not any(p.get("kind") == "action" and p.get("target") == target for p in parked):
+            parked.append(
+                {
+                    "query": query or f"update {target.replace('_', ' ')}",
+                    "kind": "action",
+                    "target": target,
+                }
+            )
+        return parked
+
+    def _match_promised_item(self, state: State, followup_query: str) -> str:
+        """Promise text when ``followup_query`` asks about a parked/pending item.
+
+        Meta-questions like "when will you update my zip?" must be answered
+        concretely from the promise, never declined or treated as a slot
+        answer. Fuzzy match: the pending update target's words, or ≥2 content
+        words shared with a parked item's query.
+        """
+        query_words = set(re.findall(r"[a-z]+", (followup_query or "").lower()))
+        if not query_words:
+            return ""
+        pending = state.get("pending_slot_update") or {}
+        pending_label = (pending.get("target") or "").replace("_", " ")
+        if pending_label and set(pending_label.split()) <= query_words:
+            return f"your {pending_label} update is already in progress"
+        for item in normalize_parked_followups(state.get("parked_followups")):
+            item_words = set(re.findall(r"[a-z]+", item.get("query", "").lower())) | set(
+                (item.get("target") or "").replace("_", " ").split()
+            )
+            meaningful = {w for w in (item_words & query_words) if len(w) > 3}
+            if len(meaningful) >= 2 or (
+                item.get("target") and set(item["target"].replace("_", " ").split()) <= query_words
+            ):
+                if item.get("kind") == "action":
+                    return f"the {item['target'].replace('_', ' ')} update is queued and will be handled"
+                return "that question is queued and will be answered"
+        return ""
 
     def _confirmed_slot_values(
         self,
@@ -513,14 +625,24 @@ class SlotManagerMixin:
 
         # ── Case A: apply validated corrections + cascade clears BEFORE the
         # awaiting slot is confirmed, so the confirm order matches apply_corrections.
+        from agent.core.slot_ownership import get_ownership
+
         applied: list[str] = []
         cascade_cleared: list[str] = []
         invalid_target = ""
+        foreign_parked: list[str] = []
         for target, raw in corrections.items():
             if target in CALLER_LOCKED_SLOTS or target == slot_name:
                 continue
             norm_fn, val_fn = self._resolve_slot_tools(target, slot_configs)
             if not (norm_fn and val_fn):
+                # Foreign slot — this pipeline cannot apply it. Park it as a
+                # kind="action" item when the registry names an owner (Phase 4:
+                # never silently drop a caller's correction); truly ownerless /
+                # human-only slots still drop with no ghost acknowledgement.
+                own = get_ownership(target)
+                if own and own.updatable != "human_only":
+                    foreign_parked.append(target)
                 continue
             corrected_val = norm_fn(str(raw))
             if corrected_val and val_fn(corrected_val).valid:
@@ -569,10 +691,13 @@ class SlotManagerMixin:
             remaining = [s for s in pending if s != slot_name]
         next_slot = next((s for s in remaining if s not in applied), "")
 
-        # ── Case B: answer + value-less update request → open a detour.
-        # The detour ask REPLACES the normal next-slot static ask.
+        # ── Case B: answer + value-less update request ───────────────────────
+        # allow → detour (the detour ask REPLACES the normal next-slot ask);
+        # route → hand off to the owning agent NOW (pending_slot_update);
+        # otherwise park in_flow-elsewhere targets, decline human-only ones.
         if update_target and update_target not in applied:
-            if self._update_target_allowed(update_target, ctx, state, slot_configs):
+            resolution = self.resolve_update_target(update_target, ctx, state, slot_configs)
+            if resolution == "allow":
                 detour = await self._open_update_detour(
                     state,
                     update_target,
@@ -589,16 +714,30 @@ class SlotManagerMixin:
                 if clear_verify:
                     detour.setdefault("member_status_verify", False)
                 return normalized, detour
-            # Target not updatable by THIS pipeline. If the ownership registry
-            # names an owner (a later flow or re-verification), park the update
-            # as an action for follow_up to route — never blanket-decline the
-            # caller's own request. Only human-only slots decline.
-            from agent.core.slot_ownership import OWNER_HUMAN, slot_update_owner
-
-            if slot_update_owner(update_target) != OWNER_HUMAN:
+            if resolution == "route":
+                route = self._route_slot_update(
+                    state,
+                    update_target,
+                    ctx,
+                    return_awaiting=next_slot or state.get("awaiting_slot") or "",
+                    ack_prefix="Got that. ",
+                )
+                for cleared in cascade_cleared:
+                    route.setdefault(cleared, "")
+                if clear_verify:
+                    route.setdefault("member_status_verify", False)
+                return normalized, route
+            # "decline": park when the registry says another flow owns it
+            # in_flow — never blanket-decline the caller's own request.
+            own = get_ownership(update_target)
+            if own and own.updatable == "in_flow" and own.agent != self.AGENT_NAME:
                 disposition_value = "park"
                 followup_query = followup_query or f"update {update_target.replace('_', ' ')}"
             else:
+                # Human-only decline: escalate honestly on the second
+                # identical ignored request instead of re-asking verbatim.
+                if escalation := self._ignored_request_guard(state, update_target):
+                    return normalized, escalation
                 disposition_value = "decline"
 
         # ── Answer + INVALID corrected value: the awaiting slot IS confirmed,
@@ -606,7 +745,7 @@ class SlotManagerMixin:
         # the corrected slot instead of silently dropping the bad value.
         # (Case B above wins when both an update_target and an invalid
         # correction arrive in the same turn.)
-        if invalid_target and self._update_target_allowed(invalid_target, ctx, state, slot_configs):
+        if invalid_target and self.resolve_update_target(invalid_target, ctx, state, slot_configs) == "allow":
             detour = await self._open_update_detour(
                 state,
                 invalid_target,
@@ -632,12 +771,24 @@ class SlotManagerMixin:
             guard = "CORRECTION_ACK"
         else:
             guard = _DISPOSITION_GUARDS.get(disposition_value, "FOLLOWUP_DECLINE")
+
+        # Meta-question about a parked/promised item ("when will you update my
+        # zip?"): answer concretely from the promise — never decline or re-park
+        # something already promised.
+        promise = self._match_promised_item(state, followup_query) if followup_query else ""
+        if promise and guard in ("FOLLOWUP_DECLINE", "FOLLOWUP_PARK"):
+            guard = "FOLLOWUP_ANSWER"
+
+        confirmed_values = (
+            self._confirmed_slot_values(ctx, state, collected) if guard == "FOLLOWUP_ANSWER" else None
+        )
+        if promise and confirmed_values is not None:
+            step = f"right after we confirm the {next_slot.replace('_', ' ')}" if next_slot else "next"
+            confirmed_values["promised next step"] = f"{promise} {step}"
         session_context = _mk_session_ctx(
             extracted_val=normalized,
             followup_query=followup_query,
-            confirmed_values=(
-                self._confirmed_slot_values(ctx, state, collected) if guard == "FOLLOWUP_ANSWER" else None
-            ),
+            confirmed_values=confirmed_values,
         )
         msg = await self._generate_slot_retry_response(
             state,
@@ -676,6 +827,15 @@ class SlotManagerMixin:
                     "target": update_target if is_action else "",
                 }
             )
+            interrupt["parked_followups"] = parked
+        # Foreign corrections this pipeline could not apply (Case A) park as
+        # actions so the owning flow honors them — never silently dropped.
+        if foreign_parked:
+            parked = normalize_parked_followups(
+                interrupt.get("parked_followups") or state.get("parked_followups")
+            )
+            for foreign in foreign_parked:
+                self._park_action_item(parked, foreign)
             interrupt["parked_followups"] = parked
         # Return normalized so slot_ok's persistence carries the value forward;
         # with no next_slot this matches the pre-Phase-4 return exactly, so the
@@ -866,9 +1026,10 @@ class SlotManagerMixin:
                     event_value = EventType.ANSWERED.value
                 elif not corrections and update_target:
                     # ── C2: bare update request ("I need to change my email") ─
-                    # Detour: target becomes awaiting, current awaiting slot is
-                    # preserved in correction_return_to for the pipeline to resume.
-                    if self._update_target_allowed(update_target, ctx, state, slot_configs):
+                    # allow → detour: target becomes awaiting, current awaiting
+                    # slot is preserved in correction_return_to to resume.
+                    resolution = self.resolve_update_target(update_target, ctx, state, slot_configs)
+                    if resolution == "allow":
                         detour = await self._open_update_detour(
                             state,
                             update_target,
@@ -879,8 +1040,37 @@ class SlotManagerMixin:
                             collected=collected,
                         )
                         return None, detour
-                    # Target not updatable here — decline: acknowledge without
-                    # counting a failed attempt and re-ask the awaiting slot.
+                    if resolution == "route":
+                        # Hand off to the owning agent NOW — never say "later".
+                        return None, self._route_slot_update(
+                            state, update_target, ctx, return_awaiting=slot_name
+                        )
+                    # Park when another flow owns the slot in_flow; only
+                    # human-only targets decline — and a second identical
+                    # ignored request escalates instead of re-asking verbatim.
+                    from agent.core.slot_ownership import get_ownership
+
+                    own = get_ownership(update_target)
+                    if own and own.updatable == "in_flow" and own.agent != self.AGENT_NAME:
+                        msg = await self._generate_slot_retry_response(
+                            state,
+                            slot_name,
+                            ctx,
+                            messages,
+                            guard="FOLLOWUP_PARK",
+                            session_context=_mk_session_ctx(
+                                followup_query=f"update {update_target.replace('_', ' ')}",
+                            ),
+                        )
+                        interrupt = self.ask_member_with_context(state, msg, ctx)
+                        interrupt["awaiting_slot"] = slot_name
+                        interrupt["wait_count"] = 0
+                        interrupt["parked_followups"] = self._park_action_item(
+                            normalize_parked_followups(state.get("parked_followups")), update_target
+                        )
+                        return None, interrupt
+                    if escalation := self._ignored_request_guard(state, update_target):
+                        return None, escalation
                     msg = await self._generate_slot_retry_response(
                         state,
                         slot_name,
@@ -899,17 +1089,27 @@ class SlotManagerMixin:
                     # ── C1: corrections with values — validate before acking ──
                     # An invalid corrected value must NOT be applied; open a
                     # detour to re-collect that slot instead of acknowledging it.
+                    # Foreign corrections (no tools in this pipeline) must never
+                    # be acknowledged as applied ("ghost ack") — route or park
+                    # them via the ownership registry instead.
+                    from agent.core.slot_ownership import get_ownership
+
                     invalid_target = ""
+                    appliable_fields: list[str] = []
+                    foreign_fields: list[str] = []
                     for target, raw in corrections.items():
                         norm_fn, val_fn = self._resolve_slot_tools(target, slot_configs)
                         if not (norm_fn and val_fn):
+                            foreign_fields.append(target)
                             continue
+                        appliable_fields.append(target)
                         corrected_val = norm_fn(str(raw))
                         if not (corrected_val and val_fn(corrected_val).valid):
                             invalid_target = target
                             break
-                    if invalid_target and self._update_target_allowed(
-                        invalid_target, ctx, state, slot_configs
+                    if (
+                        invalid_target
+                        and self.resolve_update_target(invalid_target, ctx, state, slot_configs) == "allow"
                     ):
                         detour = await self._open_update_detour(
                             state,
@@ -922,12 +1122,57 @@ class SlotManagerMixin:
                         )
                         return None, detour
 
+                    # Foreign-only corrections: honor via route (route_to_owner)
+                    # or park (in_flow elsewhere); human-only declines honestly.
+                    if foreign_fields and not appliable_fields:
+                        target = foreign_fields[0]
+                        resolution = self.resolve_update_target(target, ctx, state, slot_configs)
+                        if resolution == "route":
+                            return None, self._route_slot_update(
+                                state, target, ctx, return_awaiting=slot_name
+                            )
+                        own = get_ownership(target)
+                        if own and own.updatable != "human_only":
+                            msg = await self._generate_slot_retry_response(
+                                state,
+                                slot_name,
+                                ctx,
+                                messages,
+                                guard="FOLLOWUP_PARK",
+                                session_context=_mk_session_ctx(
+                                    followup_query=f"update {target.replace('_', ' ')}",
+                                ),
+                            )
+                            interrupt = self.ask_member_with_context(state, msg, ctx)
+                            interrupt["awaiting_slot"] = slot_name
+                            interrupt["wait_count"] = 0
+                            interrupt["parked_followups"] = self._park_action_item(
+                                normalize_parked_followups(state.get("parked_followups")), target
+                            )
+                            return None, interrupt
+                        if escalation := self._ignored_request_guard(state, target):
+                            return None, escalation
+                        msg = await self._generate_slot_retry_response(
+                            state,
+                            slot_name,
+                            ctx,
+                            messages,
+                            guard="FOLLOWUP_DECLINE",
+                            session_context=_mk_session_ctx(
+                                followup_query=f"update {target.replace('_', ' ')}",
+                            ),
+                        )
+                        interrupt = self.ask_member_with_context(state, msg, ctx)
+                        interrupt["awaiting_slot"] = slot_name
+                        interrupt["wait_count"] = 0
+                        return None, interrupt
+
                     # Existing CORRECTED path: valid corrections were already
-                    # applied by the agent (apply_corrections) — acknowledge and
-                    # re-ask the awaiting slot.
-                    corrected_fields = list(corrections.keys())
+                    # applied by the agent (apply_corrections) — acknowledge
+                    # ONLY the fields this pipeline applied and re-ask the
+                    # awaiting slot; foreign extras park as actions.
                     msg = await self._generate_correction_ack(
-                        state, corrected_fields, slot_name, ctx, messages, decision=decision
+                        state, appliable_fields, slot_name, ctx, messages, decision=decision
                     )
                     interrupt = self.ask_member_with_context(state, msg, ctx)
                     interrupt["awaiting_slot"] = slot_name
@@ -935,6 +1180,13 @@ class SlotManagerMixin:
                     ambiguous_counts[slot_name] = 0
                     interrupt["ambiguous_counts"] = ambiguous_counts
                     interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
+                    if foreign_fields:
+                        parked = normalize_parked_followups(state.get("parked_followups"))
+                        for foreign in foreign_fields:
+                            own = get_ownership(foreign)
+                            if own and own.updatable != "human_only":
+                                self._park_action_item(parked, foreign)
+                        interrupt["parked_followups"] = parked
                     return None, interrupt
 
             # ── AMBIGUOUS: caller signalled correction intent with no value ─

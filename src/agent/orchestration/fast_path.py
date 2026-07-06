@@ -28,6 +28,20 @@ def get_fast_path_route(state: State) -> str | None:  # noqa: C901
     if not member_verified and active_agent != "verification_agent":
         return "verification_agent"
 
+    # Routed slot update finished → return to the requesting agent (Phase 4).
+    # The owner (e.g. provider_search after a ZIP update) signals COMPLETE with
+    # pending_slot_update still set; hand control back to return_to_agent. The
+    # orchestrator clears pending_slot_update and arms slot_update_resume when
+    # it takes this route.
+    pending_update = state.get("pending_slot_update") or {}
+    if (
+        member_verified
+        and signal.status == AgentStatus.COMPLETE
+        and pending_update.get("return_to_agent")
+        and active_agent != pending_update.get("return_to_agent")
+    ):
+        return pending_update["return_to_agent"]
+
     # delivery_management complete → benefits (always)
     if (
         member_verified

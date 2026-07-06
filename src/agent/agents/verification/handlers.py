@@ -79,16 +79,20 @@ MSG_PHONE_NOT_CONFIRMED = (
     "Thank you for calling Sagility Health."
 )
 
-# Slots set by the system (Salesforce lookup) or business rules.
+# Truly human-only fields: system flags and the SF-verified phone number.
 # Callers cannot change these values — they must be referred to a human agent.
 # Any value the LLM puts in corrections{} for a locked slot is silently dropped
 # AND does not trigger a correction acknowledgement.
+#
+# Phase 4: zip_code / fax / email are no longer globally locked — they are
+# owned by provider_search / delivery_management (core.slot_ownership).
+# During verification they are still not correctable here (no normalizer in
+# _NORMALIZERS, so apply_corrections never applies them), but instead of
+# being silently dropped they are parked as kind="action" items by
+# slot_manager's CORRECTED path so the owning flow honors the request later.
 CALLER_LOCKED_SLOTS: frozenset[str] = frozenset(
     {
         "phone_number",  # from SF record — disputes go to a human
-        "zip_code",  # from SF record
-        "fax",  # from SF record
-        "email",  # from SF record
         "member_status_verify",  # system flag, never caller-stated
         "call_intent",  # classified by intake agent
         # Add domain-agent locked slots here as they are built:
