@@ -16,6 +16,7 @@ The IntakeAgent should NOT:
 
 from __future__ import annotations
 
+from agent.core.request_detection import reconcile_worker_result
 from agent.llm.extractor import build_worker_input
 from agent.llm.schema import WorkerResult
 from agent.logger import get_logger
@@ -48,7 +49,10 @@ async def extract_intake_intent(
         recent_messages=recent_messages,
     )
     try:
-        return await llm.with_structured_output(WorkerResult).ainvoke(messages)
+        result: WorkerResult = await llm.with_structured_output(WorkerResult).ainvoke(messages)
+        # Regex fallback + veto layer (request_detection): fills a missed
+        # update_target/request_kind and clears WAIT on correction turns.
+        return reconcile_worker_result(result, last_user_message)
     except Exception as exc:
         logger.exception("Intent extraction failed", exc_info=exc)
         return WorkerResult()

@@ -1,5 +1,48 @@
 # Changelog
 
+## Deterministic request-detection layer (extraction-stability root cause)
+
+The routing built in Phases 3–6 hinges on the extraction LLM populating
+`update_target` / `request_kind` and not mislabeling correction turns; in
+production it does so intermittently. This phase adds a pure regex
+fallback + veto layer so those detections are deterministic — the LLM stays
+primary and regex never overrides a concrete LLM detection with a different
+target.
+
+- New `src/agent/core/request_detection.py`: `DetectedRequest`,
+  `detect_request()`. Per-slot update patterns are DERIVED from
+  `SLOT_OWNERSHIP` keys plus a `SLOT_LABEL_ALIASES` map (dob → "date of
+  birth"/"birthday", zip_code → "zip"/"postal code", …), so future registry
+  entries get baseline coverage automatically; hand-written patterns only
+  for phrasings that don't name the slot ("I moved" → zip_code, "instead of
+  fax" → redo delivery). Redo/replay tables map to canonical capability
+  topics (`delivery`, `benefits`, `provider_list`). Update beats redo beats
+  replay; cannot-provide statements and "when will you update…"
+  meta-questions return None. Dependency-light: stdlib + slot_ownership only.
+- `reconcile_worker_result(result, last_user)` wired in after every
+  `WorkerResult` extraction call (all agent `llm.py` modules): fills a
+  missed `update_target`/`request_kind` (logged `source=regex_fallback`)
+  and vetoes `event_type=WAIT` on correction turns — downgrades to
+  CORRECTED (bare request → C2) or ANSWERED_WITH_FOLLOWUP (value captured
+  in the same turn).
+- `agent.utils.detect_wait_request` returns False when `detect_request`
+  fires — "hold on, new zip" is a correction, not a hold request.
+- `slot_manager._handle_answered_followup`: backfills an empty
+  `update_target` from `followup_query`/last user message (skipping
+  meta-questions about already-promised items) BEFORE disposition routing,
+  and documents + enforces the invariant that allow/route detours always
+  win over the LLM's park/decline; declining a registry-updatable slot now
+  logs a resolution/registry-mismatch warning.
+- `_collect_slot` C2 path: a bare CORRECTED turn with empty corrections and
+  no `update_target` recovers the target via `detect_request` instead of
+  downgrading the caller's request to ANSWERED.
+- `header_core.md` WAIT section: explicit carve-out — a wait word followed
+  by a correction/change statement is NOT wait; classify the update instead.
+- New `src/agent/tests/test_request_detection.py` (112 tests): exhaustive
+  positive/negative tables, registry-derivation coverage, reconcile
+  semantics, and slot_manager-level variants where a missing
+  `update_target` previously broke routing.
+
 ## LLM-2 payload hygiene + dialogue routing (Bugs A–D, production transcripts)
 
 A five-phase fix series driven by three production transcripts: the Emily

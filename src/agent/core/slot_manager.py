@@ -683,6 +683,32 @@ class SlotManagerMixin:
         disposition = getattr(decision, "followup_disposition", None)
         disposition_value = str(getattr(disposition, "value", disposition) or "none")
 
+        # Regex fallback (request_detection): the LLM sometimes answers the
+        # slot but drops a plainly-phrased update request from update_target.
+        # Backfill BEFORE disposition routing so the detour/route invariant
+        # below wins over a park/decline the LLM chose for the same words.
+        if not update_target:
+            from agent.core.request_detection import detect_request
+
+            detected = detect_request(followup_query) or detect_request(_last_user_msg(messages))
+            # Meta-questions about an already-parked/pending item stay on the
+            # promise-answer path below — never re-open a route for them.
+            if (
+                detected
+                and detected.kind == "update"
+                and detected.target
+                and not self._match_promised_item(state, followup_query or _last_user_msg(messages))
+            ):
+                update_target = detected.target
+                self.logger.info(
+                    "_handle_answered_followup: regex fallback set update_target",
+                    extra={
+                        "source": "regex_fallback",
+                        "matched": detected.matched,
+                        "target": detected.target,
+                    },
+                )
+
         # ── Case A: apply validated corrections + cascade clears BEFORE the
         # awaiting slot is confirmed, so the confirm order matches apply_corrections.
         from agent.core.slot_ownership import get_ownership
@@ -755,6 +781,10 @@ class SlotManagerMixin:
         # allow → detour (the detour ask REPLACES the normal next-slot ask);
         # route → hand off to the owning agent NOW (pending_cross_agent_request);
         # otherwise park in_flow-elsewhere targets, decline human-only ones.
+        # INVARIANT: when update_target is set and resolution is "allow" or
+        # "route", the LLM's followup_disposition is IGNORED — the detour /
+        # route path below returns unconditionally, so a park/decline the LLM
+        # chose for the same turn can never shadow an honorable update.
         if update_target and update_target not in applied:
             resolution = self.resolve_update_target(update_target, ctx, state, slot_configs)
             if resolution == "allow":
@@ -794,6 +824,20 @@ class SlotManagerMixin:
                 disposition_value = "park"
                 followup_query = followup_query or f"update {update_target.replace('_', ' ')}"
             else:
+                # Decline is only legitimate for human_only or unknown
+                # ownership — any other registry entry reaching this branch
+                # means resolve_update_target and the registry disagree.
+                if own is not None and own.updatable != "human_only":
+                    self.logger.warning(
+                        "_handle_answered_followup: declining update for a slot the "
+                        "registry says is updatable — resolution/registry mismatch",
+                        extra={
+                            "target": update_target,
+                            "updatable": own.updatable,
+                            "owner": own.agent,
+                            "agent": self.AGENT_NAME,
+                        },
+                    )
                 # Human-only decline: escalate honestly on the second
                 # identical ignored request instead of re-asking verbatim.
                 if escalation := self._ignored_request_guard(state, update_target):
@@ -1073,6 +1117,25 @@ class SlotManagerMixin:
             if event_value == EventType.CORRECTED.value:
                 corrections = {k: v for k, v in (getattr(decision, "corrections", None) or {}).items() if v}
                 update_target = (getattr(decision, "update_target", None) or "").strip()
+
+                # Regex fallback (request_detection): a CORRECTED turn the LLM
+                # left targetless still carries the target in plain words
+                # ("I need to change my email") — recover it and take the C2
+                # path instead of downgrading the caller's request to ANSWERED.
+                if not corrections and not update_target:
+                    from agent.core.request_detection import detect_request
+
+                    detected = detect_request(last_user)
+                    if detected and detected.kind == "update" and detected.target:
+                        update_target = detected.target
+                        self.logger.info(
+                            "_collect_slot: regex fallback set update_target on bare CORRECTED turn",
+                            extra={
+                                "source": "regex_fallback",
+                                "matched": detected.matched,
+                                "target": detected.target,
+                            },
+                        )
 
                 if not corrections and not update_target:
                     # Downgrade only when BOTH corrections and update_target are

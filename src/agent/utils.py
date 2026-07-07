@@ -477,6 +477,14 @@ def detect_wait_request(text: str | None) -> bool:
     """
     if not text:
         return False
+    # A correction/update/redo/replay request outranks wait: "hold on, my ZIP
+    # changed" is a correction turn, not a hold request. Import inside the
+    # function — request_detection depends on core constants and must never
+    # pull in agent.utils (cycle safety).
+    from agent.core.request_detection import detect_request
+
+    if detect_request(text) is not None:
+        return False
     if detect_cannot_provide(text):
         return False
     lowered = text.lower().strip()

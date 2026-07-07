@@ -27,6 +27,9 @@ Set extracted:{}, event_type:"wait".
 Do NOT classify as ambiguous. Do NOT classify as answered.
 If the utterance ALSO contains a valid value ("hold on... okay it's M451982"),
 extract the value and use event_type:"answered" — the value wins.
+If the wait word is immediately followed by a correction or change statement
+("wait, actually my ZIP changed", "hold on, that email is wrong"), this is
+NOT wait — classify the correction/update instead.
 "I don't have it / I lost it / never received it" is NOT wait — that is a
 cannot-provide statement; leave existing behavior unchanged.
 
