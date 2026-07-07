@@ -63,7 +63,8 @@ NEW_INTENT_CLEAR_FIELDS: list[str] = [
     "ambiguous_counts",
     "wait_count",
     "parked_followups",
-    "pending_slot_update",
+    "pending_cross_agent_request",
+    "pending_slot_update",  # legacy key — cleared for old checkpoints
     "slot_update_resume",
     # Provider search
     "provider_type",

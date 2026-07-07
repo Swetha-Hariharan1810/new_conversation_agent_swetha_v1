@@ -1,24 +1,37 @@
 """
-slot_ownership.py — SLOT_OWNERSHIP registry: which agent owns each slot and
-how a caller-requested update to it may be honored (Phase 4, fixes Bug C).
+slot_ownership.py — ownership registries: which agent owns each slot or
+capability and how a caller's cross-agent request may be honored.
 
+SLOT_OWNERSHIP (Phase 4, fixes Bug C) covers slot VALUE updates.
 updatable modes:
   in_flow        — the owning agent's own pipeline collects/updates the slot;
                    when another agent is active, the update is parked as a
                    kind="action" item for follow_up (Phase 3 behavior).
   route_to_owner — the update is honored NOW: the current agent hands off to
-                   the owner (pending_slot_update carries the way back).
-                   Never park or say "later" for these.
+                   the owner (pending_cross_agent_request carries the way
+                   back). Never park or say "later" for these.
   human_only     — only a representative can change it; decline honestly.
 
 invalidates: state keys stale the moment the slot changes; a routing agent
 clears them before the hand-off so the owner recomputes them (and dispatch
 preconditions can block on them). Keys are literal State keys.
 
+CAPABILITY_REGISTRY (Phase 6) covers the two further request kinds real
+calls contain beyond value updates:
+  redo   — re-perform a completed action with a changed parameter
+           ("send that list to my email instead of fax")
+  replay — re-state information already given this call
+           ("can you repeat my benefits again")
+Keyed by (kind, topic); topics are canonicalized via resolve_capability so
+extraction-level targets like "delivery_method" reach ("redo", "delivery").
+Unknown topics resolve to None — callers degrade to the Phase-3
+park-as-question path, never a hard decline.
+
 Consumers: core.slot_manager (resolve_update_target / routing / parking),
-agents.delivery_management + provider_search (ZIP round-trip),
-orchestration.fast_path (return hop), agents.follow_up (parked actions),
-agents.verification.handlers (correction scoping).
+agents.delivery_management + provider_search + benefits (round-trips and
+re-entry contracts), orchestration.fast_path (return hop), agents.follow_up
+(parked actions + live redo/replay), agents.verification.handlers
+(correction scoping).
 
 Keep this module dependency-free (core ↔ agents import safety).
 """
@@ -71,6 +84,73 @@ SLOT_OWNERSHIP: dict[str, SlotOwnership] = {
 def get_ownership(slot: str) -> SlotOwnership | None:
     """Registry entry for ``slot``, or None when unknown (treat as human-only)."""
     return SLOT_OWNERSHIP.get((slot or "").strip().lower())
+
+
+# ── Capability registry (Phase 6: redo / replay cross-agent requests) ────────
+
+
+@dataclass(frozen=True)
+class Capability:
+    agent: str
+    description: str = ""
+
+
+CAPABILITY_REGISTRY: dict[tuple[str, str], Capability] = {
+    # "actually send that list to my email instead of fax" after dispatch —
+    # not a slot update: re-dispatch the provider list with a new
+    # method/destination.
+    ("redo", "delivery"): Capability(
+        agent="delivery_management_agent",
+        description="re-dispatch the provider list with a new method/destination",
+    ),
+    # "can you repeat my benefits again" — re-explain the plan benefits
+    # (fetch_benefits is idempotent from Salesforce).
+    ("replay", "benefits"): Capability(
+        agent="benefits_agent",
+        description="re-explain the plan benefits",
+    ),
+    # "what did you send me / where did it go" — re-state what was sent,
+    # where, and the delivery window (answerable from state:
+    # delivery_method, fax/email, zip_code_used, delivery_timestamp).
+    ("replay", "provider_list"): Capability(
+        agent="delivery_management_agent",
+        description="re-state what was sent, where, and the delivery window",
+    ),
+}
+
+# Extraction-level targets → canonical capability topics. update_target for a
+# redo arrives as "delivery_method" (see CROSS-CALL REQUESTS in the extraction
+# headers); replay targets arrive as loose topic words.
+_CAPABILITY_TOPIC_ALIASES: dict[str, str] = {
+    "delivery": "delivery",
+    "delivery_method": "delivery",
+    "provider_list": "provider_list",
+    "provider list": "provider_list",
+    "providers": "provider_list",
+    "list": "provider_list",
+    "benefits": "benefits",
+    "benefit": "benefits",
+    "my_benefits": "benefits",
+}
+
+
+def capability_topic(target: str) -> str:
+    """Canonical capability topic for an extraction-level target, or ""."""
+    key = (target or "").strip().lower().replace("-", "_")
+    return _CAPABILITY_TOPIC_ALIASES.get(key) or _CAPABILITY_TOPIC_ALIASES.get(key.replace("_", " "), "")
+
+
+def resolve_capability(kind: str, target: str) -> Capability | None:
+    """Capability entry for a (kind, target) request, or None when unknown.
+
+    None means the topic is not routable — callers park it as a question
+    (Phase 3), never hard-decline.
+    """
+    kind = (kind or "").strip().lower()
+    topic = capability_topic(target)
+    if not kind or not topic:
+        return None
+    return CAPABILITY_REGISTRY.get((kind, topic))
 
 
 def invalidated_state_updates(slot: str) -> dict:

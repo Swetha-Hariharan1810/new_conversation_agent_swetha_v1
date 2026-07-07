@@ -12,7 +12,7 @@ detect_wait_request / detect_cannot_provide (agent.utils) first.
 from __future__ import annotations
 
 from agent.core.signal import AgentSignal, AgentStatus
-from agent.state import State
+from agent.state import State, normalize_cross_agent_request
 
 
 def get_fast_path_route(state: State) -> str | None:  # noqa: C901
@@ -28,19 +28,20 @@ def get_fast_path_route(state: State) -> str | None:  # noqa: C901
     if not member_verified and active_agent != "verification_agent":
         return "verification_agent"
 
-    # Routed slot update finished → return to the requesting agent (Phase 4).
-    # The owner (e.g. provider_search after a ZIP update) signals COMPLETE with
-    # pending_slot_update still set; hand control back to return_to_agent. The
-    # orchestrator clears pending_slot_update and arms slot_update_resume when
-    # it takes this route.
-    pending_update = state.get("pending_slot_update") or {}
+    # Routed cross-agent request finished → return to the requesting agent
+    # (Phase 4 slot updates; Phase 6 redo/replay). The owner (e.g.
+    # provider_search after a ZIP update, delivery_management after a
+    # re-dispatch) signals COMPLETE with pending_cross_agent_request still
+    # set; hand control back to return_to_agent. The orchestrator clears the
+    # request and arms slot_update_resume when it takes this route.
+    pending_request = normalize_cross_agent_request(state)
     if (
         member_verified
         and signal.status == AgentStatus.COMPLETE
-        and pending_update.get("return_to_agent")
-        and active_agent != pending_update.get("return_to_agent")
+        and pending_request.get("return_to_agent")
+        and active_agent != pending_request.get("return_to_agent")
     ):
-        return pending_update["return_to_agent"]
+        return pending_request["return_to_agent"]
 
     # delivery_management complete → benefits (always)
     if (

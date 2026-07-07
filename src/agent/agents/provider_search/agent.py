@@ -286,14 +286,16 @@ class ProviderSearchAgent(BaseAgent):
         jump directly to delivery_management_agent with no user pause, so that
         agent had to ask fax/email all over again.
 
-        Routed-update return (Phase 4, Bug C): when pending_slot_update marks
-        this run as a ZIP-update detour from another agent, signal COMPLETE
-        (no interrupt, no delivery bridge ask) so the orchestrator fast-path
-        returns to pending_slot_update["return_to_agent"] in the same
+        Routed-update return (Phase 4, Bug C): when pending_cross_agent_request
+        marks this run as a ZIP-update detour from another agent, signal
+        COMPLETE (no interrupt, no delivery bridge ask) so the orchestrator
+        fast-path returns to the request's return_to_agent in the same
         super-step with the refreshed zip_code_used — the search re-runs from
         the new ZIP at dispatch time, which reads zip_code_used.
         """
-        pending = state.get("pending_slot_update") or {}
+        from agent.state import normalize_cross_agent_request
+
+        pending = normalize_cross_agent_request(state)
         if pending.get("return_to_agent"):
             result = self.signal_complete(
                 state,

@@ -362,10 +362,11 @@ class SlotManagerMixin:
         """Hand off to the slot's owning agent to honor an update NOW (Bug C).
 
         Asks the caller for the new value, routes the next turn to the owner
-        (next_node), records the way back in pending_slot_update, and clears
-        every state key the registry says the update invalidates — so e.g.
-        provider_search cannot early-exit on a stale zip_code_used and the
-        list is rebuilt from the new ZIP. Never says "later".
+        (next_node), records the way back in pending_cross_agent_request
+        (kind="update"), and clears every state key the registry says the
+        update invalidates — so e.g. provider_search cannot early-exit on a
+        stale zip_code_used and the list is rebuilt from the new ZIP. Never
+        says "later".
         """
         from agent.core.slot_ownership import get_ownership, invalidated_state_updates
         from agent.llm.response_generator import _SLOT_LABELS
@@ -383,7 +384,8 @@ class SlotManagerMixin:
         interrupt = self.ask_member_with_context(state, msg, ctx)
         interrupt["next_node"] = own.agent if own else self.AGENT_NAME
         interrupt["awaiting_slot"] = target
-        interrupt["pending_slot_update"] = {
+        interrupt["pending_cross_agent_request"] = {
+            "kind": "update",
             "target": target,
             "return_to_agent": self.AGENT_NAME,
             "return_awaiting": return_awaiting,
@@ -391,6 +393,62 @@ class SlotManagerMixin:
         interrupt.update(invalidated_state_updates(target))
         interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
         return interrupt
+
+    def route_capability_request(
+        self,
+        state: State,
+        *,
+        kind: str,
+        target: str,
+        return_awaiting: str,
+    ) -> Optional[dict]:
+        """Hand a live redo/replay request to its owning agent (Phase 6).
+
+        Returns the hand-off state updates, or None when the request should
+        NOT be routed:
+          - kind is not redo/replay, or target maps to no known capability
+            (callers park unknown topics as questions — never hard-decline);
+          - the owner IS this agent (mid-flow interruption of the current
+            agent stays in-flow — the agent's own branches handle it, no
+            orchestrator hop, no pending_cross_agent_request).
+
+        The hop runs the owner in the same super-step (is_interrupt=False via
+        conditional_routing) so the owner processes this same caller turn and
+        speaks the acknowledgement — mirroring follow_up's reroute mechanics.
+        pending_cross_agent_request records the way back; the owner signals
+        COMPLETE with it still set (or clears it when handing back directly).
+        """
+        from agent.core.slot_ownership import capability_topic, resolve_capability
+
+        kind = (kind or "").strip().lower()
+        if kind not in ("redo", "replay"):
+            return None
+        cap = resolve_capability(kind, target)
+        if cap is None or cap.agent == self.AGENT_NAME:
+            return None
+        topic = capability_topic(target)
+        self.logger.info(
+            "%s: routing %s request to owner",
+            self.AGENT_NAME,
+            kind,
+            extra={"target": topic, "owner": cap.agent, "return_awaiting": return_awaiting},
+        )
+        return {
+            "next_node": cap.agent,
+            "is_interrupt": False,
+            "active_agent": self.AGENT_NAME,
+            "awaiting_slot": "",  # the owner recomputes its own entry point
+            "pending_cross_agent_request": {
+                "kind": kind,
+                "target": topic,
+                "return_to_agent": self.AGENT_NAME,
+                "return_awaiting": return_awaiting,
+            },
+            "slot_attempts": self.slots_dict(),
+            "metadata_events": [],
+            "app_run_id": state.get("app_run_id", ""),
+            "wait_count": 0,  # non-WAIT turn resets the wait streak
+        }
 
     def _ignored_request_guard(self, state: State, target: str) -> Optional[dict]:
         """Escalate honestly on the SECOND identical declined request.
@@ -430,10 +488,12 @@ class SlotManagerMixin:
         answer. Fuzzy match: the pending update target's words, or ≥2 content
         words shared with a parked item's query.
         """
+        from agent.state import normalize_cross_agent_request
+
         query_words = set(re.findall(r"[a-z]+", (followup_query or "").lower()))
         if not query_words:
             return ""
-        pending = state.get("pending_slot_update") or {}
+        pending = normalize_cross_agent_request(state)
         pending_label = (pending.get("target") or "").replace("_", " ")
         if pending_label and set(pending_label.split()) <= query_words:
             return f"your {pending_label} update is already in progress"
@@ -693,7 +753,7 @@ class SlotManagerMixin:
 
         # ── Case B: answer + value-less update request ───────────────────────
         # allow → detour (the detour ask REPLACES the normal next-slot ask);
-        # route → hand off to the owning agent NOW (pending_slot_update);
+        # route → hand off to the owning agent NOW (pending_cross_agent_request);
         # otherwise park in_flow-elsewhere targets, decline human-only ones.
         if update_target and update_target not in applied:
             resolution = self.resolve_update_target(update_target, ctx, state, slot_configs)

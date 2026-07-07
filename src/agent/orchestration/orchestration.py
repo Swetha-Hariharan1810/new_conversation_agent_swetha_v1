@@ -15,7 +15,7 @@ from agent.llm.config import get_routing_llm
 from agent.logger import get_logger
 from agent.orchestration.fast_path import get_fast_path_route
 from agent.orchestration.safeguards import apply_safeguards
-from agent.state import State
+from agent.state import State, normalize_cross_agent_request
 from agent.utils import _last_user_msg, build_system_prompt
 
 logger = get_logger(__name__)
@@ -91,14 +91,19 @@ class Orchestrator:
                 "is_interrupt": False,
                 "orchestrator_reasoning": f"fast-path → {fast_route}",
             }
-            # Routed slot update return hop (Phase 4): consume the pending
-            # marker, restore the requester's awaiting slot, and arm the
-            # one-shot resume flag the requester acknowledges the update with.
-            pending_update = state.get("pending_slot_update") or {}
-            if pending_update.get("return_to_agent") == fast_route:
-                updates["pending_slot_update"] = {}
-                updates["slot_update_resume"] = True
-                updates["awaiting_slot"] = pending_update.get("return_awaiting", "")
+            # Routed cross-agent request return hop (Phase 4 updates, Phase 6
+            # redo/replay): consume the pending marker, restore the
+            # requester's awaiting slot, and arm the one-shot resume flag the
+            # requester acknowledges the completed request with. The resume
+            # flag is only armed when a slot is actually being restored —
+            # requests raised from non-collecting agents (return_awaiting "")
+            # must not leave a stale resume marker behind.
+            pending_request = normalize_cross_agent_request(state)
+            if pending_request.get("return_to_agent") == fast_route:
+                updates["pending_cross_agent_request"] = {}
+                updates["pending_slot_update"] = {}  # legacy key
+                updates["slot_update_resume"] = bool(pending_request.get("return_awaiting"))
+                updates["awaiting_slot"] = pending_request.get("return_awaiting", "")
             return updates
 
         utterance = _last_user_msg(list(state.get("messages") or []))

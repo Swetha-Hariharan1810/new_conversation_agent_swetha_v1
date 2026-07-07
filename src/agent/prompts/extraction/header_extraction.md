@@ -71,8 +71,11 @@ extract it and use event_type:"answered" — the value wins.
 "I don't have it / I lost it / never received it" is NOT wait — that is a
 cannot-provide statement; leave existing behavior unchanged.
 
-## Update requests
-Caller wants to change a previously accepted value. Three shapes:
+## Cross-call requests
+Caller directs a request at something outside the current question. Three
+request shapes, distinguished by request_kind:
+
+update — change a previously accepted VALUE:
 1. New value, no answer to awaiting slot ("actually my last name is Smith")
    → corrections:{last_name:"Smith"}, event_type:"corrected"
 2. New value PLUS a valid answer to the awaiting slot
@@ -80,12 +83,30 @@ Caller wants to change a previously accepted value. Three shapes:
    → extracted:{zip_code:"90210"}, corrections:{email:"a@b.com"},
      event_type:"answered_with_followup", followup_disposition:"answer_now"
 3. No value given ("I need to change my email")
-   → update_target:"email"; if awaiting slot answered, extract it and use
-     event_type:"answered_with_followup" + disposition "answer_now";
-     if not answered, event_type:"corrected" with empty corrections{}.
-update_target / corrections keys MUST be a slot listed in Confirmed:.
-Never a locked field. Asks to change something not in Confirmed: and not a
-known slot → treat as a follow-up question (usually disposition "decline").
+   → update_target:"email", request_kind:"update"; if awaiting slot
+     answered, extract it and use event_type:"answered_with_followup" +
+     disposition "answer_now"; if not answered, event_type:"corrected" with
+     empty corrections{}.
+For shapes 1–2 leave request_kind:"none". update_target / corrections keys
+for updates MUST be a slot listed in Confirmed:. Never a locked field.
+
+redo — re-perform a completed ACTION with a changed parameter
+("send it by email instead", "resend that", "use the other method",
+"can you send that list to my email as well")
+→ update_target:"delivery_method", request_kind:"redo"; event_type rules
+  as shape 3 above.
+
+replay — re-state INFORMATION already given this call
+("repeat my benefits", "what were my benefits again", "read that back",
+"what did you send me exactly?")
+→ request_kind:"replay", update_target:<topic>, e.g. "benefits" or
+  "provider_list"; event_type rules as shape 3 above.
+A replay of a single confirmed VALUE ("can you repeat my ZIP") is NOT a
+replay request — that stays an answer_now follow-up.
+
+Asks to change/redo something not in Confirmed:, not a known slot, and not
+a known redo/replay topic → still set update_target to their words and the
+best-fit request_kind; the system parks unknown topics as questions.
 
 ## Followup disposition
 Only when event_type = answered_with_followup. Set followup_query to the
@@ -107,7 +128,7 @@ If not explicitly stated → omit caller_type from extracted{}.
 
 ## Return
 Return JSON only — no markdown, no explanation.
-{"extracted": {}, "event_type": "answered", "guard": null, "guard_confidence": 0.0, "followup_disposition": "none", "followup_query": null, "update_target": null}
+{"extracted": {}, "event_type": "answered", "guard": null, "guard_confidence": 0.0, "followup_disposition": "none", "followup_query": null, "update_target": null, "request_kind": "none"}
 
 event_type: "answered" | "answered_with_followup" | "wait" | "ambiguous" | "none"
   answered  — caller directly provided a value for the slot
@@ -120,8 +141,10 @@ event_type: "answered" | "answered_with_followup" | "wait" | "ambiguous" | "none
 followup_disposition: "answer_now" | "park" | "decline" | "none" — "none"
   unless event_type is "answered_with_followup"
 followup_query: the side question, condensed, verbatim-ish; null when none
-update_target: slot the caller wants to change when NO new value was given;
-  null otherwise
+update_target: slot the caller wants to change when NO new value was given,
+  or the redo/replay topic; null otherwise
+request_kind: "update" | "redo" | "replay" per Cross-call requests above;
+  "none" when no such request
 
 guard: null when no guard fired; the guard label string when one fires
   e.g. "TRANSFER_REQUEST" | "ABUSE" | "SELF_HARM" | "OFFTOPIC_GLOBAL"

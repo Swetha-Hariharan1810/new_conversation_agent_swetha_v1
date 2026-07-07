@@ -97,13 +97,21 @@ class State(TypedDict):
     # plain strings still appear in old checkpoints; every read site must go
     # through normalize_parked_followups().
     parked_followups: list
-    # Routed slot update in flight (Phase 4): the requesting agent handed off
-    # to the slot's owner and must be resumed when the owner completes.
-    # {"target": str, "return_to_agent": str, "return_awaiting": str}
+    # Routed cross-agent request in flight (Phase 6, generalizing Phase 4's
+    # pending_slot_update): the requesting agent handed off to the owner and
+    # must be resumed when the owner completes.
+    # {"kind": "update"|"redo"|"replay", "target": str,
+    #  "return_to_agent": str, "return_awaiting": str}
+    # Every read site must go through normalize_cross_agent_request().
+    pending_cross_agent_request: dict
+    # LEGACY (Phase 4): superseded by pending_cross_agent_request. Kept only
+    # so checkpoints written before Phase 6 keep working — never written to,
+    # read only through normalize_cross_agent_request's fallback.
     pending_slot_update: dict
     # One-shot marker set by the orchestrator fast-path when it routes back to
-    # pending_slot_update["return_to_agent"]; the resumed agent acknowledges
-    # the completed update, re-asks its pending question, and clears the flag.
+    # the request's return_to_agent with a return_awaiting slot; the resumed
+    # agent acknowledges the completed request, re-asks its pending question,
+    # and clears the flag.
     slot_update_resume: bool
     wait_count: int  # consecutive WAIT turns for the current awaiting slot (reset on non-WAIT)
 
@@ -190,6 +198,35 @@ def normalize_parked_followups(items: Optional[list]) -> list[dict]:
     return normalized
 
 
+_CROSS_AGENT_REQUEST_KINDS = ("update", "redo", "replay")
+
+
+def normalize_cross_agent_request(state: State) -> dict:
+    """The in-flight cross-agent request, in its structured Phase-6 form.
+
+    Reads pending_cross_agent_request; falls back to the legacy Phase-4
+    pending_slot_update key (old checkpoints), which carried no "kind" — all
+    legacy requests were slot value updates, so kind defaults to "update".
+    Returns {} when nothing is in flight. Every read site of either key must
+    go through this helper.
+    """
+    raw = state.get("pending_cross_agent_request") or state.get("pending_slot_update") or {}
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    kind = str(raw.get("kind") or "update").strip().lower()
+    if kind not in _CROSS_AGENT_REQUEST_KINDS:
+        kind = "update"
+    normalized = {
+        "kind": kind,
+        "target": str(raw.get("target") or "").strip(),
+        "return_to_agent": str(raw.get("return_to_agent") or "").strip(),
+        "return_awaiting": str(raw.get("return_awaiting") or "").strip(),
+    }
+    if not normalized["target"] and not normalized["return_to_agent"]:
+        return {}
+    return normalized
+
+
 def reset_for_new_intent(state: State, new_intent: Optional[str]) -> dict:
     """Return the state updates that fully reset the conversation for a brand-new
     intent detected mid-call, forcing identity re-verification from scratch.
@@ -244,7 +281,8 @@ def reset_for_new_intent(state: State, new_intent: Optional[str]) -> dict:
         "correction_return_to": "",
         "ambiguous_counts": {},
         "parked_followups": [],
-        "pending_slot_update": {},
+        "pending_cross_agent_request": {},
+        "pending_slot_update": {},  # legacy key — cleared for old checkpoints
         "slot_update_resume": False,
         "wait_count": 0,
         "verification_restart_index": 0,

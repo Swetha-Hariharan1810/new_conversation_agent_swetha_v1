@@ -90,6 +90,45 @@ payload (Bug D).
 - Unit coverage lives in `src/agent/tests/` (payload hygiene, sanitizer +
   CORRECTION_ACK, disposition/parking, ownership routing round-trip).
 
+### Phase 6 — Capability registry: redo/replay cross-agent requests
+
+- `CAPABILITY_REGISTRY` in `core/slot_ownership.py`, keyed by
+  `(kind, topic)`: `("redo","delivery")` → delivery_management (re-dispatch
+  the provider list with a new method/destination), `("replay","benefits")` →
+  benefits (re-explain), `("replay","provider_list")` → delivery_management
+  (re-state what was sent, where, and the window). `resolve_capability` +
+  `capability_topic` canonicalize extraction-level targets
+  (`delivery_method` → `delivery`); unknown topics resolve to None and park
+  as questions — never a hard decline.
+- `pending_slot_update` generalized to `pending_cross_agent_request`
+  (`{"kind": update|redo|replay, "target", "return_to_agent",
+  "return_awaiting"}`). `normalize_cross_agent_request()` in `state.py` is
+  the single read path; legacy checkpoints fall back with `kind="update"`.
+  fast_path/orchestrator return-hop mechanics unchanged, except the resume
+  flag is only armed when a slot is actually restored.
+- Extraction: `request_kind` on `WorkerResult` (+ `request_kind`/
+  `request_target` on `FollowUpResult`); the UPDATE REQUESTS prompt sections
+  became CROSS-CALL REQUESTS with redo/replay shapes and few-shot rows
+  (header.md, header_extraction.md, benefits.md, follow_up*.md).
+- Re-entry contracts: delivery_management serves a pending redo before its
+  completed-flow early exit (re-collects the method, re-dispatches, announces
+  the re-send, never repeats the benefits offer) and replays the
+  provider-list summary from state; benefits_agent replays the benefits
+  summary before its care_coach_offered exit without re-offering the Care
+  Coach, and acknowledges completed redos on resume. Shared helpers:
+  `BaseAgent.consume_cross_agent_request(state, kinds, targets)` +
+  `SlotManagerMixin.route_capability_request(...)`.
+- follow_up_agent routes live redo/replay requests and parked delivery
+  actions through the capability registry; UPDATE_REQUEST escalation now
+  applies only to human-only targets (routable slots reroute to their
+  owning flow). Requests whose owner IS the active agent resolve in-flow —
+  zero routing.
+- Live E2E scenarios P-1…P-5 (redo from benefits round-trip, replay from
+  the post-flow stage, both in-flow variants, unknown-topic park);
+  `follow_up_update_request` retargeted to the phone number (the one
+  human-only case that still escalates). Unit coverage in
+  `src/agent/tests/test_cross_agent_requests.py`.
+
 ## Context-Retention rebuild — one grounded voice + multi-intent (Issues 1 & 2)
 
 A five-phase, flag-gated rebuild that (1) unifies every turn onto one grounded

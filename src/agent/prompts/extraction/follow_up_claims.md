@@ -35,6 +35,24 @@ IMPORTANT: Classify as update_request even when the caller repeats the SAME numb
 already on file — if they are expressing doubt or asking to re-send, it is an update_request.
 For update_request, set answer=null. The system handles the response.
 
+## Request kind and target (set alongside the classification above)
+
+Whenever the caller asks to change, redo, or replay something, ALSO set
+request_kind + request_target so the system can route the request:
+  redo   — re-send/re-perform a completed action with a changed parameter
+           ("send that to my email instead", "resend that")
+           → request_kind="redo", request_target="delivery_method"
+  replay — re-state information already given this call
+           ("repeat my benefits" → request_kind="replay",
+           request_target="benefits")
+  update — change a stored value ("update my email" →
+           request_kind="update", request_target="email")
+For redo/replay, classify follow_up_intent="update_request" and answer=null —
+the system re-runs the owning flow. Unknown replay topics still get
+request_kind="replay" with request_target set to the caller's words.
+When no change/redo/replay is requested: request_kind="none",
+request_target=null.
+
 When in doubt between done and unsure, use done.
 When in doubt between unsure and question, use question.
 When in doubt between question and update_request, use update_request.

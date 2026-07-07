@@ -315,9 +315,51 @@ class FollowUpAgent(BaseAgent):
                 )
             )
 
-        # ── UPDATE_REQUEST — immediate escalation, every time ────────────────
+        # ── Live cross-call requests (Phase 6): redo / replay route to owner ─
+        # Known capabilities are honored by re-running the owning agent —
+        # never escalated. Applies whether the classifier tagged the turn
+        # update_request or question-without-answer (the request_kind field
+        # is authoritative). Unknown topics fall through to the QUESTION
+        # machinery below — an answer attempt or the cannot-answer path,
+        # never a hard decline.
+        kind_raw = getattr(extraction_result, "request_kind", None) if extraction_result else None
+        request_kind = str(getattr(kind_raw, "value", kind_raw) or "").strip().lower()
+        request_target = (
+            (getattr(extraction_result, "request_target", None) or "").strip() if extraction_result else ""
+        )
+        if (
+            request_kind in ("redo", "replay")
+            and request_target
+            and (follow_up_intent == FollowUpIntent.UPDATE_REQUEST or not answer)
+        ):
+            if hop := self.route_capability_request(
+                state, kind=request_kind, target=request_target, return_awaiting=""
+            ):
+                logger.info(
+                    "follow_up_agent: live %s request routed to owner",
+                    request_kind,
+                    extra={"target": request_target},
+                )
+                return _consume_parked(hop)
+            if follow_up_intent == FollowUpIntent.UPDATE_REQUEST:
+                logger.info(
+                    "follow_up_agent: unknown %s topic — degrading to question path",
+                    request_kind,
+                    extra={"target": request_target},
+                )
+                follow_up_intent = FollowUpIntent.QUESTION
+
+        # ── UPDATE_REQUEST — route via slot ownership; escalate human-only ───
         if follow_up_intent == FollowUpIntent.UPDATE_REQUEST:
-            logger.info("follow_up_agent: update_request — escalating immediately")
+            if request_target and slot_update_owner(request_target) != OWNER_HUMAN:
+                logger.info(
+                    "follow_up_agent: update_request routed via slot ownership",
+                    extra={"target": request_target},
+                )
+                return self._route_parked_action(
+                    state, {"query": last_user, "kind": "action", "target": request_target}
+                )
+            logger.info("follow_up_agent: update_request — escalating (human-only or unknown target)")
             return _consume_parked(
                 self.signal_escalate(
                     state,
@@ -400,9 +442,14 @@ class FollowUpAgent(BaseAgent):
         return _consume_parked(result)
 
     def _route_parked_action(self, state: State, action: dict) -> dict:
-        """Route a parked kind="action" update request via the slot ownership
-        registry (core.slot_ownership) instead of blanket-escalating.
+        """Route a parked kind="action" update request via the capability and
+        slot ownership registries (core.slot_ownership) instead of
+        blanket-escalating.
 
+        - Capability-first (Phase 6): a target the capability registry maps
+          to a redo (e.g. delivery_method after the list was dispatched)
+          hands off directly to the owning agent — a lightweight hop, not a
+          full flow reset.
         - OWNER_VERIFICATION slots (identity): re-run verification for the
           current intent — re-verification re-collects the slot.
         - Intent-owned slots: re-run the owning flow, respecting the intake
@@ -415,6 +462,18 @@ class FollowUpAgent(BaseAgent):
         pre-existing behavior of every mid-call reroute.
         """
         target = (action.get("target") or "").strip()
+        if state.get("provider_list_sent"):
+            if hop := self.route_capability_request(state, kind="redo", target=target, return_awaiting=""):
+                logger.info(
+                    "follow_up_agent: parked action routed via capability registry",
+                    extra={"target": target},
+                )
+                hop["parked_followups"] = [
+                    p
+                    for p in normalize_parked_followups(state.get("parked_followups"))
+                    if not (p.get("kind") == "action" and p.get("target") == target)
+                ]
+                return hop
         owner = slot_update_owner(target)
         logger.info(
             "follow_up_agent: parked update action — routing via slot ownership",
