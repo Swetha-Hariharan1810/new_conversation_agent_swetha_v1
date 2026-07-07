@@ -52,7 +52,7 @@ When in doubt → event_type:"ambiguous".
               corrections{} must be non-empty; otherwise use "ambiguous".
               If Confirmed[] is empty, use "answered" instead.
               Exception: a value-less update request sets update_target with
-              empty corrections{} — see UPDATE REQUESTS below.
+              empty corrections{} — see CROSS-CALL REQUESTS below.
 "answered_with_followup" — caller clearly answered the awaiting slot AND also
               asked for a repeat, a read-back, a confirmation, or a side
               question. Extract the value into extracted{} as normal.
@@ -72,9 +72,11 @@ extract the value and use event_type:"answered" — the value wins.
 cannot-provide statement; leave existing behavior (event_type stays as-is,
 Python-side detect_cannot_provide handles it).
 
-## UPDATE REQUESTS
-Caller wants to change a previously accepted value. Three shapes:
+## CROSS-CALL REQUESTS
+Caller directs a request at something outside the current question. Three
+request shapes, distinguished by request_kind:
 
+### update — change a previously accepted VALUE (request_kind:"update")
 1. Update WITH new value, no answer to awaiting slot
    ("actually my last name is Smith")
    → corrections:{last_name:"Smith"}, event_type:"corrected"
@@ -84,15 +86,37 @@ Caller wants to change a previously accepted value. Three shapes:
      event_type:"answered_with_followup", followup_disposition:"answer_now"
 3. Update WITHOUT a value (with or without an answer)
    ("and I need to change my email" / "it's 90210, oh and I need to change my email")
-   → update_target:"email"; if awaiting slot answered, extract it and use
-     event_type:"answered_with_followup" + disposition "answer_now";
-     if not answered, event_type:"corrected" with empty corrections{} and
-     update_target set.
+   → update_target:"email", request_kind:"update"; if awaiting slot
+     answered, extract it and use event_type:"answered_with_followup" +
+     disposition "answer_now"; if not answered, event_type:"corrected" with
+     empty corrections{} and update_target set.
 
-update_target / corrections keys MUST be a slot listed in Confirmed:.
-Never a LOCKED FIELD. If the caller asks to change something not in
-Confirmed: and not a known slot → treat as a follow-up question and
-classify disposition per the table below (usually "decline").
+For shapes 1–2 (a new value was given) leave request_kind:"none" — the
+corrections{} carry the request. update_target / corrections keys for
+updates MUST be a slot listed in Confirmed:. Never a LOCKED FIELD.
+
+### redo — re-perform a completed ACTION with a changed parameter
+("send it by email instead", "actually fax it instead", "resend that",
+"use the other method", "can you send that list to my email as well")
+→ update_target:"delivery_method", request_kind:"redo";
+  if the awaiting slot was also answered, extract it and use
+  event_type:"answered_with_followup" + disposition "answer_now";
+  otherwise event_type:"corrected" with empty corrections{}.
+
+### replay — re-state INFORMATION already given this call
+("repeat my benefits", "what were my benefits again", "read that back",
+"can you go over what you sent me")
+→ request_kind:"replay", update_target:<topic being replayed>, e.g.
+  update_target:"benefits" or update_target:"provider_list";
+  event_type rules as for redo.
+A replay of a single confirmed VALUE ("can you repeat my ZIP") is NOT a
+replay request — that stays an answer_now follow-up per the table below.
+
+If the caller asks to change or redo something not in Confirmed:, not a
+known slot, and not a known redo/replay topic → still set update_target to
+their words and the best-fit request_kind; the system parks unknown topics
+as questions. Only treat it as a plain follow-up question (disposition per
+the table below) when no change/redo/replay is being requested at all.
 
 ## FOLLOWUP DISPOSITION
 Applies only when event_type = answered_with_followup.
@@ -100,7 +124,7 @@ Set followup_query to the caller's side question (short paraphrase).
 Set followup_disposition:
   answer_now — the question is answerable purely from values in Confirmed:
                (or is a request to repeat/read back something already said,
-               or is an update request per UPDATE REQUESTS above).
+               or is an update request per CROSS-CALL REQUESTS above).
                Also answer_now when the CURRENT stage itself already answers
                the question — e.g. a notification-timing question asked while
                delivery is being arranged is answerable from the delivery
@@ -152,7 +176,11 @@ When event_type != answered_with_followup, omit or set "none".
 | "it's 90210 — sorry, say that again?" | answered_with_followup | disposition "answer_now" — repeat request |
 | "actually my last name is Smith"   | corrected  | Update shape 1: new value, no answer to awaiting slot |
 | "it's 90210 — and actually my email is a@b.com" | answered_with_followup | Update shape 2: answer + corrections{email}, disposition "answer_now" |
-| "and I need to change my email"    | corrected  | Update shape 3: no value — corrections{} empty, update_target "email" |
+| "and I need to change my email"    | corrected  | Update shape 3: no value — corrections{} empty, update_target "email", request_kind "update" |
+| "actually send that list to my email instead of fax" | corrected | Redo: update_target "delivery_method", request_kind "redo" |
+| "yes — oh, and can you resend that?" | answered_with_followup | Answer + redo: extracted value, update_target "delivery_method", request_kind "redo", disposition "answer_now" |
+| "can you repeat my benefits again" | corrected  | Replay: update_target "benefits", request_kind "replay", corrections{} empty |
+| "what did you send me exactly?"    | corrected  | Replay: update_target "provider_list", request_kind "replay" |
 
 ## LOCKED FIELDS
 Never put these in corrections{}: member_status_verify, call_intent.
@@ -170,10 +198,11 @@ If not explicitly stated → omit caller_type from extracted{}.
 
 ## RETURN
 Return JSON only — no markdown, no explanation.
-{ "extracted": {}, "corrections": {}, "event_type": "answered", "guard": null, "guard_confidence": 0.0, "followup_disposition": "none", "followup_query": null, "update_target": null }
+{ "extracted": {}, "corrections": {}, "event_type": "answered", "guard": null, "guard_confidence": 0.0, "followup_disposition": "none", "followup_query": null, "update_target": null, "request_kind": "none" }
 event_type: "answered" | "answered_with_followup" | "corrected" | "ambiguous" | "wait" | "none" — default "answered"
 `extracted` — newly provided slot values; `corrections` — replaces a previously accepted slot
 `guard` — triggered guard label or null; `guard_confidence` — 0.0 when no guard fires
 `followup_disposition` — "answer_now" | "park" | "decline" | "none"; "none" unless event_type is "answered_with_followup"
 `followup_query` — the caller's side question, condensed, verbatim-ish; null when no follow-up
-`update_target` — slot the caller wants to change when NO new value was given; null otherwise
+`update_target` — slot the caller wants to change when NO new value was given, or the redo/replay topic; null otherwise
+`request_kind` — "update" | "redo" | "replay" per CROSS-CALL REQUESTS; "none" when no such request

@@ -101,7 +101,8 @@ def test_route_slot_update_signal():
 
     assert route["next_node"] == "provider_search_agent"
     assert route["awaiting_slot"] == "zip_code"
-    assert route["pending_slot_update"] == {
+    assert route["pending_cross_agent_request"] == {
+        "kind": "update",
         "target": "zip_code",
         "return_to_agent": "delivery_management_agent",
         "return_awaiting": "fax_confirmed",
@@ -149,8 +150,8 @@ async def test_delivery_routes_zip_update(monkeypatch):
     result = await agent.run(state)
 
     assert result["next_node"] == "provider_search_agent"
-    assert result["pending_slot_update"]["return_to_agent"] == "delivery_management_agent"
-    assert result["pending_slot_update"]["return_awaiting"] == "fax_confirmed"
+    assert result["pending_cross_agent_request"]["return_to_agent"] == "delivery_management_agent"
+    assert result["pending_cross_agent_request"]["return_awaiting"] == "fax_confirmed"
     assert result["zip_code_used"] == ""
 
 
@@ -175,7 +176,7 @@ async def test_dispatch_blocked_by_parked_zip_action(monkeypatch):
     result = await agent._proceed_to_dispatch(state, "fax", "5551234567")
 
     assert result["next_node"] == "provider_search_agent"
-    assert result["pending_slot_update"]["target"] == "zip_code"
+    assert result["pending_cross_agent_request"]["target"] == "zip_code"
     # The routed update consumed the parked action item.
     assert result["parked_followups"] == []
 
@@ -385,5 +386,5 @@ async def test_verification_time_zip_correction_routes_not_ghost_acks(monkeypatc
     assert value is None
     # zip_code is route_to_owner → immediate hand-off, no ghost "I've updated".
     assert interrupt["next_node"] == "provider_search_agent"
-    assert interrupt["pending_slot_update"]["target"] == "zip_code"
-    assert interrupt["pending_slot_update"]["return_awaiting"] == "dob"
+    assert interrupt["pending_cross_agent_request"]["target"] == "zip_code"
+    assert interrupt["pending_cross_agent_request"]["return_awaiting"] == "dob"

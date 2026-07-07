@@ -20,6 +20,18 @@ class FollowupDisposition(str, Enum):
     NONE = "none"  # default when event_type != answered_with_followup
 
 
+class RequestKind(str, Enum):
+    """Cross-call request shapes (Phase 6). See CROSS-CALL REQUESTS in the
+    extraction headers. "update" = change a stored value; "redo" = re-perform
+    a completed action with a changed parameter ("send it by email instead");
+    "replay" = re-state information already given ("repeat my benefits")."""
+
+    UPDATE = "update"
+    REDO = "redo"
+    REPLAY = "replay"
+    NONE = "none"
+
+
 class GuardType(str, Enum):
     TRANSFER_REQUEST = "TRANSFER_REQUEST"
     ABUSE = "ABUSE"
@@ -47,8 +59,12 @@ class WorkerResult(BaseModel):
     followup_disposition: FollowupDisposition = FollowupDisposition.NONE
     # The side question, condensed, verbatim-ish
     followup_query: Optional[str] = None
-    # Slot the caller wants to change when NO new value was given
+    # Slot the caller wants to change when NO new value was given; for
+    # redo/replay requests, the topic being redone/replayed
     update_target: Optional[str] = None
+    # Shape of the cross-call request when update_target is set (Phase 6):
+    # "update" (default for bare value changes), "redo", or "replay"
+    request_kind: RequestKind = RequestKind.NONE
 
 
 class FollowUpIntent(str, Enum):
@@ -70,3 +86,8 @@ class FollowUpResult(BaseModel):
     follow_up_intent: FollowUpIntent = FollowUpIntent.UNSURE
     answer: Optional[str] = None
     detected_intent: Optional[str] = None
+    # Cross-call request classification (Phase 6): "redo"/"replay" requests
+    # route to the owning agent via the capability registry; "update" requests
+    # route via slot ownership. request_target names the slot or topic.
+    request_kind: RequestKind = RequestKind.NONE
+    request_target: Optional[str] = None

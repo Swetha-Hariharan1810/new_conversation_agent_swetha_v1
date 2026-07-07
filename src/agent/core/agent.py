@@ -51,5 +51,28 @@ class BaseAgent(ConversationGuardsMixin, SlotManagerMixin, SignalsMixin, ABC):
     async def execute(self, state: State) -> dict:
         return await self.run(state)
 
+    def consume_cross_agent_request(self, state: State, kinds: tuple, targets: tuple) -> dict:
+        """The in-flight cross-agent request this agent should serve now, or {}.
+
+        Re-entry contract helper (Phase 6): owning agents call this at the top
+        of run() to detect a routed redo/replay/update aimed at them. A match
+        requires the request kind AND target to be in the given sets, and the
+        requester to be a DIFFERENT agent — an agent never consumes its own
+        outbound request (e.g. delivery_management's routed ZIP update, whose
+        pending marker must survive until provider_search finishes).
+
+        The caller owns clearing: either signal COMPLETE with the request
+        still set (the orchestrator return hop consumes it) or clear
+        pending_cross_agent_request explicitly when handing back directly.
+        """
+        from agent.state import normalize_cross_agent_request
+
+        request = normalize_cross_agent_request(state)
+        if not request or request.get("return_to_agent") == self.AGENT_NAME:
+            return {}
+        if request.get("kind") in kinds and request.get("target") in targets:
+            return request
+        return {}
+
     @abstractmethod
     async def run(self, state: State) -> dict: ...

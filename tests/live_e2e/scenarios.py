@@ -1522,13 +1522,17 @@ _PCP_TO_FOLLOW_UP = PCP_VERIFY + [
     "no thank you",  # decline Care Coach → follow-up "anything else?"
 ]
 
+# Phase 6 redefinition: update requests in follow_up now route to the owning
+# flow for every capability/slot the registries know (re-sends → delivery,
+# zip → provider flow, …). Only HUMAN-ONLY targets still escalate — the phone
+# number on file is the canonical one. The old fax re-send utterance this
+# scenario used is now a routable redo, covered by redo_resend_from_follow_up.
 follow_up_update_request = Scenario(
     name="follow_up_update_request",
     flow="pcp",
     user_turns=_PCP_TO_FOLLOW_UP
     + [
-        "actually can you send it to a different fax number, "
-        "six one seven five five five nine nine nine nine",
+        "actually I need to update the phone number you have on file for me",
     ],
     expect=Expected(
         completed=True,
@@ -1539,6 +1543,10 @@ follow_up_update_request = Scenario(
             r"transfer you to a representative",
             pool_regex(MSG_UPDATE_REQUEST_ESCALATE),
         ],
+    ),
+    notes=(
+        "Phase 6: only human-only update targets (phone_number) escalate from "
+        "follow_up; routable targets are handed to their owning flow instead."
     ),
 )
 
@@ -3467,6 +3475,220 @@ zip_update_during_fax_confirmation = Scenario(
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
+# P. Cross-agent redo/replay requests (Phase 6)
+#
+# Phase 4's registry routes slot VALUE updates. Phase 6 adds the two further
+# request kinds real calls contain: redo (re-perform a completed action with
+# a changed parameter) and replay (re-state information already given).
+# ──────────────────────────────────────────────────────────────────────────────
+
+redo_fax_to_email_from_benefits = Scenario(
+    name="redo_fax_to_email_from_benefits",
+    flow="pcp",
+    timeout_s=420,
+    retries=2,  # request_kind extraction is LLM-driven
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",  # ZIP on file confirmed
+        "send it to my fax",  # delivery method
+        "yes that's correct",  # fax confirmed → dispatch + benefits offer
+        "yes please",  # benefits → explanation + Care Coach offer
+        # Phase 6 (a): mid Care-Coach offer, the member wants the ALREADY
+        # DISPATCHED list re-sent by another method — a redo_action, not a
+        # slot update. benefits routes to delivery, which re-dispatches.
+        "actually can you send that list to my email instead of fax",
+        "yes that's correct",  # email read-back confirmed → re-dispatch
+        "no thank you",  # Care Coach re-offer declined (where we left off)
+        "no that's all, thanks",  # close
+    ],
+    turn_expectations={
+        # Before the redo: the Care Coach offer (benefits agent).
+        12: TurnExpectation(ai_contains=[r"[Cc]oach"], slot_awaiting="care_coach_response"),
+        # The hop landed in delivery's re-dispatch branch: email read-back.
+        13: TurnExpectation(ai_contains=[r"email"], slot_awaiting="email_confirmed"),
+        # The resume: re-send acknowledged AND the Care Coach offer re-asked —
+        # never the benefits offer again.
+        14: TurnExpectation(ai_contains=[r"email", r"[Cc]oach"], slot_awaiting="care_coach_response"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "provider_list_sent": True,
+            "delivery_method": "email",
+            "benefits_offer_made": True,
+            "pending_cross_agent_request": falsy,  # round-trip fully consumed
+        },
+        transcript_contains=[r"(?i)same .{0,40}list|as well"],
+    ),
+    notes=(
+        "Phase 6 (a): a fax→email redo requested from benefits_agent after "
+        "dispatch routes to delivery_management (capability registry), "
+        "re-dispatches by email, does NOT repeat the benefits offer "
+        "(benefits_offer_made stays True), and returns to benefits at the "
+        "Care Coach offer where the call left off."
+    ),
+)
+
+replay_benefits_from_follow_up = Scenario(
+    name="replay_benefits_from_follow_up",
+    flow="pcp",
+    timeout_s=420,
+    retries=2,
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "yes please",  # benefits explained + Care Coach offer
+        "no thank you",  # Care Coach declined → care_wellness → follow-up stage
+        # Phase 6 (b): a replay_info request after the benefits flow finished.
+        # No update_target fires and benefits_inquiry is not an intake intent —
+        # the capability registry is the only way to honor this.
+        "can you repeat my benefits again?",
+        "no that's all, thanks",  # close
+    ],
+    turn_expectations={
+        # The replay: benefits re-explained (deductible read again) — and the
+        # Care Coach must NOT be re-offered on a routed replay.
+        14: TurnExpectation(ai_contains=[r"(?i)deductible"]),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "pending_cross_agent_request": falsy,
+            "benefits_explained": True,
+        },
+        # The benefits summary appears twice: the original explanation and
+        # the replay.
+        transcript_count={r"(?i)individual deductible": 2},
+    ),
+    notes=(
+        "Phase 6 (b): 'repeat my benefits' voiced at the post-flow stage "
+        "routes through follow_up to benefits_agent via the capability "
+        "registry, re-explains (fetch_benefits is idempotent), skips a second "
+        "Care Coach offer, and hands back to follow_up for the close."
+    ),
+)
+
+redo_inflow_before_dispatch = Scenario(
+    name="redo_inflow_before_dispatch",
+    flow="pcp",
+    timeout_s=420,
+    retries=2,
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        # Phase 6 (c): the owner IS the active agent — switching fax→email
+        # while still in delivery before dispatch resolves in-flow: the
+        # existing delivery_method/contact branches handle it, zero routing.
+        "actually email is better",
+        "yes that's correct",  # email read-back → dispatch + benefits offer
+        "no thanks",  # decline benefits
+        "no thank you",  # decline Care Coach
+        "no that's all, thanks",
+    ],
+    turn_expectations={
+        11: TurnExpectation(ai_contains=[r"email"]),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "provider_list_sent": True,
+            "delivery_method": "email",
+            "pending_cross_agent_request": falsy,  # never set — no hop
+        },
+    ),
+    notes=(
+        "Phase 6 (c): a method switch voiced while delivery_management is "
+        "active and the list is NOT yet dispatched stays in-flow — no "
+        "pending_cross_agent_request, no orchestrator hop."
+    ),
+)
+
+replay_benefits_inflow_at_coach_offer = Scenario(
+    name="replay_benefits_inflow_at_coach_offer",
+    flow="pcp",
+    timeout_s=420,
+    retries=2,
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "yes please",  # benefits explained + Care Coach offer
+        # Phase 6 (c): replay of benefits' own material while benefits is
+        # active — in-flow re-explain + re-ask, zero routing.
+        "sorry, can you repeat my benefits again?",
+        "no thank you",  # Care Coach declined
+        "no that's all, thanks",
+    ],
+    turn_expectations={
+        # The in-flow replay: benefits re-explained AND the offer re-asked.
+        13: TurnExpectation(
+            ai_contains=[r"(?i)deductible", r"[Cc]oach"], slot_awaiting="care_coach_response"
+        ),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={"pending_cross_agent_request": falsy},
+    ),
+    notes=(
+        "Phase 6 (c): 'repeat my benefits' during benefits' own Care Coach "
+        "offer resolves in-flow — re-explanation + re-offer in one turn, no "
+        "routing."
+    ),
+)
+
+unknown_replay_topic_parks = Scenario(
+    name="unknown_replay_topic_parks",
+    flow="pcp",
+    timeout_s=420,
+    retries=2,
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "yes please",  # benefits explained + Care Coach offer
+        # Phase 6 (d): a replay request for a topic no capability owns.
+        # Must park as a question (Phase 3 path) — never a hard decline.
+        "can you go over my claim history again?",
+        "no thank you",  # Care Coach declined
+        "what about that claim history?",  # follow_up answers/cannot-answer
+        "no that's all, thanks",
+    ],
+    turn_expectations={
+        # The park acknowledgement + the Care Coach offer re-asked, no
+        # decline phrasing.
+        13: TurnExpectation(ai_contains=[r"[Cc]oach"], slot_awaiting="care_coach_response"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "pending_cross_agent_request": falsy,
+            "parked_followups": falsy,  # consumed by follow_up
+        },
+    ),
+    notes=(
+        "Phase 6 (d): an unknown replay topic ('claim history') parks as a "
+        "kind=question item instead of declining; follow_up surfaces it at "
+        "the post-flow stage. The call never escalates over it."
+    ),
+)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Registry — run order matters (scenarios share Salesforce data; run serially)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -3571,6 +3793,12 @@ SCENARIOS: list[Scenario] = [
     emily_carter_correction_single_ask,  # O-1 — Bug A: correction double-ask
     notification_followup_not_declined,  # O-2 — Bug B: later-stage question declined
     zip_update_during_fax_confirmation,  # O-3 — Bug C: zip-update routing (mutating)
+    # P. Cross-agent redo/replay requests (Phase 6)
+    redo_fax_to_email_from_benefits,  # P-1 — (a) redo routes benefits → delivery → back
+    replay_benefits_from_follow_up,  # P-2 — (b) replay routes follow_up → benefits → back
+    redo_inflow_before_dispatch,  # P-3 — (c) owner active pre-dispatch → in-flow, zero routing
+    replay_benefits_inflow_at_coach_offer,  # P-4 — (c) in-flow benefits replay, zero routing
+    unknown_replay_topic_parks,  # P-5 — (d) unknown replay topic parks as a question
 ]
 
 SCENARIOS_BY_NAME: dict[str, Scenario] = {s.name: s for s in SCENARIOS}

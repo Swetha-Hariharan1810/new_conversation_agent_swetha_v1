@@ -19,10 +19,11 @@ from agent.agents.benefits.constants import (
 from agent.agents.benefits.handlers import fetch_benefits
 from agent.agents.benefits.llm import extract_benefits_decision
 from agent.core.agent import BaseAgent
+from agent.core.slot_ownership import capability_topic
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
 from agent.slots.normalizers import normalize_yes_no
-from agent.state import State
+from agent.state import State, normalize_parked_followups
 from agent.utils import _last_assistant_msg, _last_user_msg, build_extraction_prompt_core, pick
 
 logger = get_logger(__name__)
@@ -53,6 +54,31 @@ class BenefitsAgent(BaseAgent):
         last_user = _last_user_msg(messages)
         last_agent = _last_assistant_msg(messages)
         current_awaiting = state.get("awaiting_slot", "")
+
+        # ── CROSS-AGENT RE-ENTRY (Phase 6): replay of the benefits summary ───
+        # Checked BEFORE the care_coach_offered early exit — the whole point
+        # of the re-entry contract is serving requests after completion.
+        replay_request = self.consume_cross_agent_request(state, kinds=("replay",), targets=("benefits",))
+        if replay_request:
+            return await self._replay_benefits(state, request=replay_request)
+
+        # ── RESUME after a routed request completed (Phase 6 round-trip) ─────
+        # The orchestrator sent us back after the owner (delivery re-dispatch)
+        # finished. Acknowledge and re-ask the still-unanswered Care Coach
+        # offer — no extraction on this hop (the last user utterance was
+        # consumed by the owner). The benefits offer itself is NOT repeated.
+        if state.get("slot_update_resume") and current_awaiting == _CARE_COACH_SLOT:
+            method = (state.get("delivery_method") or "").strip()
+            ack = (
+                f"All set — I've sent that same list to your {method} as well. "
+                if method
+                else "All set — that's been taken care of. "
+            )
+            result = self.ask_member(state, ack + random.choice(CARE_COACH_OFFER_TEMPLATES))
+            result["awaiting_slot"] = _CARE_COACH_SLOT
+            result["slot_update_resume"] = False
+            result["benefits_explained"] = state.get("benefits_explained", False)
+            return result
 
         # ── EARLY EXIT: only gate on care_coach_offered; benefits_explained may be False on NO path ─
         if state.get("care_coach_offered"):
@@ -140,6 +166,42 @@ class BenefitsAgent(BaseAgent):
         if interrupt := await self.run_conversation_guards(state, user_text=last_user, result=result):
             return interrupt
 
+        # ── CROSS-CALL REQUESTS (Phase 6): redo / replay voiced mid-offer ────
+        kind_raw = getattr(result, "request_kind", None) if result else None
+        request_kind = str(getattr(kind_raw, "value", kind_raw) or "").strip().lower()
+        request_target = ((getattr(result, "update_target", None) or "").strip()) if result else ""
+        if request_kind in ("redo", "replay") and request_target:
+            # Replay of our own material stays in-flow — re-explain and
+            # re-ask the offer, zero routing.
+            if request_kind == "replay" and capability_topic(request_target) == "benefits":
+                return await self._replay_benefits(state, request=None)
+            # Another agent owns it (e.g. redo → delivery re-dispatch):
+            # hand off now; the way back is the Care Coach offer.
+            if hop := self.route_capability_request(
+                state, kind=request_kind, target=request_target, return_awaiting=_CARE_COACH_SLOT
+            ):
+                return hop
+            # Unknown topic — park as a question for follow_up (Phase 3
+            # degrade path), acknowledge, and re-ask the offer. Never a
+            # hard decline.
+            parked = normalize_parked_followups(state.get("parked_followups"))
+            parked.append(
+                {"query": last_user or f"{request_kind} {request_target}", "kind": "question", "target": ""}
+            )
+            logger.info(
+                "benefits_agent: unknown %s topic parked as question",
+                request_kind,
+                extra={"target": request_target},
+            )
+            retry = self.ask_member(
+                state,
+                "I'll come back to that in just a moment. " + random.choice(CARE_COACH_OFFER_TEMPLATES),
+            )
+            retry["awaiting_slot"] = _CARE_COACH_SLOT
+            retry["parked_followups"] = parked
+            retry["benefits_explained"] = state.get("benefits_explained", False)
+            return retry
+
         extracted = (result.extracted or {}) if result else {}
         raw_response = extracted.get("care_coach_response", "")
         normalized = normalize_yes_no(raw_response) if raw_response else ""
@@ -178,6 +240,61 @@ class BenefitsAgent(BaseAgent):
         retry_result["awaiting_slot"] = _CARE_COACH_SLOT
         retry_result["benefits_explained"] = True
         return retry_result
+
+    async def _replay_benefits(self, state: State, request: dict | None) -> dict:
+        """Replay capability (Phase 6): re-explain the plan benefits.
+
+        request set   — routed re-entry after our flow completed: re-run the
+                        Phase A fetch+explain (fetch_benefits is idempotent
+                        from Salesforce), skip re-offering the Care Coach,
+                        clear the request key, and hand back to
+                        return_to_agent (or follow_up when none).
+        request None  — in-flow replay voiced during the Care Coach offer:
+                        re-explain and re-ask the offer, no routing.
+        """
+        amounts = {
+            "individual_deductible": (state.get("individual_deductible") or "").strip(),
+            "family_deductible": (state.get("family_deductible") or "").strip(),
+            "coinsurance_percent": (state.get("coinsurance_percent") or "").strip(),
+            "individual_oop_max": (state.get("individual_oop_max") or "").strip(),
+            "family_oop_max": (state.get("family_oop_max") or "").strip(),
+        }
+        if not all(amounts.values()):
+            # Benefits were never fetched this call (NO path) — fetch now.
+            benefits, interrupt = await fetch_benefits(self, state)
+            if interrupt:
+                return interrupt
+            amounts = {
+                "individual_deductible": _clean_amount(benefits.get("individual_deductible")),
+                "family_deductible": _clean_amount(benefits.get("family_deductible")),
+                "coinsurance_percent": _clean_amount(benefits.get("coinsurance_percent")),
+                "individual_oop_max": _clean_amount(benefits.get("individual_oop_max")),
+                "family_oop_max": _clean_amount(benefits.get("family_oop_max")),
+            }
+        explanation = BENEFITS_EXPLANATION_TEMPLATE.format(**amounts)
+        logger.info(
+            "benefits_agent: benefits replay",
+            extra={"routed": bool(request), "return_to": (request or {}).get("return_to_agent", "")},
+        )
+
+        if request is None:
+            # In-flow: the Care Coach offer is still unanswered — re-ask it.
+            message = f"Of course — here are your benefits again.\n\n{explanation}\n\n" + random.choice(
+                CARE_COACH_OFFER_TEMPLATES
+            )
+            result = self.ask_member(state, message)
+            result["awaiting_slot"] = _CARE_COACH_SLOT
+        else:
+            # Routed re-entry: no Care Coach re-offer — hand straight back.
+            message = f"Of course — here are your benefits again.\n\n{explanation}"
+            result = self.ask_member(state, message)
+            result["next_node"] = request.get("return_to_agent") or "follow_up_agent"
+            result["awaiting_slot"] = request.get("return_awaiting", "")
+            result["pending_cross_agent_request"] = {}
+            result["pending_slot_update"] = {}  # legacy key
+        result["benefits_explained"] = True
+        result.update(amounts)
+        return result
 
     @staticmethod
     def _completion_context(state: State, care_coach_accepted: bool) -> dict:

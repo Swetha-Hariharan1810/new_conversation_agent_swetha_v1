@@ -37,12 +37,13 @@ from agent.agents.delivery_management.pipelines import (
     build_fax_pipeline,
 )
 from agent.core.agent import BaseAgent
+from agent.core.slot_ownership import capability_topic
 from agent.llm.config import get_extraction_llm
 from agent.llm.extractor import remaining_slots
 from agent.logger import get_logger
 from agent.slots.normalizers import normalize_email, normalize_fax_number, normalize_yes_no
 from agent.slots.validators import validate_email, validate_fax_number
-from agent.state import State
+from agent.state import State, normalize_cross_agent_request
 from agent.utils import (
     _last_assistant_msg,
     _last_user_msg,
@@ -74,12 +75,31 @@ class DeliveryManagementAgent(BaseAgent):
 
         current_awaiting = state.get("awaiting_slot", "") or "delivery_method"
 
+        # ── CROSS-AGENT RE-ENTRY (Phase 6): redo / replay aimed at us ────────
+        # A pending request with a delivery target means we are re-dispatching
+        # (kind redo/update) or recapping (kind replay) — the completed-flow
+        # early exits below must NOT fire while it is unresolved. redo_active
+        # is checked on the raw pending request (not consume_cross_agent_
+        # request) because the in-flow re-dispatch marker names US as the
+        # requester and must still gate the early exits on later turns.
+        pending_request = normalize_cross_agent_request(state)
+        redo_active = pending_request.get("kind") in ("redo", "update") and pending_request.get("target") in (
+            "delivery",
+            "delivery_method",
+        )
+        replay_request = self.consume_cross_agent_request(
+            state, kinds=("replay",), targets=("provider_list",)
+        )
+        if replay_request and state.get("provider_list_sent"):
+            return self._replay_provider_list(state, replay_request)
+
         # ── EARLY EXIT: already dispatched + benefits offered (re-entry) ─────
         # Check before LLM extraction to avoid unnecessary calls.
         if (
             state.get("provider_list_sent")
             and state.get("benefits_offer_made")
             and current_awaiting != "benefits_response"
+            and not redo_active
         ):
             return self.signal_complete(
                 state,
@@ -88,11 +108,22 @@ class DeliveryManagementAgent(BaseAgent):
                 context_updates=self._completion_context(state, delivery_method, False),
             )
 
+        # ── RE-DISPATCH (Phase 6, redo): re-collect the delivery method ──────
+        # The list was already sent; the caller wants it again by another
+        # method/destination. Keep provider_list_sent history, never repeat
+        # the benefits offer — _proceed_to_dispatch closes the redo instead.
+        # The state copy clears delivery_method so the pipeline re-collects
+        # instead of short-circuiting on the previous method.
+        if redo_active and current_awaiting == "delivery_method":
+            delivery_method = ""
+            state = {**state, "delivery_method": ""}
+
         # ── RECOVERY: dispatched but offer not yet made ──────────────────────
         if (
             state.get("provider_list_sent")
             and not state.get("benefits_offer_made")
             and current_awaiting != "benefits_response"
+            and not redo_active
         ):
             provider_type = (state.get("provider_type") or "provider").strip()
             benefits_msg = random.choice(BENEFITS_OFFER_TEMPLATES).format(provider_type=provider_type)
@@ -165,6 +196,16 @@ class DeliveryManagementAgent(BaseAgent):
         if not update_target and "zip_code" in _corrections:
             update_target = "zip_code"
         if update_target:
+            # ── LIVE REDO (Phase 6): "send it by email instead" post-dispatch.
+            # We own the delivery capability, so this resolves in-flow — no
+            # orchestrator hop. The pending marker (requester = us) keeps the
+            # completed-flow early exits open across the re-collection turns.
+            if (
+                not redo_active
+                and state.get("provider_list_sent")
+                and capability_topic(update_target) == "delivery"
+            ):
+                return self._begin_redispatch(state, current_awaiting)
             from agent.conversation.context import ConversationContext
 
             ctx = ConversationContext.from_state(state)
@@ -172,7 +213,9 @@ class DeliveryManagementAgent(BaseAgent):
             if self.resolve_update_target(update_target, ctx, state, delivery_slots) == "route":
                 return self._route_slot_update(state, update_target, ctx, return_awaiting=current_awaiting)
             # allow/decline: fall through — the fax/email branches below handle
-            # in-flow contact updates; human-only targets decline downstream.
+            # in-flow contact updates (including pre-dispatch delivery-method
+            # switches, which stay in-flow per the capability registry);
+            # human-only targets decline downstream.
 
         # ── BENEFITS RESPONSE PHASE ──────────────────────────────────────────
         if current_awaiting == "benefits_response":
@@ -464,15 +507,15 @@ class DeliveryManagementAgent(BaseAgent):
     def _blocking_list_invalidator(self, state: State) -> str:
         """Target of an unresolved update that invalidates the provider list.
 
-        Checks pending_slot_update and parked kind="action" items against the
-        ownership registry: any target whose entry invalidates
+        Checks pending_cross_agent_request and parked kind="action" items
+        against the ownership registry: any target whose entry invalidates
         provider_list_sent (i.e. zip_code) blocks dispatch until resolved —
         never send a list generated from a ZIP the caller has disputed.
         """
         from agent.core.slot_ownership import get_ownership
-        from agent.state import normalize_parked_followups
+        from agent.state import normalize_cross_agent_request, normalize_parked_followups
 
-        candidates = [(state.get("pending_slot_update") or {}).get("target", "")]
+        candidates = [normalize_cross_agent_request(state).get("target", "")]
         candidates += [
             p.get("target", "")
             for p in normalize_parked_followups(state.get("parked_followups"))
@@ -522,6 +565,18 @@ class DeliveryManagementAgent(BaseAgent):
         timestamp = datetime.now(timezone.utc).isoformat()
         provider_type = (state.get("provider_type") or "provider").strip()
 
+        # ── REDO COMPLETION (Phase 6): announce the re-send, never repeat ────
+        # the benefits offer — benefits_offer_made stays True from the first
+        # dispatch. How control returns depends on who asked for the redo.
+        redo_request = normalize_cross_agent_request(state)
+        if redo_request.get("kind") in ("redo", "update") and redo_request.get("target") in (
+            "delivery",
+            "delivery_method",
+        ):
+            return self._finish_redispatch(
+                state, redo_request, delivery_method, confirmed_destination, timestamp
+            )
+
         # When the member updated their ZIP earlier in this call
         # (provider_search sets zip_code_updated=True), the dispatch
         # confirmation explicitly includes the new ZIP so the member hears
@@ -546,6 +601,132 @@ class DeliveryManagementAgent(BaseAgent):
         else:
             offer_result["email"] = confirmed_destination
         return offer_result
+
+    def _begin_redispatch(self, state: State, return_awaiting: str) -> dict:
+        """Enter the re-dispatch branch (Phase 6 redo, in-flow).
+
+        The provider list was already sent and the caller asked for it again
+        by another method/destination while WE were active. Ask for the new
+        delivery method; the pending marker (requester = us) keeps the
+        completed-flow early exits open until _finish_redispatch closes it.
+        return_awaiting: "benefits_response" when the still-unanswered
+        benefits offer must be re-asked after the re-send; "" otherwise.
+        """
+        logger.info("delivery_management: re-dispatch requested — re-collecting delivery method")
+        result = self.ask_member(
+            state,
+            "Of course — I can send that same list again. Would you like it by fax or email?",
+        )
+        result["awaiting_slot"] = "delivery_method"
+        result["pending_cross_agent_request"] = {
+            "kind": "redo",
+            "target": "delivery",
+            "return_to_agent": self.AGENT_NAME,
+            "return_awaiting": return_awaiting if return_awaiting == "benefits_response" else "",
+        }
+        return result
+
+    def _finish_redispatch(
+        self,
+        state: State,
+        request: dict,
+        delivery_method: str,
+        confirmed_destination: str,
+        timestamp: str,
+    ) -> dict:
+        """Close a re-dispatch: announce the re-send and hand control back.
+
+        - Requester is a slot-collecting agent (return_awaiting set, e.g.
+          benefits mid care-coach): silent COMPLETE with the request still
+          set — the orchestrator return hop restores the awaiting slot and
+          arms slot_update_resume; the requester speaks the acknowledgement.
+        - Requester is us (in-flow redo over the unanswered benefits offer):
+          announce + re-ask the pending benefits offer, clear the request.
+        - Requester collects nothing (follow_up): announce here, hand back
+          via next_node, clear the request.
+        """
+        provider_type = (state.get("provider_type") or "provider").strip()
+        spoken_dest = (
+            speak_email(confirmed_destination) if delivery_method == "email" else confirmed_destination
+        )
+        announce = (
+            f"All set — I've sent that same {provider_type} list to your "
+            f"{delivery_method} at {spoken_dest} as well. {pick(DELIVERY_WINDOW_MSG)}"
+        )
+        common = {
+            "provider_list_sent": True,
+            "benefits_offer_made": True,  # never re-offered on a redo
+            "delivery_method": delivery_method,
+            "delivery_timestamp": timestamp,
+            ("fax" if delivery_method == "fax" else "email"): confirmed_destination,
+        }
+        logger.info(
+            "delivery_management: re-dispatch complete",
+            extra={"method": delivery_method, "return_to": request.get("return_to_agent", "")},
+        )
+
+        if request.get("return_to_agent") == self.AGENT_NAME:
+            # In-flow: the benefits offer was interrupted by the redo and is
+            # still unanswered — re-ask it now (not a repeat: never answered).
+            if request.get("return_awaiting") == "benefits_response":
+                benefits_msg = random.choice(BENEFITS_OFFER_TEMPLATES).format(provider_type=provider_type)
+                result = self.ask_member(state, f"{announce} {benefits_msg}")
+                result["awaiting_slot"] = "benefits_response"
+            else:
+                result = self.ask_member(state, announce)
+                result["next_node"] = "follow_up_agent"
+                result["awaiting_slot"] = ""
+            result.update(common)
+            result["pending_cross_agent_request"] = {}
+            result["pending_slot_update"] = {}  # legacy key
+            return result
+
+        if request.get("return_awaiting"):
+            # Routed from a slot-collecting agent — COMPLETE with the request
+            # kept; the orchestrator consumes it and the requester announces.
+            result = self.signal_complete(
+                state,
+                message="",
+                resolved_intents=["delivery_management"],
+                context_updates=self._completion_context(state, delivery_method, False),
+            )
+            result.update(common)
+            return result
+
+        result = self.ask_member(state, announce)
+        result["next_node"] = request.get("return_to_agent") or "follow_up_agent"
+        result["awaiting_slot"] = ""
+        result.update(common)
+        result["pending_cross_agent_request"] = {}
+        result["pending_slot_update"] = {}  # legacy key
+        return result
+
+    def _replay_provider_list(self, state: State, request: dict) -> dict:
+        """Replay capability (Phase 6): re-state what was sent, where, and the
+        delivery window — answerable purely from state, no re-dispatch."""
+        provider_type = (state.get("provider_type") or "provider").strip()
+        method = (state.get("delivery_method") or "").strip()
+        contact = (state.get("fax") if method == "fax" else state.get("email")) or ""
+        spoken_contact = speak_email(contact) if method == "email" else contact
+        zip_used = (state.get("zip_code_used") or state.get("zip_code") or "").strip()
+        parts = [f"Of course — I sent your {provider_type} provider list"]
+        if zip_used:
+            parts.append(f"for ZIP code {zip_used}")
+        if method and spoken_contact:
+            parts.append(f"by {method} to {spoken_contact}")
+        elif method:
+            parts.append(f"by {method}")
+        summary = " ".join(parts) + f". {pick(DELIVERY_WINDOW_MSG)}"
+        logger.info(
+            "delivery_management: provider_list replay",
+            extra={"return_to": request.get("return_to_agent", "")},
+        )
+        result = self.ask_member(state, summary)
+        result["next_node"] = request.get("return_to_agent") or "follow_up_agent"
+        result["awaiting_slot"] = request.get("return_awaiting", "")
+        result["pending_cross_agent_request"] = {}
+        result["pending_slot_update"] = {}  # legacy key
+        return result
 
     def _ask_contact_confirmation(
         self,
