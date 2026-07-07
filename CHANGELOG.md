@@ -1,5 +1,47 @@
 # Changelog
 
+## delivery_management: method switch + update routing in confirmation branches
+
+Fixes BUG-3 (a channel switch during fax/email confirmation was treated as a
+failed yes/no and re-asked verbatim) and BUG-5 (a "my ZIP changed" turn
+during a confirmation read-back burned retries instead of routing).
+
+- Deterministic pre-branch reconcile: `run()` re-applies
+  `reconcile_worker_result` right after conversation guards, so
+  `update_target`/`request_kind` are populated even when extraction fell
+  back to an empty result (or was faked in tests); the zip-corrections shim
+  is unchanged.
+- New `_maybe_switch_method`, consulted at the top of the `fax_confirmed`,
+  `fax`, `email_confirmed`, and `email` branches. Triggers: an extracted
+  `delivery_method` different from the current one; the other channel's
+  valid value answering this channel's question (carried through as the new
+  pending contact); or a redo/update aimed at the delivery topic — the
+  other channel is implied unless the caller named ONLY the current channel
+  (same-channel redirect, handled by the existing decline path).
+  Pre-dispatch it switches the method, clears the abandoned channel's
+  pending value and change-cycle/confirmation counters, and asks the new
+  channel's confirmation (or the pending read-back when the value arrived
+  in the same utterance), logging `LOG_METHOD_COLLECTED` with
+  `switched_from`. Post-dispatch (list sent, no redo in flight) it
+  delegates to `_begin_redispatch`.
+- Never verbatim-repeat over an unhandled request: both confirmation
+  branches' "no clear yes/no" fallbacks first run
+  `_reroute_unhandled_request` — a routable foreign update ("my ZIP
+  changed") hands off via `_route_slot_update`, a delivery switch goes
+  through `_maybe_switch_method`, a same-channel update ("change my fax
+  number") takes the decline-equivalent new-value ask. Only genuinely
+  unclassifiable turns burn a `slot_fail` retry.
+- `delivery_management.md`: new "Channel SWITCH vs same-channel redirect"
+  section (switch examples extract `delivery_method` and omit the
+  confirmation field; mirrored for fax) and an "Other-slot changes are
+  never confirmation answers" rule (ZIP change → `update_target`
+  "zip_code", `request_kind` "update", never wait/ambiguous).
+- New `src/agent/tests/test_delivery_method_switch.py`: BUG-3 and BUG-5
+  classes parametrized over extraction variants (explicit method, LLM redo
+  flag, regex-only, WAIT mislabel, decline misread, corrections shim),
+  plus counter-reset, post-dispatch redispatch, same-channel redirect, and
+  unclassifiable-retry negatives.
+
 ## Deterministic request-detection layer (extraction-stability root cause)
 
 The routing built in Phases 3–6 hinges on the extraction LLM populating

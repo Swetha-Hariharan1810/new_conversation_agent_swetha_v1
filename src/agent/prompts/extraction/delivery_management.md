@@ -30,6 +30,29 @@ cannot confirm or deny.
 If the caller declines AND provides a replacement in the same utterance,
 extract only the new fax/email value; omit fax_confirmed/email_confirmed.
 
+## Channel SWITCH vs same-channel redirect
+A redirect to a different value on the SAME channel is a decline (above):
+"use a different fax", "send it to another fax number" → fax_confirmed "no".
+Switching CHANNELS is NOT a decline — extract the new delivery_method and
+omit the confirmation field entirely:
+  While confirming a FAX: "actually email is better", "just email it",
+  "can you email it instead", "send it to my email instead of fax",
+  "let's do email instead" → extracted={"delivery_method":"email"},
+  omit fax_confirmed.
+  While confirming an EMAIL: "actually fax is better", "just fax it",
+  "can you fax it instead", "send it to my fax instead of email"
+  → extracted={"delivery_method":"fax"}, omit email_confirmed.
+If the caller also gives the other channel's value ("just email it to
+jane at example dot com"), extract BOTH delivery_method and the new
+email/fax value.
+
+## Other-slot changes are never confirmation answers
+A statement that a DIFFERENT slot changed ("my ZIP code changed",
+"I moved", "my zip is wrong") is never fax_confirmed/email_confirmed —
+return update_target:"zip_code", request_kind:"update", extracted {}.
+Never classify these as wait or ambiguous, even when prefixed with a wait
+word ("wait — my ZIP changed").
+
 FIELDS
   delivery_method  "fax" | "email"
     Preferred channel for the provider list. All mail variants

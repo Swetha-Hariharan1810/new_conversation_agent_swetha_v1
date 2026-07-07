@@ -6,6 +6,7 @@ makes proactive benefits offer.
 from __future__ import annotations
 
 import random
+import re
 from datetime import datetime, timezone
 
 from agent.agents.delivery_management.constants import (
@@ -37,6 +38,7 @@ from agent.agents.delivery_management.pipelines import (
     build_fax_pipeline,
 )
 from agent.core.agent import BaseAgent
+from agent.core.request_detection import detect_request, reconcile_worker_result
 from agent.core.slot_ownership import capability_topic
 from agent.llm.config import get_extraction_llm
 from agent.llm.extractor import remaining_slots
@@ -185,6 +187,12 @@ class DeliveryManagementAgent(BaseAgent):
         if interrupt := await self.run_conversation_guards(state, user_text=last_user, result=result):
             return interrupt
 
+        # ── DETERMINISTIC RECONCILE (Phase 1) ────────────────────────────────
+        # llm.py already reconciles on success, but extraction fallbacks (and
+        # monkeypatched results) bypass it — re-running here is idempotent and
+        # guarantees update_target/request_kind before any branch logic.
+        result = reconcile_worker_result(result, last_user)
+
         # ── ROUTED SLOT UPDATE (Phase 4, Bug C) ──────────────────────────────
         # "Actually my ZIP changed" mid-delivery: zip_code is owned by
         # provider_search (route_to_owner) — hand off NOW instead of repeating
@@ -235,6 +243,10 @@ class DeliveryManagementAgent(BaseAgent):
 
         # ── FAX CONFIRMATION ─────────────────────────────────────────────────
         if current_awaiting == "fax_confirmed":
+            if switch := self._maybe_switch_method(
+                state, result, current_awaiting, delivery_method, fax_on_file, email_on_file
+            ):
+                return switch
             extracted = (result.extracted or {}) if result else {}
             new_fax_raw = extracted.get("fax", "")
             contact_conf_raw = extracted.get("fax_confirmed", "")
@@ -311,7 +323,12 @@ class DeliveryManagementAgent(BaseAgent):
                 ask_result["fax"] = fax_on_file
                 return ask_result
 
-            # No clear yes/no — retry or exhaust
+            # No clear yes/no — before burning a retry, make sure the turn is
+            # not an unhandled request (never verbatim-repeat over one).
+            if handled := self._reroute_unhandled_request(
+                state, result, current_awaiting, delivery_method, fax_on_file, email_on_file
+            ):
+                return handled
             self.slot_fail("fax_confirmed")
             if self.get_slot("fax_confirmed").is_exhausted():
                 return self.signal_escalate(
@@ -326,6 +343,10 @@ class DeliveryManagementAgent(BaseAgent):
 
         # ── FAX UPDATE ───────────────────────────────────────────────────────
         if current_awaiting == "fax":
+            if switch := self._maybe_switch_method(
+                state, result, current_awaiting, delivery_method, fax_on_file, email_on_file
+            ):
+                return switch
             fax_state = {**state, "fax": ""}
             collected_fax: dict = {"fax": ""}
             if interrupt := await self._fax_pipeline.collect(
@@ -346,6 +367,10 @@ class DeliveryManagementAgent(BaseAgent):
 
         # ── EMAIL CONFIRMATION ───────────────────────────────────────────────
         if current_awaiting == "email_confirmed":
+            if switch := self._maybe_switch_method(
+                state, result, current_awaiting, delivery_method, fax_on_file, email_on_file
+            ):
+                return switch
             extracted = (result.extracted or {}) if result else {}
             new_email_raw = extracted.get("email", "")
             contact_conf_raw = extracted.get("email_confirmed", "")
@@ -423,7 +448,12 @@ class DeliveryManagementAgent(BaseAgent):
                 ask_result["email"] = email_on_file
                 return ask_result
 
-            # No clear yes/no — retry or exhaust
+            # No clear yes/no — before burning a retry, make sure the turn is
+            # not an unhandled request (never verbatim-repeat over one).
+            if handled := self._reroute_unhandled_request(
+                state, result, current_awaiting, delivery_method, fax_on_file, email_on_file
+            ):
+                return handled
             self.slot_fail("email_confirmed")
             if self.get_slot("email_confirmed").is_exhausted():
                 return self.signal_escalate(
@@ -440,6 +470,10 @@ class DeliveryManagementAgent(BaseAgent):
 
         # ── EMAIL UPDATE ─────────────────────────────────────────────────────
         if current_awaiting == "email":
+            if switch := self._maybe_switch_method(
+                state, result, current_awaiting, delivery_method, fax_on_file, email_on_file
+            ):
+                return switch
             email_state = {**state, "email": ""}
             collected_email: dict = {"email": ""}
             if interrupt := await self._email_pipeline.collect(
@@ -465,6 +499,194 @@ class DeliveryManagementAgent(BaseAgent):
     # -------------------------------------------------------------------------
     # Private helpers
     # -------------------------------------------------------------------------
+
+    def _maybe_switch_method(  # noqa: C901
+        self,
+        state: State,
+        result,
+        current_awaiting: str,
+        delivery_method: str,
+        fax_on_file: str,
+        email_on_file: str,
+    ) -> dict | None:
+        """Detect and honor a channel switch during contact confirmation.
+
+        Triggers (checked in order):
+          a. extraction produced a valid delivery_method different from the
+             current one ("actually email is better");
+          b. the caller answered a fax question with a valid email value (or
+             vice versa) — giving the other channel's contact IS the switch;
+             the value is carried through as the new pending contact;
+          c. update_target / detect_request says redo|update on the delivery
+             topic ("send it to my email instead", "use the other method") —
+             with only two channels, the other one is implied unless the
+             caller named ONLY the current channel (that is a same-channel
+             redirect, e.g. "use a different fax" — the branch handles it).
+
+        Pre-dispatch: switch delivery_method, drop the abandoned channel's
+        pending value and change-cycle counters, and ask the new channel's
+        confirmation (or the pending-value read-back when the new contact
+        arrived in the same utterance). Post-dispatch with no redo already in
+        flight: the switch is a re-send — delegate to _begin_redispatch.
+        Returns None when no switch is requested.
+        """
+        extracted = (getattr(result, "extracted", None) or {}) if result else {}
+        last_user = _last_user_msg(list(state.get("messages") or []))
+        lowered = last_user.lower()
+
+        old_method = (delivery_method or "").strip().lower()
+        other = {"fax": "email", "email": "fax"}.get(old_method, "")
+        if not other:
+            return None
+
+        # (a) explicit method in this turn
+        new_method = (extracted.get("delivery_method") or "").strip().lower()
+        if new_method not in ("fax", "email") or new_method == old_method:
+            new_method = ""
+
+        # (b) the other channel's value answered this channel's question
+        if not new_method:
+            awaiting_channel = "fax" if current_awaiting in ("fax_confirmed", "fax") else "email"
+            if awaiting_channel == "fax":
+                candidate = normalize_email(str(extracted.get("email") or ""))
+                if candidate and validate_email(candidate).valid:
+                    new_method = "email"
+            else:
+                candidate = normalize_fax_number(str(extracted.get("fax") or ""))
+                if candidate and validate_fax_number(candidate).valid:
+                    new_method = "fax"
+
+        # (c) delivery-topic redo/update with no explicit method
+        if not new_method:
+            target = ((getattr(result, "update_target", None) or "").strip()) if result else ""
+            detected = detect_request(last_user)
+            delivery_request = capability_topic(target) == "delivery" or (
+                detected is not None
+                and detected.kind in ("redo", "update")
+                and detected.target in ("delivery", "delivery_method")
+            )
+            if delivery_request and (
+                re.search(rf"\b{other}\b", lowered) or not re.search(rf"\b{old_method}\b", lowered)
+            ):
+                new_method = other
+
+        if not new_method:
+            return None
+
+        # Post-dispatch: the list already went out — the switch is a re-send.
+        pending_request = normalize_cross_agent_request(state)
+        redo_active = pending_request.get("kind") in ("redo", "update") and pending_request.get("target") in (
+            "delivery",
+            "delivery_method",
+        )
+        if state.get("provider_list_sent") and not redo_active:
+            return self._begin_redispatch(state, current_awaiting)
+
+        logger.info(
+            LOG_METHOD_COLLECTED,
+            extra={"delivery_method": new_method, "switched_from": old_method},
+        )
+
+        # Abandon the old channel cleanly: its pending value and change-cycle /
+        # confirmation counters must not leak into the new channel's flow.
+        self.get_slot(f"{old_method}_change_cycles").reset()
+        self.get_slot(f"{old_method}_confirmed").reset()
+
+        # New contact value in the same utterance → straight to its read-back.
+        carried_value = ""
+        if new_method == "email":
+            candidate = normalize_email(str(extracted.get("email") or ""))
+            if candidate and validate_email(candidate).valid:
+                carried_value = candidate
+        else:
+            candidate = normalize_fax_number(str(extracted.get("fax") or ""))
+            if candidate and validate_fax_number(candidate).valid:
+                carried_value = candidate
+
+        if carried_value:
+            if new_method == "email":
+                confirm = self.ask_member(
+                    state,
+                    f"Just to be sure I have it right — your email address is "
+                    f"{speak_email(carried_value)}, correct?",
+                )
+                confirm["awaiting_slot"] = "email_confirmed"
+                confirm["pending_email"] = carried_value
+                confirm["email"] = email_on_file
+            else:
+                confirm = self.ask_member(
+                    state,
+                    f"Just to be sure I have it right — your fax number is "
+                    f"{carried_value[:3]}-{carried_value[3:6]}-{carried_value[6:]}, correct?",
+                )
+                confirm["awaiting_slot"] = "fax_confirmed"
+                confirm["pending_fax"] = carried_value
+                confirm["fax"] = fax_on_file
+            confirm["delivery_method"] = new_method
+            confirm[f"pending_{old_method}"] = ""
+            return confirm
+
+        switch = self._ask_contact_confirmation(state, new_method, fax_on_file, email_on_file)
+        switch[f"pending_{old_method}"] = ""
+        return switch
+
+    def _reroute_unhandled_request(
+        self,
+        state: State,
+        result,
+        current_awaiting: str,
+        delivery_method: str,
+        fax_on_file: str,
+        email_on_file: str,
+    ) -> dict | None:
+        """Last-resort request check before a verbatim confirmation retry.
+
+        A "no clear yes/no" turn that is actually a request must be honored,
+        never retried over: a routable slot update ("my ZIP changed") hands
+        off to its owner; a delivery switch goes through _maybe_switch_method.
+        Returns None only for genuinely unclassifiable turns — those may
+        burn a slot_fail retry.
+        """
+        last_user = _last_user_msg(list(state.get("messages") or []))
+        detected = detect_request(last_user)
+        if detected is None:
+            return None
+
+        # Delivery switch (redo, or an update aimed at the delivery topic).
+        if detected.kind == "redo" or detected.target in ("delivery", "delivery_method"):
+            return self._maybe_switch_method(
+                state, result, current_awaiting, delivery_method, fax_on_file, email_on_file
+            )
+        if detected.kind != "update":
+            return None
+
+        # Same-channel update ("change my fax number" over the fax read-back)
+        # is a decline of the value on file — ask for the new one.
+        channel = "fax" if current_awaiting.startswith("fax") else "email"
+        if detected.target == channel:
+            if escalation := self.guard_loop_limit(
+                state,
+                f"{channel}_change_cycles",
+                MAX_CONTACT_CHANGE_CYCLES,
+                escalate_message=pick(MSG_CONTACT_EXHAUST),
+                escalate_reason=f"{channel}_change_loop_exceeded",
+            ):
+                return escalation
+            prompts = FAX_UPDATE_PROMPTS if channel == "fax" else EMAIL_UPDATE_PROMPTS
+            ask_result = self.ask_member(state, pick(prompts))
+            ask_result["awaiting_slot"] = channel
+            ask_result[f"pending_{channel}"] = ""
+            ask_result[channel] = fax_on_file if channel == "fax" else email_on_file
+            return ask_result
+
+        # Foreign slot update ("my ZIP changed") — route to its owner NOW.
+        from agent.conversation.context import ConversationContext
+
+        ctx = ConversationContext.from_state(state)
+        delivery_slots = {"delivery_method": None, "fax": None, "email": None}
+        if self.resolve_update_target(detected.target, ctx, state, delivery_slots) == "route":
+            return self._route_slot_update(state, detected.target, ctx, return_awaiting=current_awaiting)
+        return None
 
     async def _handle_benefits_response(self, state: State, result) -> dict:
         """Process the member's yes/no response to the benefits offer."""
