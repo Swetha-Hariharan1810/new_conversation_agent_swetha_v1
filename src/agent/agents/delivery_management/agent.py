@@ -39,7 +39,7 @@ from agent.agents.delivery_management.pipelines import (
 )
 from agent.core.agent import BaseAgent
 from agent.core.request_detection import detect_request, reconcile_worker_result
-from agent.core.slot_ownership import capability_topic
+from agent.core.slot_ownership import canonical_capability_topic
 from agent.llm.config import get_extraction_llm
 from agent.llm.extractor import remaining_slots
 from agent.logger import get_logger
@@ -198,6 +198,8 @@ class DeliveryManagementAgent(BaseAgent):
         # provider_search (route_to_owner) — hand off NOW instead of repeating
         # the fax/email question over the caller's request.
         update_target = ((getattr(result, "update_target", None) or "").strip()) if result else ""
+        _kind_raw = getattr(result, "request_kind", None) if result else None
+        _request_kind = str(getattr(_kind_raw, "value", _kind_raw) or "").strip().lower()
         _corrections = (
             {k: v for k, v in ((getattr(result, "corrections", None) or {}).items()) if v} if result else {}
         )
@@ -208,10 +210,13 @@ class DeliveryManagementAgent(BaseAgent):
             # We own the delivery capability, so this resolves in-flow — no
             # orchestrator hop. The pending marker (requester = us) keeps the
             # completed-flow early exits open across the re-collection turns.
+            # canonical_capability_topic maps list-phrased redo targets
+            # (provider_list) onto delivery; live replays recap, never re-send.
             if (
                 not redo_active
                 and state.get("provider_list_sent")
-                and capability_topic(update_target) == "delivery"
+                and _request_kind != "replay"
+                and canonical_capability_topic("redo", update_target) == "delivery"
             ):
                 return self._begin_redispatch(state, current_awaiting)
             from agent.conversation.context import ConversationContext
@@ -556,11 +561,16 @@ class DeliveryManagementAgent(BaseAgent):
                 if candidate and validate_fax_number(candidate).valid:
                     new_method = "fax"
 
-        # (c) delivery-topic redo/update with no explicit method
+        # (c) delivery-topic redo/update with no explicit method. Live replays
+        # recap what was sent — they never switch the method or re-send.
         if not new_method:
             target = ((getattr(result, "update_target", None) or "").strip()) if result else ""
+            kind_raw = getattr(result, "request_kind", None) if result else None
+            request_kind = str(getattr(kind_raw, "value", kind_raw) or "").strip().lower()
             detected = detect_request(last_user)
-            delivery_request = capability_topic(target) == "delivery" or (
+            delivery_request = (
+                request_kind != "replay" and canonical_capability_topic("redo", target) == "delivery"
+            ) or (
                 detected is not None
                 and detected.kind in ("redo", "update")
                 and detected.target in ("delivery", "delivery_method")

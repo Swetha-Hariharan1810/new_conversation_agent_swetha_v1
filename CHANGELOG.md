@@ -1,5 +1,38 @@
 # Changelog
 
+## benefits: Care-Coach offer honors a delivery redo immediately
+
+Fixes BUG-2: "send that list to my email instead of fax", voiced while the
+Care Coach offer is pending, must hand off to delivery_management NOW and
+bring the member back to the offer exactly once.
+
+- Registry (`core/slot_ownership.py`): re-sending the provider list IS a
+  delivery redo — new `_REDO_TOPIC_EQUIVALENTS` (provider_list → delivery)
+  applied inside `resolve_capability` via the new
+  `canonical_capability_topic(kind, target)`, so ("redo", "provider_list")
+  resolves to the delivery capability. Replay is NOT equivalent (replaying
+  provider_list recaps state). `route_capability_request` now records the
+  CANONICAL topic in `pending_cross_agent_request`, so delivery's
+  `redo_active` re-entry gate fires for list-phrased redos too.
+- `delivery_management`: the live-redo pre-branch and `_maybe_switch_method`
+  use `canonical_capability_topic("redo", …)` and explicitly exclude
+  replay-kind requests (replays recap, never re-send).
+- `benefits._handle_care_coach_response`: deterministic Phase-1 reconcile
+  right after conversation guards, before the redo/replay hook (which stays
+  ahead of the yes/no extraction) — a delivery-phrased redo always yields
+  kind redo / target delivery, making the "unknown topic → park" branch
+  unreachable for those turns. That branch now logs at WARNING with the
+  raw kind/target/utterance for observability.
+- benefits' `slot_update_resume` acknowledgement branch already existed —
+  covered by the round-trip test rather than re-added.
+- Tests: `test_redo_provider_list_resolves_to_delivery` in
+  test_cross_agent_requests.py; new `test_benefits_redo.py` — BUG-2 hand-off
+  across five extraction variants (ideal, provider_list-phrased, regex-only,
+  WAIT mislabel, care-coach-decline misread), never-park regex-only
+  phrasings, unknown-topic warning path, yes/no control, and a regex-only
+  round trip asserting the resume acks the re-send and re-asks the offer
+  exactly once (single "?" in the resume message).
+
 ## verification: identity updates mid-collection always honored in-flow
 
 Fixes BUG-4: "m nine zero seven five zero three — oh, also I need to update

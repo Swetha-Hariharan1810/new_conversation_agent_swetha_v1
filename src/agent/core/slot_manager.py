@@ -418,7 +418,7 @@ class SlotManagerMixin:
         pending_cross_agent_request records the way back; the owner signals
         COMPLETE with it still set (or clears it when handing back directly).
         """
-        from agent.core.slot_ownership import capability_topic, resolve_capability
+        from agent.core.slot_ownership import canonical_capability_topic, resolve_capability
 
         kind = (kind or "").strip().lower()
         if kind not in ("redo", "replay"):
@@ -426,7 +426,9 @@ class SlotManagerMixin:
         cap = resolve_capability(kind, target)
         if cap is None or cap.agent == self.AGENT_NAME:
             return None
-        topic = capability_topic(target)
+        # Record the CANONICAL registry topic (redo/provider_list → delivery):
+        # the owner's re-entry gates key off it (e.g. delivery's redo_active).
+        topic = canonical_capability_topic(kind, target)
         self.logger.info(
             "%s: routing %s request to owner",
             self.AGENT_NAME,

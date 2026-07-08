@@ -140,17 +140,43 @@ def capability_topic(target: str) -> str:
     return _CAPABILITY_TOPIC_ALIASES.get(key) or _CAPABILITY_TOPIC_ALIASES.get(key.replace("_", " "), "")
 
 
+# Redo-topic equivalences: re-sending the provider list IS a delivery redo —
+# "send that list again" and "send it by email instead" both re-dispatch the
+# list, so a redo whose topic canonicalizes to provider_list resolves to the
+# ("redo", "delivery") capability. Replay is NOT equivalent: replaying the
+# provider_list re-states what was sent; replaying delivery makes no sense.
+_REDO_TOPIC_EQUIVALENTS: dict[str, str] = {"provider_list": "delivery"}
+
+
+def canonical_capability_topic(kind: str, target: str) -> str:
+    """Registry topic a (kind, target) request actually resolves to, applying
+    the redo equivalences above — "" when the request is not routable.
+
+    Callers recording a hop (pending_cross_agent_request) must use THIS topic,
+    not capability_topic(target): the owner's re-entry gates key off the
+    canonical registry topic (e.g. delivery's redo_active)."""
+    kind = (kind or "").strip().lower()
+    topic = capability_topic(target)
+    if not kind or not topic:
+        return ""
+    if (kind, topic) in CAPABILITY_REGISTRY:
+        return topic
+    alias = _REDO_TOPIC_EQUIVALENTS.get(topic, "") if kind == "redo" else ""
+    if alias and (kind, alias) in CAPABILITY_REGISTRY:
+        return alias
+    return ""
+
+
 def resolve_capability(kind: str, target: str) -> Capability | None:
     """Capability entry for a (kind, target) request, or None when unknown.
 
     None means the topic is not routable — callers park it as a question
     (Phase 3), never hard-decline.
     """
-    kind = (kind or "").strip().lower()
-    topic = capability_topic(target)
-    if not kind or not topic:
+    topic = canonical_capability_topic(kind, target)
+    if not topic:
         return None
-    return CAPABILITY_REGISTRY.get((kind, topic))
+    return CAPABILITY_REGISTRY.get(((kind or "").strip().lower(), topic))
 
 
 def invalidated_state_updates(slot: str) -> dict:
