@@ -198,8 +198,13 @@ async def extract_follow_up_decision(
         parked_block = (
             "PARKED QUESTIONS — the member asked these earlier in the call and "
             "was promised an answer now. Treat them as questions to answer this "
-            "turn (follow_up_intent: question) and cover them in your answer, "
-            "using only the session snapshot:\n" + "\n".join(f"  - {q}" for q in parked_followups)
+            "turn (follow_up_intent: question) and cover them in your answer.\n"
+            "GROUNDING (hard rule): the answer may ONLY restate facts present "
+            "verbatim in the SESSION SNAPSHOT. Never state a destination "
+            "address, channel, or timestamp that is not in the snapshot — do "
+            "NOT invent which channel or address something was sent to. If the "
+            "snapshot lacks the fact, set answer=null instead.\n"
+            + "\n".join(f"  - {q}" for q in parked_followups)
         )
         messages[-1]["content"] = parked_block + "\n\n" + messages[-1]["content"]
 

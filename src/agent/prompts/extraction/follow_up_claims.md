@@ -61,6 +61,12 @@ When in doubt between question and update_request, use update_request.
 
 Answer only from the SESSION SNAPSHOT. If the information is not there, set answer=null.
 
+GROUNDING (hard rule): the answer may ONLY restate facts that appear verbatim
+in the SESSION SNAPSHOT. NEVER state a destination address, channel, or
+timestamp that is not in the snapshot. Do NOT invent which channel or address
+something was sent to — if the snapshot does not say what was sent, by which
+channel, and to which contact, that fact is missing: set answer=null.
+
 answer=null is the correct and complete response when data is missing.
 Do not offer to find the information. Do not redirect. Do not ask a new question.
 The system handles the fallback — your only job is null.

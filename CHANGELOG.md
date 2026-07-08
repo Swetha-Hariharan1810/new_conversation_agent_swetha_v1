@@ -1,5 +1,44 @@
 # Changelog
 
+## follow_up: parked questions route to the owning agent; closure ordering
+
+Fixes BUG-1: a parked notification/delivery question surfaced in follow_up
+was answered by the generation LLM, which hallucinated the channel/address
+something was "sent" to; and parked items could leak past an explicit
+closure.
+
+- `follow_up/agent.py`: new `_route_parked_question`, consulted right after
+  the parked-action routing and BEFORE any LLM answer attempt (including
+  the first-entry turn — no opener first). Each parked question is matched
+  via `detect_request(query)` plus keyword rules
+  (notification/list/delivery/sent/fax/email → replay `provider_list`;
+  benefits/deductible/coinsurance/OOP → replay `benefits`); when the
+  capability resolves AND the data-exists flag is set
+  (`provider_list_sent` / `benefits_explained`), the question converts to
+  a routed hop via `route_capability_request(kind="replay", …)`, consuming
+  that parked item — the owner answers from real state
+  (`_replay_provider_list` / `_replay_benefits`), never from generation.
+  Questions with no owning capability (or missing data) stay on the
+  grounded LLM path.
+- Closure ordering: a bare closure keyword skips parked routing entirely;
+  when the classifier returns DONE, follow_up closes immediately
+  (`closure_requested=True`) even with parked items — the list is cleared
+  and dropped loudly (`warning`, `extra={"dropped_parked": [...]}`). A
+  parked question is never answered in the same turn as, or after, closure.
+- Grounding: the injected PARKED QUESTIONS block (`follow_up/llm.py`) and
+  the Answering sections of `follow_up.md` / `follow_up_claims.md` now
+  carry a hard rule — answers may ONLY restate facts present verbatim in
+  the session snapshot; never state a destination address, channel, or
+  timestamp not in the snapshot ("Do NOT invent which channel or address
+  something was sent to"); missing fact → answer=null (existing
+  cannot-answer machinery takes over).
+- New `src/agent/tests/test_follow_up_parked_routing.py` (12 tests):
+  BUG-1 routing across four question phrasings, the delivery second leg
+  answering from real state, benefits replay hop, unowned/data-missing
+  questions staying on the LLM path, first-entry routing before the
+  opener, and closure ordering (bare-keyword skip + LLM DONE both close
+  immediately with the dropped-parked warning; no trailing answer).
+
 ## benefits: Care-Coach offer honors a delivery redo immediately
 
 Fixes BUG-2: "send that list to my email instead of fax", voiced while the
