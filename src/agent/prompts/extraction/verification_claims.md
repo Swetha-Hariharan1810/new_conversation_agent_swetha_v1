@@ -105,3 +105,9 @@ CONFIDENCE NOTES
 - member_id: missing M prefix → ambiguous. Return spoken words as-is when M is present.
 - dob: missing year or any uncertain part → ambiguous. Return spoken words as-is.
 - phone_confirmed: only extract yes or no.
+
+## Prompt changelog (regression notes)
+- MID-VERIFICATION UPDATE REQUESTS: motivated by the BUG-4 transcript
+  ("m nine zero seven five zero three — oh, also I need to update my last
+  name") — the update request was parked/declined instead of detoured.
+  Identity-slot updates are never parked and never declined.

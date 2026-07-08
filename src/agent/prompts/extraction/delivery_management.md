@@ -119,3 +119,11 @@ CONFIDENCE NOTES (see header [ANCHOR: CONFIDENCE])
   Indirect-redirect statements ("send it to another fax number", "use a
   different email") are unambiguous declines — extract "no", not "ambiguous".
 - benefits_response: only when agent just offered benefits.
+
+## Prompt changelog (regression notes)
+- Channel SWITCH vs same-channel redirect: motivated by the BUG-3 transcript
+  ("actually email is better" during the fax read-back) — switches were
+  misread as failed confirmations and the fax question repeated verbatim.
+- Other-slot changes are never confirmation answers: motivated by the BUG-5
+  transcript ("wait — my ZIP code changed") — the change statement was
+  classified fax_confirmed "no"/wait instead of update_target "zip_code".

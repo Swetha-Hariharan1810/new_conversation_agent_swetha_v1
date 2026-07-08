@@ -108,3 +108,9 @@ CONFIDENCE NOTES (see header [ANCHOR: CONFIDENCE])
 - dob: missing year or any uncertain part → ambiguous. Return spoken words as-is.
 - relationship: only extract when agent just asked about it; "representative"
   in transfer context → prefer TRANSFER_REQUEST guard over extraction.
+
+## Prompt changelog (regression notes)
+- MID-VERIFICATION UPDATE REQUESTS: motivated by the BUG-4 transcript
+  ("m nine zero seven five zero three — oh, also I need to update my last
+  name") — the update request was parked/declined instead of detoured.
+  Identity-slot updates are never parked and never declined.

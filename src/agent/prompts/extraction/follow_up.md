@@ -155,3 +155,9 @@ Do NOT use `new_intent` for a request to summarize or recap this call — that i
 a `question` answered from the SESSION SNAPSHOT.
 When in doubt between `question` and `new_intent`, use `new_intent` if the
 topic is clearly outside the scope of what was handled this call.
+
+## Prompt changelog (regression notes)
+- GROUNDING hard rule in Answering: motivated by the BUG-1 transcript — a
+  parked "will I get a notification?" question was answered with an invented
+  channel/address. Never state a destination, channel, or timestamp that is
+  not in the SESSION SNAPSHOT; missing fact → answer=null.

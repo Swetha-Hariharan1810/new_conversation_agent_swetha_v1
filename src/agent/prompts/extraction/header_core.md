@@ -55,3 +55,9 @@ guard_confidence: 0.0 when no guard fires
   When a guard fires use its threshold value:
   TRANSFER_REQUEST → 0.95, ABUSE → 0.90, SELF_HARM → 0.90,
   OFFTOPIC_GLOBAL → 0.85
+
+## Prompt changelog (regression notes)
+- WAIT carve-out: motivated by the BUG-5 transcript ("wait — my ZIP code
+  changed, I moved" during fax confirmation) — the LLM labeled a correction
+  turn "wait" and the caller's update was ignored. A wait word followed by a
+  correction/change statement is the correction, never wait.

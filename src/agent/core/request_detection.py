@@ -237,37 +237,43 @@ def reconcile_worker_result(result: Any, last_user: str | None) -> Any:
     if llm_kind == "none":
         llm_kind = ""
 
+    # Decision provenance: every field this pass changes is logged with the
+    # LLM's original value and the final value, so production variance
+    # (how often the regex layer has to intervene) is directly measurable.
+    def _log_change(source: str, field: str, llm_value: str, final_value: str) -> None:
+        logger.info(
+            "request_detection: %s changed %s",
+            source,
+            field,
+            extra={
+                "source": source,
+                "field": field,
+                "llm_value": llm_value,
+                "final_value": final_value,
+                "matched": detected.matched,
+            },
+        )
+
     if not llm_target and not llm_kind:
         result.update_target = detected.target
         result.request_kind = _coerce_like(kind_raw, detected.kind)
-        logger.info(
-            "request_detection: regex fallback populated update_target/request_kind",
-            extra={
-                "source": "regex_fallback",
-                "matched": detected.matched,
-                "kind": detected.kind,
-                "target": detected.target,
-            },
-        )
+        _log_change("regex_fallback", "update_target", llm_target, detected.target)
+        _log_change("regex_fallback", "request_kind", llm_kind or "none", detected.kind)
 
     event_raw = getattr(result, "event_type", None)
     event = str(getattr(event_raw, "value", event_raw) or "").strip().lower()
     has_value = any(v for v in (getattr(result, "extracted", None) or {}).values())
     if event == "wait":
+        # A correction turn, not a hold request.
         new_event = "answered_with_followup" if has_value else "corrected"
         result.event_type = _coerce_like(event_raw, new_event)
-        logger.info(
-            "request_detection: WAIT vetoed — correction turn, not a hold request",
-            extra={"source": "regex_veto", "matched": detected.matched, "new_event": new_event},
-        )
+        _log_change("regex_veto", "event_type", "wait", new_event)
     elif event == "answered" and not has_value:
         has_corrections = any((getattr(result, "corrections", None) or {}).values())
         target_now = (getattr(result, "update_target", None) or "").strip()
         if target_now and not has_corrections:
+            # Bare request labeled ANSWERED — only CORRECTED (C2) honors it.
             result.event_type = _coerce_like(event_raw, "corrected")
-            logger.info(
-                "request_detection: bare request labeled ANSWERED — upgraded to CORRECTED",
-                extra={"source": "regex_veto", "matched": detected.matched, "target": target_now},
-            )
+            _log_change("regex_veto", "event_type", "answered", "corrected")
 
     return result

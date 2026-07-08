@@ -1,5 +1,23 @@
 # Changelog
 
+## Stability hardening: variance matrix + decision provenance
+
+- `reconcile_worker_result` now logs every field it changes with
+  `extra={"source": "regex_fallback"|"regex_veto", "field": …,
+  "llm_value": …, "final_value": …, "matched": …}` so production variance
+  (how often the deterministic layer intervenes, and on which fields) is
+  directly measurable.
+- New `src/agent/tests/test_extraction_variance_matrix.py` (27 tests) — the
+  codified definition of "stable results per run": for each of the five
+  production transcripts (BUG-1…BUG-5), every plausible extraction result
+  (ideal, dropped fields, regex-only, WAIT and AMBIGUOUS mislabels,
+  decline/park misreads) must produce an IDENTICAL final routing signature
+  (next_node + awaiting_slot + pending request + message class).
+- Prompt regression notes appended to `header_core.md`,
+  `delivery_management.md`, `verification_provider.md`,
+  `verification_claims.md`, and `follow_up.md`, each documenting the new
+  rules and the transcript that motivated them.
+
 ## follow_up: parked questions route to the owning agent; closure ordering
 
 Fixes BUG-1: a parked notification/delivery question surfaced in follow_up
