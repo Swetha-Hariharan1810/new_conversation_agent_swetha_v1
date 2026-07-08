@@ -1,5 +1,41 @@
 # Changelog
 
+## verification: identity updates mid-collection always honored in-flow
+
+Fixes BUG-4: "m nine zero seven five zero three — oh, also I need to update
+my last name" must confirm the captured member_id AND open the last-name
+detour now — never park ("in just a moment"), never decline ("a
+representative"), regardless of how the extraction LLM labeled the turn.
+
+- `verification/agent.py`: deterministic pre-branch
+  `reconcile_worker_result` after conversation guards (same rationale as
+  delivery_management — extraction fallbacks and faked results bypass the
+  llm.py wiring).
+- `_collect_slot` (core): a valid answer accompanied by a value-less update
+  request now reaches `_handle_answered_followup` even when the LLM
+  flattened the event to ANSWERED/CORRECTED — previously the clean-confirm
+  path silently dropped the request. Corrections-with-values and
+  redo/replay keep their existing paths.
+- `reconcile_worker_result`: new veto — a bare request (update_target set,
+  no extracted values, no corrections) labeled ANSWERED upgrades to
+  CORRECTED, matching the extraction contract; only the CORRECTED path (C2)
+  can honor a target with no value.
+- Prompt hardening: `verification_provider.md` and `verification_claims.md`
+  gain a "MID-VERIFICATION UPDATE REQUESTS" section with the exact
+  transcript example (answer + update_target="last_name",
+  request_kind="update", disposition left "none") and an explicit
+  never-park / never-decline rule for first_name/last_name/member_id/dob/
+  relationship — the system decides disposition.
+- New `src/agent/tests/test_verification_identity_update.py` (13 tests) at
+  the real-pipeline level (real _NORMALIZERS/_VALIDATORS, only the LLM
+  calls faked): the transcript turn across seven extraction variants
+  (ideal, dropped target, dropped query, park/decline overridden, ANSWERED
+  flattening, CORRECTED mislabel), member_status_verify invalidation, the
+  park/decline-never regression guard, bare-request C2 detours (ANSWERED
+  and WAIT mislabels), cascade-table checks (last_name update keeps
+  first_name; member_id update keeps the dob captured in the same turn),
+  and a clean-answer control.
+
 ## delivery_management: method switch + update routing in confirmation branches
 
 Fixes BUG-3 (a channel switch during fax/email confirmation was treated as a

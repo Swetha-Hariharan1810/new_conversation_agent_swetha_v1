@@ -1020,7 +1020,26 @@ class SlotManagerMixin:
 
                     event_type = getattr(decision, "event_type", None)
 
-                    if event_type == EventType.ANSWERED_WITH_FOLLOWUP:
+                    # A valid answer accompanied by a value-less update request
+                    # must reach the followup handler even when the LLM
+                    # flattened the event to ANSWERED/CORRECTED — otherwise the
+                    # caller's request is silently dropped on the clean-confirm
+                    # path. Only bare "update" shapes route here: corrections
+                    # with values (Case A/C1) and redo/replay keep their paths.
+                    update_hint = (getattr(decision, "update_target", None) or "").strip()
+                    kind_raw = getattr(decision, "request_kind", None)
+                    kind_hint = str(getattr(kind_raw, "value", kind_raw) or "").strip().lower()
+                    corrections_hint = {
+                        k: v for k, v in (getattr(decision, "corrections", None) or {}).items() if v
+                    }
+                    answered_with_request = bool(
+                        update_hint
+                        and update_hint != slot_name
+                        and not corrections_hint
+                        and kind_hint in ("", "none", "update")
+                    )
+
+                    if event_type == EventType.ANSWERED_WITH_FOLLOWUP or answered_with_request:
                         # Slot will be confirmed inside the handler — corrections
                         # (Case A) must apply BEFORE slot_ok of the awaiting slot.
                         # Attempt counter is never incremented on this path.

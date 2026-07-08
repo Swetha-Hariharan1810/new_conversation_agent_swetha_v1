@@ -221,6 +221,10 @@ def reconcile_worker_result(result: Any, last_user: str | None) -> Any:
       With an extracted value in the same turn the event downgrades to
       ANSWERED_WITH_FOLLOWUP (value wins, request handled as Case B);
       otherwise to CORRECTED (bare request, C2).
+    - LLM returned event_type ANSWERED on a bare request (update_target set,
+      no extracted values, no corrections) → upgrade to CORRECTED: the
+      extraction contract classifies bare cross-call requests as corrected,
+      and only the CORRECTED path (C2) can honor a target with no value.
     - Neither detects → result returned untouched.
     """
     detected = detect_request(last_user)
@@ -248,13 +252,22 @@ def reconcile_worker_result(result: Any, last_user: str | None) -> Any:
 
     event_raw = getattr(result, "event_type", None)
     event = str(getattr(event_raw, "value", event_raw) or "").strip().lower()
+    has_value = any(v for v in (getattr(result, "extracted", None) or {}).values())
     if event == "wait":
-        has_value = any(v for v in (getattr(result, "extracted", None) or {}).values())
         new_event = "answered_with_followup" if has_value else "corrected"
         result.event_type = _coerce_like(event_raw, new_event)
         logger.info(
             "request_detection: WAIT vetoed — correction turn, not a hold request",
             extra={"source": "regex_veto", "matched": detected.matched, "new_event": new_event},
         )
+    elif event == "answered" and not has_value:
+        has_corrections = any((getattr(result, "corrections", None) or {}).values())
+        target_now = (getattr(result, "update_target", None) or "").strip()
+        if target_now and not has_corrections:
+            result.event_type = _coerce_like(event_raw, "corrected")
+            logger.info(
+                "request_detection: bare request labeled ANSWERED — upgraded to CORRECTED",
+                extra={"source": "regex_veto", "matched": detected.matched, "target": target_now},
+            )
 
     return result
