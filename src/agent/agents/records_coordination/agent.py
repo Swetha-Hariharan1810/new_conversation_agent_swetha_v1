@@ -43,6 +43,7 @@ from agent.agents.records_coordination.handlers import dispatch_personal_guide, 
 from agent.agents.records_coordination.llm import extract_records_decision
 from agent.conversation.context import ConversationContext
 from agent.core.agent import BaseAgent
+from agent.core.request_detection import reconcile_worker_result
 from agent.llm.config import get_extraction_llm
 from agent.llm.extractor import remaining_slots
 from agent.logger import get_logger
@@ -75,6 +76,14 @@ class RecordsCoordinationAgent(BaseAgent):
         last_agent = _last_assistant_msg(messages)
         current_awaiting = state.get("awaiting_slot", "")
 
+        # ── RESUME after a routed slot update (Phase 7, mirrors delivery) ─────
+        # The return hop restored awaiting_slot; re-ask the preserved question
+        # — no extraction on the stale turn (the owner consumed it).
+        if state.get("slot_update_resume") and current_awaiting:
+            result = self._reask_awaiting(state, current_awaiting, prefix="All set — that's been updated. ")
+            result["slot_update_resume"] = False
+            return result
+
         # ── First entry fast-path ─────────────────────────────────────────────
         # The ClaimAdjustmentAgent already asked "Can you send it over?"
         # and the member's answer is now last_user. We go straight to extraction.
@@ -101,6 +110,20 @@ class RecordsCoordinationAgent(BaseAgent):
 
         if interrupt := await self.run_conversation_guards(state, user_text=last_user, result=result):
             return interrupt
+
+        # ── DETERMINISTIC RECONCILE (Phase 1) ────────────────────────────────
+        # llm.py already reconciles on success, but extraction fallbacks (and
+        # monkeypatched results) bypass it — re-running here is idempotent.
+        result = reconcile_worker_result(result, last_user)
+
+        # ── ROUTED SLOT UPDATE (Phase 7, mirrors delivery's Phase 4 block) ───
+        # A ZIP or identity update voiced mid-records routes to its owner and
+        # returns to the exact awaiting slot; in-flow targets (email) fall
+        # through to the branches below.
+        update_target = ((getattr(result, "update_target", None) or "").strip()) if result else ""
+        if update_target:
+            if route := self._route_foreign_update(state, update_target, return_awaiting=current_awaiting):
+                return route
 
         extracted = (result.extracted or {}) if result else {}
 
@@ -139,6 +162,9 @@ class RecordsCoordinationAgent(BaseAgent):
                 )
 
             # No clear extraction — re-ask (retry once before moving on)
+            # Never verbatim-repeat over an unhandled request (Phase 7).
+            if handled := self._reroute_detected_update(state, return_awaiting=current_awaiting):
+                return handled
             self.slot_fail("upload_method")
             if self.get_slot("upload_method").is_exhausted():
                 return self.signal_escalate(
@@ -176,6 +202,9 @@ class RecordsCoordinationAgent(BaseAgent):
                 return await self._handle_guide_consent_ask(state)
 
             # Ambiguous — retry
+            # Never verbatim-repeat over an unhandled request (Phase 7).
+            if handled := self._reroute_detected_update(state, return_awaiting=current_awaiting):
+                return handled
             self.slot_fail("upload_consent")
             if self.get_slot("upload_consent").is_exhausted():
                 return await self._handle_guide_consent_ask(state)
@@ -257,6 +286,9 @@ class RecordsCoordinationAgent(BaseAgent):
                 return ask_result
 
             # Ambiguous / no extraction → re-read the email, ask again (do NOT ask for new email)
+            # Never verbatim-repeat over an unhandled request (Phase 7).
+            if handled := self._reroute_detected_update(state, return_awaiting=current_awaiting):
+                return handled
             self.slot_fail("email_confirmed")
             if self.get_slot("email_confirmed").is_exhausted():
                 # FIX: escalate on exhaustion instead of silently pivoting to email collection.
@@ -306,6 +338,9 @@ class RecordsCoordinationAgent(BaseAgent):
                     confirm["awaiting_slot"] = "email_confirmed"
                     confirm["pending_email"] = normalized
                     return confirm
+            # Never verbatim-repeat over an unhandled request (Phase 7).
+            if handled := self._reroute_detected_update(state, return_awaiting=current_awaiting):
+                return handled
             self.slot_fail("email")
             if self.get_slot("email").is_exhausted():
                 return self.signal_escalate(
@@ -335,6 +370,9 @@ class RecordsCoordinationAgent(BaseAgent):
                 )
 
             # Ambiguous
+            # Never verbatim-repeat over an unhandled request (Phase 7).
+            if handled := self._reroute_detected_update(state, return_awaiting=current_awaiting):
+                return handled
             self.slot_fail("personal_guide_consent")
             if self.get_slot("personal_guide_consent").is_exhausted():
                 return self.signal_escalate(
@@ -356,6 +394,24 @@ class RecordsCoordinationAgent(BaseAgent):
     # ──────────────────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _reask_awaiting(self, state: State, awaiting: str, prefix: str = "") -> dict:
+        """Re-ask the preserved awaiting question on a slot_update_resume hop."""
+        if awaiting == "email_confirmed":
+            email_on_file = (state.get("pending_email") or state.get("email") or "").strip()
+            msg = random.choice(EMAIL_READBACK_FOR_UPLOAD).format(email=speak_email(email_on_file))
+            result = self.ask_member(state, msg)
+        elif awaiting == "email":
+            result = self.ask_member(state, pick(MSG_EMAIL_UPDATE_PROMPT))
+        elif awaiting == "personal_guide_consent":
+            result = self.ask_member(state, pick(MSG_PERSONAL_GUIDE_OFFER))
+        else:  # upload_method / upload_consent
+            result = self.ask_member(state, pick(MSG_UPLOAD_OFFER))
+            awaiting = awaiting or "upload_consent"
+        result["awaiting_slot"] = awaiting
+        if prefix:
+            result["messages"]["content"] = prefix + result["messages"]["content"]
+        return result
 
     async def _handle_guide_consent_ask(self, state: State) -> dict:
         """Offer Personal Guide outreach and wait for explicit consent."""

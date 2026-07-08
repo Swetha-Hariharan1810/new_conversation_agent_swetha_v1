@@ -32,6 +32,7 @@ from agent.agents.claim_adjustment.llm import extract_claim_adjustment_decision
 from agent.agents.verification.constants import MAX_LOOKUP_ATTEMPTS
 from agent.conversation.context import ConversationContext
 from agent.core.agent import BaseAgent
+from agent.core.request_detection import reconcile_worker_result
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
 from agent.slots.normalizers import normalize_reference_number
@@ -56,6 +57,15 @@ class ClaimAdjustmentAgent(BaseAgent):
     AGENT_NAME = AGENT_NAME
 
     async def run(self, state: State) -> dict:  # noqa: C901
+        # ── CROSS-AGENT RE-ENTRY (Phase 7): claim-status replay aimed at us ───
+        # "what's happening with my claim again?" after the flow completed —
+        # re-state the adjustment status from state (idempotent read), gated
+        # on the status actually existing. Checked BEFORE the completed-flow
+        # early exit, exactly like delivery's provider_list replay.
+        replay_request = self.consume_cross_agent_request(state, kinds=("replay",), targets=("claim_status",))
+        if replay_request and state.get("claim_status"):
+            return self._replay_claim_status(state, replay_request)
+
         # ── PHASE 0: Re-entry guard ────────────────────────────────────────────
         if state.get("claim_flow_complete"):
             return self.signal_complete(
@@ -71,6 +81,17 @@ class ClaimAdjustmentAgent(BaseAgent):
 
         raw_awaiting = state.get("awaiting_slot", "")
         reference_number = (state.get("reference_number") or "").strip()
+
+        # ── RESUME after a routed slot update (Phase 7, mirrors delivery) ─────
+        # The return hop restored awaiting_slot; re-ask the preserved question
+        # — no extraction on the stale turn (the owner consumed it).
+        if state.get("slot_update_resume") and raw_awaiting:
+            result = self.ask_member(
+                state, "All set — that's been updated. " + pick(REFERENCE_NUMBER_BRIDGE_MSGS)
+            )
+            result["awaiting_slot"] = raw_awaiting
+            result["slot_update_resume"] = False
+            return result
 
         # ── PHASE 1 FAST PATH: first entry — ask without LLM ─────────────────
         if not raw_awaiting and not reference_number:
@@ -134,6 +155,22 @@ class ClaimAdjustmentAgent(BaseAgent):
                     )
                 return interrupt
 
+            # ── DETERMINISTIC RECONCILE (Phase 1) ────────────────────────────
+            # llm.py already reconciles on success; extraction fallbacks (and
+            # monkeypatched results) bypass it — re-running is idempotent.
+            result = reconcile_worker_result(result, last_user)
+
+            # ── ROUTED SLOT UPDATE (Phase 7): "my ZIP changed" / "I need to
+            # update my last name" voiced while awaiting the reference number
+            # routes to the owner NOW and returns here — never a park/decline,
+            # never a verbatim re-ask over the caller's request.
+            update_target = (getattr(result, "update_target", None) or "").strip()
+            if update_target:
+                if route := self._route_foreign_update(
+                    state, update_target, return_awaiting=current_awaiting
+                ):
+                    return route
+
             extracted_raw = (result.extracted or {}).get("reference_number", "") if result else ""
             normalized = normalize_reference_number(extracted_raw) if extracted_raw else ""
 
@@ -143,6 +180,9 @@ class ClaimAdjustmentAgent(BaseAgent):
                 logger.info(LOG_REF_COLLECTED)
                 state = {**state, "reference_number": reference_number}
             else:
+                # Never verbatim-repeat over an unhandled request (Phase 7).
+                if handled := self._reroute_detected_update(state, return_awaiting=current_awaiting):
+                    return handled
                 # Use core slot_fail directly — ensures slot_attempts is captured
                 # in the next ask_member call (via slots_dict()), matching the
                 # pattern used by every other agent in the codebase
@@ -232,6 +272,34 @@ class ClaimAdjustmentAgent(BaseAgent):
             resolved_intents=["claim_services"],
             context_updates=self._completion_context(state),
         )
+
+    def _replay_claim_status(self, state: State, request: dict) -> dict:
+        """Replay capability (Phase 7): re-state the adjustment status from
+        state — an idempotent read, exactly like delivery's
+        _replay_provider_list. No lookup, no flow re-entry."""
+        status = (state.get("claim_status") or "").strip()
+        last_update = (state.get("last_update_date") or "").strip()
+        ref = (state.get("reference_number") or "").strip()
+        parts = ["Of course — your claim adjustment"]
+        if ref:
+            parts.append(f"(reference {ref})")
+        parts.append(f"is currently {status}")
+        if last_update:
+            parts.append(f"as of {last_update}")
+        summary = (
+            " ".join(parts) + ". The resolution timeline is 5 to 10 business days "
+            "from receipt of the required information."
+        )
+        logger.info(
+            "claim_adjustment_agent: claim_status replay",
+            extra={"return_to": request.get("return_to_agent", "")},
+        )
+        result = self.ask_member(state, summary)
+        result["next_node"] = request.get("return_to_agent") or "follow_up_agent"
+        result["awaiting_slot"] = request.get("return_awaiting", "")
+        result["pending_cross_agent_request"] = {}
+        result["pending_slot_update"] = {}  # legacy key
+        return result
 
     @staticmethod
     def _completion_context(state: State) -> dict:

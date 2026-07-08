@@ -116,6 +116,20 @@ CAPABILITY_REGISTRY: dict[tuple[str, str], Capability] = {
         agent="delivery_management_agent",
         description="re-state what was sent, where, and the delivery window",
     ),
+    # "actually notify me by email instead" after notification setup finished —
+    # re-collect the claim notification method keeping the claim context
+    # (never re-runs the timeline question).
+    ("redo", "notification"): Capability(
+        agent="notification_setup_agent",
+        description="re-collect the claim notification method keeping the claim context",
+    ),
+    # "what's happening with my claim again?" — re-state the adjustment
+    # status from state (idempotent read: claim_status, last_update_date,
+    # reference_number).
+    ("replay", "claim_status"): Capability(
+        agent="claim_adjustment_agent",
+        description="re-state the adjustment status from state",
+    ),
 }
 
 # Extraction-level targets → canonical capability topics. update_target for a
@@ -131,6 +145,17 @@ _CAPABILITY_TOPIC_ALIASES: dict[str, str] = {
     "benefits": "benefits",
     "benefit": "benefits",
     "my_benefits": "benefits",
+    # Claims-path topics (Phase 7). notification_method canonicalizes to the
+    # notification capability topic for redo/replay routing; slot-ownership
+    # lookups (get_ownership) are unaffected — they key on the slot name.
+    "notification": "notification",
+    "notifications": "notification",
+    "notification method": "notification",
+    "notification preference": "notification",
+    "claim": "claim_status",
+    "claim_status": "claim_status",
+    "claim status": "claim_status",
+    "my claim": "claim_status",
 }
 
 

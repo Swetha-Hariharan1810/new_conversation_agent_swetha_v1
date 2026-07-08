@@ -41,7 +41,12 @@ from agent.agents.follow_up.constants import (
 )
 from agent.agents.follow_up.llm import extract_follow_up_decision
 from agent.core.agent import BaseAgent
-from agent.core.slot_ownership import OWNER_HUMAN, OWNER_VERIFICATION, slot_update_owner
+from agent.core.slot_ownership import (
+    OWNER_HUMAN,
+    OWNER_VERIFICATION,
+    canonical_capability_topic,
+    slot_update_owner,
+)
 from agent.llm.config import get_follow_up_llm
 from agent.llm.schema import FollowUpIntent
 from agent.logger import get_logger
@@ -466,6 +471,15 @@ class FollowUpAgent(BaseAgent):
     # an owning agent holds; each rule names the state flag that must be True
     # for the data to exist (never route a replay of something never produced).
     _PARKED_REPLAY_RULES: tuple = (
+        # Claims topics first: "a notification about my claim" is a claim
+        # question, not a provider-list one.
+        (
+            re.compile(
+                r"\b(?:claim\w*|adjustment|reference\s+number)\b",
+                re.IGNORECASE,
+            ),
+            "claim_status",
+        ),
         (
             re.compile(
                 r"\b(?:notif\w*|list|deliver\w*|sent|send|resend|fax|email)\b",
@@ -484,6 +498,7 @@ class FollowUpAgent(BaseAgent):
     _REPLAY_DATA_FLAGS: dict = {
         "provider_list": "provider_list_sent",
         "benefits": "benefits_explained",
+        "claim_status": "claim_status",
     }
 
     def _route_parked_question(self, state: State, parked_items: list[dict]) -> dict | None:
@@ -545,7 +560,16 @@ class FollowUpAgent(BaseAgent):
         pre-existing behavior of every mid-call reroute.
         """
         target = (action.get("target") or "").strip()
-        if state.get("provider_list_sent"):
+        # Capability-first gate, per topic: a redo only makes sense when the
+        # thing to re-do exists (Phase 7 extends delivery's provider_list_sent
+        # gate to the notification capability).
+        topic = canonical_capability_topic("redo", target)
+        redo_data_exists = {
+            "delivery": bool(state.get("provider_list_sent")),
+            "notification": bool(state.get("notification_channel"))
+            and state.get("notification_channel") != "not_set",
+        }.get(topic, False)
+        if redo_data_exists:
             if hop := self.route_capability_request(state, kind="redo", target=target, return_awaiting=""):
                 logger.info(
                     "follow_up_agent: parked action routed via capability registry",

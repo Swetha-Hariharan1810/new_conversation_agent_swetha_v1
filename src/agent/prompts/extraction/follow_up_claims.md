@@ -50,6 +50,11 @@ request_kind + request_target so the system can route the request:
 For redo/replay, classify follow_up_intent="update_request" and answer=null —
 the system re-runs the owning flow. Unknown replay topics still get
 request_kind="replay" with request_target set to the caller's words.
+Claims-path targets (mirror of the provider-path ones):
+  "actually notify me by email instead", "change my notification to email"
+           → request_kind="redo", request_target="notification"
+  "what's happening with my claim again?", "when will I hear about my claim?"
+           → request_kind="replay", request_target="claim_status"
 When no change/redo/replay is requested: request_kind="none",
 request_target=null.
 

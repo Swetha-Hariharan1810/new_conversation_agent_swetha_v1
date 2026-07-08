@@ -394,6 +394,62 @@ class SlotManagerMixin:
         interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
         return interrupt
 
+    def _route_foreign_update(
+        self,
+        state: State,
+        target: str,
+        *,
+        return_awaiting: str,
+    ) -> Optional[dict]:
+        """Route a foreign slot update to its owner (Phase 7, claims-path parity).
+
+        "route" targets (zip_code) hand off per the registry. Identity slots —
+        in_flow under verification — are honored by routing to verification
+        with the slot cleared for re-collection and the completed verification
+        invalidated (a changed identity value always re-verifies; a changed
+        name also re-triggers the readback). Returns None when the target is
+        not routable from here: in-flow branches or a retry handle it.
+        """
+        from agent.agents.verification.constants import IDENTITY_SLOT_ORDER
+        from agent.core.slot_ownership import get_ownership
+
+        target = (target or "").strip()
+        if not target:
+            return None
+        ctx = ConversationContext.from_state(state)
+        if self.resolve_update_target(target, ctx, state, {}) == "route":
+            return self._route_slot_update(state, target, ctx, return_awaiting=return_awaiting)
+        own = get_ownership(target)
+        if (
+            target in IDENTITY_SLOT_ORDER
+            and own is not None
+            and own.updatable == "in_flow"
+            and own.agent == "verification_agent"
+            and own.agent != self.AGENT_NAME
+        ):
+            route = self._route_slot_update(state, target, ctx, return_awaiting=return_awaiting)
+            route[target] = ""  # verification must re-collect, not skip
+            route["member_status_verify"] = False
+            if target in ("first_name", "last_name"):
+                route["name_confirmed"] = False  # new name → readback re-runs
+            return route
+        return None
+
+    def _reroute_detected_update(self, state: State, *, return_awaiting: str) -> Optional[dict]:
+        """Never-verbatim-repeat guard for hand-rolled confirmation branches.
+
+        Before a terminal retry re-asks the same question, check whether the
+        turn is actually a foreign update request the registry can route.
+        Returns None for genuinely unclassifiable turns — those may burn a
+        slot_fail retry.
+        """
+        from agent.core.request_detection import detect_request
+
+        detected = detect_request(_last_user_msg(list(state.get("messages") or [])))
+        if detected is None or detected.kind != "update" or not detected.target:
+            return None
+        return self._route_foreign_update(state, detected.target, return_awaiting=return_awaiting)
+
     def route_capability_request(
         self,
         state: State,

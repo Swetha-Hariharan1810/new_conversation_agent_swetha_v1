@@ -64,6 +64,11 @@ the system re-runs the owning flow. A replay request whose topic is not a
 known one still gets request_kind="replay" with request_target set to the
 caller's words; the system handles unknown topics. A recap of the WHOLE call
 stays a plain question (no request_kind) answered from the snapshot.
+Claims-path targets (mirror of the provider-path ones):
+  "actually notify me by email instead", "change my notification to email"
+           → request_kind="redo", request_target="notification"
+  "what's happening with my claim again?", "when will I hear about my claim?"
+           → request_kind="replay", request_target="claim_status"
 When no change/redo/replay is requested: request_kind="none",
 request_target=null.
 

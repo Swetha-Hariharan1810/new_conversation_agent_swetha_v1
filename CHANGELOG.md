@@ -1,5 +1,63 @@
 # Changelog
 
+## Claims-path parity: notification_setup, claim_adjustment, records_coordination
+
+The claims-path agents had the same structural weaknesses fixed for
+delivery_management in Phases 1–5: hand-rolled awaiting branches whose
+terminal fallbacks verbatim-repeat, no reconcile, no update/redo hooks.
+
+- Reconcile wiring: all three agents run the deterministic Phase-1
+  reconcile right after conversation guards, then a hoisted update block —
+  new shared `SlotManagerMixin._route_foreign_update` routes "route"
+  targets (zip_code) per the registry and honors identity-slot updates by
+  routing to verification with the slot cleared for re-collection,
+  `member_status_verify` invalidated, and `name_confirmed` cleared for
+  name slots (a changed identity value always re-verifies). Each agent
+  gained a `slot_update_resume` acknowledgement branch mirroring
+  delivery's — the return hop re-asks the preserved awaiting question, no
+  extraction on the stale turn — plus one round-trip test per agent.
+- Never-verbatim-repeat guards: every terminal retry fallback
+  (timeline_question, notification_method, phone_confirmed,
+  email_confirmed, n2_notification_method, reference_number,
+  upload_method, upload_consent, email, personal_guide_consent) first runs
+  the new shared `_reroute_detected_update`; only genuinely unclassifiable
+  turns burn a slot_fail retry.
+- Channel switch (`notification_setup._maybe_switch_channel`, mirroring
+  delivery's `_maybe_switch_method`): "actually email me instead" during
+  the phone read-back switches the channel and continues that channel's
+  confirmation — never treated as a phone decline. The registry is
+  respected: phone_number stays human_only (disputing the SF phone still
+  declines honestly); only the channel choice is in_flow.
+- Capability registry: ("redo", "notification") → notification_setup
+  (re-collect the method keeping the claim context — the timeline question
+  is NEVER re-run; `_save_and_complete` closes the redo and hands back)
+  and ("replay", "claim_status") → claim_adjustment
+  (`_replay_claim_status`: idempotent read from state, like
+  `_replay_provider_list`), with topic aliases (notification/
+  notifications/notification method; claim/claim status/my claim).
+  Re-entry gated on the completion flags (notification_channel set,
+  claim_status present). `detect_request` gained "address changed" →
+  zip_code (fixed-width lookbehind keeps "email address" with email) and
+  claim-status replay phrasings.
+- follow_up parity: `_route_parked_action`'s capability-first gate is now
+  per-topic (delivery → provider_list_sent; notification →
+  notification_channel), so a post-setup "change my notification to email"
+  hops to notification_setup instead of a full verification reroute;
+  parked-question routing gained a claims rule (claim/adjustment/reference
+  → replay claim_status when claim_status exists), ordered before the
+  provider-list rule so "a notification about my claim" resolves as a
+  claim question.
+- Prompt parity: channel-switch + other-slot-change sections in
+  `notification_setup.md`; other-slot-change sections in
+  `claim_adjustment.md` and `records_coordination.md`; claims-path
+  redo/replay target examples in `follow_up.md` and `follow_up_claims.md`
+  (grounding rules were already added in Phase 5;
+  `verification_claims.md` got its section in Phase 3).
+- Tests: new `src/agent/tests/test_claims_path_update_routing.py`
+  (29 tests) mirroring Phase 0's structure with claims-flavored
+  transcripts, each parametrized over extraction variants; the two claims
+  transcripts added to the Phase-6 variance matrix (8 more matrix rows).
+
 ## Stability hardening: variance matrix + decision provenance
 
 - `reconcile_worker_result` now logs every field it changes with

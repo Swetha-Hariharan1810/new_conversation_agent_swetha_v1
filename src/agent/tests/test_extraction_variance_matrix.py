@@ -35,7 +35,8 @@ def _msg_class(out: dict) -> str:
         msg = (messages.get("content") or "").lower()
     if not msg:
         return "none"
-    if "email address is" in msg or "email we have on file" in msg or "right email" in msg:
+    spoken_email = " at " in msg and " dot " in msg
+    if ("email" in msg or spoken_email) and ("correct" in msg or "right" in msg):
         return "email_confirm"
     if "fax number" in msg:
         return "fax_confirm"
@@ -321,4 +322,100 @@ async def test_bug1_parked_notification_is_invariant(monkeypatch, variant):
         "request": {"kind": "replay", "target": "provider_list"},
         "parked": [],
         "msg_class": "none",  # delivery answers from state on the hop turn
+    }
+
+
+# ══ Claims path (Phase 7): update voiced while awaiting reference_number ═════
+
+_CLAIMS_ZIP_VARIANTS = [
+    WorkerResult(update_target="zip_code", request_kind=RequestKind.UPDATE),
+    WorkerResult(),
+    WorkerResult(event_type=EventType.WAIT),
+    WorkerResult(event_type=EventType.AMBIGUOUS),
+]
+
+
+@pytest.mark.parametrize("variant", _CLAIMS_ZIP_VARIANTS)
+async def test_claims_zip_update_routing_is_invariant(monkeypatch, variant):
+    import agent.agents.claim_adjustment.agent as caa
+    from agent.agents.claim_adjustment.agent import ClaimAdjustmentAgent
+
+    async def fake_extract(*a, **k):
+        return variant.model_copy(deep=True)
+
+    monkeypatch.setattr(caa, "extract_claim_adjustment_decision", fake_extract)
+    monkeypatch.setattr(caa, "get_extraction_llm", lambda: object())
+
+    out = await ClaimAdjustmentAgent().run(
+        {
+            "messages": [
+                {"role": "assistant", "content": "Could I get the reference number?"},
+                {"role": "user", "content": "wait — my zip code changed, i moved"},
+            ],
+            "awaiting_slot": "reference_number",
+            "call_intent": "claim_services",
+            "member_status_verify": True,
+            "zip_code": "90210",
+            "parked_followups": [],
+        }
+    )
+    signature = {
+        "next_node": out.get("next_node"),
+        "awaiting_slot": out.get("awaiting_slot"),
+        "request": {k: out.get("pending_cross_agent_request", {}).get(k) for k in ("kind", "target")},
+        "msg_class": _msg_class(out),
+    }
+    assert signature == {
+        "next_node": "provider_search_agent",
+        "awaiting_slot": "zip_code",
+        "request": {"kind": "update", "target": "zip_code"},
+        "msg_class": "ask_zip",
+    }
+
+
+# ══ Claims path (Phase 7): channel switch during the phone read-back ═════════
+
+_CHANNEL_SWITCH_VARIANTS = [
+    WorkerResult(extracted={"notification_method": "email"}),
+    WorkerResult(),
+    WorkerResult(event_type=EventType.WAIT),
+    WorkerResult(event_type=EventType.AMBIGUOUS),
+]
+
+
+@pytest.mark.parametrize("variant", _CHANNEL_SWITCH_VARIANTS)
+async def test_notification_channel_switch_is_invariant(monkeypatch, variant):
+    import agent.agents.notification_setup.agent as nsa
+    from agent.agents.notification_setup.agent import NotificationSetupAgent
+
+    async def fake_extract(*a, **k):
+        return variant.model_copy(deep=True)
+
+    monkeypatch.setattr(nsa, "extract_notification_decision", fake_extract)
+    monkeypatch.setattr(nsa, "get_extraction_llm", lambda: object())
+
+    out = await NotificationSetupAgent().run(
+        {
+            "messages": [
+                {"role": "assistant", "content": "Is 555-987-6543 the right number for SMS updates?"},
+                {"role": "user", "content": "actually email me instead"},
+            ],
+            "awaiting_slot": "phone_confirmed",
+            "call_intent": "claim_services",
+            "member_status_verify": True,
+            "notification_channel": "sms",
+            "phone_number": "5559876543",
+            "email": "emily@example.com",
+            "parked_followups": [],
+        }
+    )
+    signature = {
+        "awaiting_slot": out.get("awaiting_slot"),
+        "notification_channel": out.get("notification_channel"),
+        "msg_class": _msg_class(out),
+    }
+    assert signature == {
+        "awaiting_slot": "email_confirmed",
+        "notification_channel": "email",
+        "msg_class": "email_confirm",
     }

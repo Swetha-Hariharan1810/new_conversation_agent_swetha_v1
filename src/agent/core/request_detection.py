@@ -100,11 +100,21 @@ def _build_update_patterns() -> dict[str, list[re.Pattern]]:
 
 _UPDATE_PATTERNS: dict[str, list[re.Pattern]] = _build_update_patterns()
 
-# Hand-written ONLY for phrasings that never name the slot.
+# Hand-written ONLY for phrasings that never name the slot. "address" maps to
+# zip_code (a moved member's postal address drives the provider search); the
+# fixed-width lookbehind keeps "email address changed" with the email slot.
 _UPDATE_PATTERNS_EXTRA: dict[str, list[re.Pattern]] = {
     "zip_code": [
         re.compile(r"\bi(?:'ve| have)?\s+(?:just\s+|recently\s+)?moved\b", re.IGNORECASE),
         re.compile(r"\bwe(?:'ve| have)?\s+(?:just\s+|recently\s+)?moved\b", re.IGNORECASE),
+        re.compile(
+            r"(?<!mail\s)\baddress\s+(?:has\s+changed|changed|is\s+(?:wrong|different|incorrect))\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:update|change|correct)\s+(?:my\s+|the\s+)?(?:home\s+)?address\b",
+            re.IGNORECASE,
+        ),
     ],
 }
 
@@ -135,6 +145,13 @@ _REPLAY_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\b(?:my\s+|the\s+)?benefits\s+again\b", re.IGNORECASE), "benefits"),
     (re.compile(r"\bwhat\s+(?:exactly\s+)?did\s+you\s+send\b", re.IGNORECASE), "provider_list"),
     (re.compile(r"\bread\s+that\s+back\b", re.IGNORECASE), "provider_list"),
+    # Claims-path replays (Phase 7): re-state the adjustment status.
+    (
+        re.compile(r"\bwhat(?:'s| is)\s+(?:happening|going on)\s+with\s+my\s+claim\b", re.IGNORECASE),
+        "claim_status",
+    ),
+    (re.compile(r"\b(?:status|update)\s+(?:of|on)\s+my\s+claim\b", re.IGNORECASE), "claim_status"),
+    (re.compile(r"\bwhen\s+will\s+i\s+hear\b[^.?!]*\bclaim\b", re.IGNORECASE), "claim_status"),
 ]
 
 # ── Negative guard ────────────────────────────────────────────────────────────
