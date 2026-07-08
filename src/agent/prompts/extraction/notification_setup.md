@@ -64,3 +64,29 @@ CONFIDENCE NOTES (see header [ANCHOR: CONFIDENCE])
   declines — extract "no".
 - phone: not exactly 10 digits → ambiguous.
 - email: missing "@" or valid domain → ambiguous.
+
+## Channel SWITCH vs contact decline
+Disputing the number/address on file is a decline: "that's my old number",
+"use a different number" → contact_confirmed "no".
+Switching CHANNELS is NOT a decline — extract the new notification_method
+and omit contact_confirmed entirely:
+  While confirming a PHONE: "actually email me instead", "just email it",
+  "email works better", "can you email me instead"
+  → extracted={"notification_method":"email"}, omit contact_confirmed.
+  While confirming an EMAIL: "actually text me instead", "text is better",
+  "sms works better" → extracted={"notification_method":"sms"},
+  omit contact_confirmed.
+If the caller also gives the other channel's value ("email me at jane at
+example dot com"), extract BOTH notification_method and the email/phone.
+
+## Other-slot changes are never confirmation answers
+A statement that a DIFFERENT slot changed ("my ZIP code changed",
+"my address changed", "I moved", "my last name is wrong") is never
+contact_confirmed — return update_target (e.g. "zip_code", "last_name"),
+request_kind:"update", extracted {}. Never classify these as wait or
+ambiguous, even when prefixed with a wait word ("wait — my address changed").
+
+## Prompt changelog (regression notes)
+- Channel SWITCH and other-slot-change rules: Phase 7 claims-path parity —
+  the same misreads fixed for delivery (BUG-3/BUG-5) apply to the
+  notification confirmation branches.

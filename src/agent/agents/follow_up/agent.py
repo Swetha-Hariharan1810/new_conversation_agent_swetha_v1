@@ -41,7 +41,12 @@ from agent.agents.follow_up.constants import (
 )
 from agent.agents.follow_up.llm import extract_follow_up_decision
 from agent.core.agent import BaseAgent
-from agent.core.slot_ownership import OWNER_HUMAN, OWNER_VERIFICATION, slot_update_owner
+from agent.core.slot_ownership import (
+    OWNER_HUMAN,
+    OWNER_VERIFICATION,
+    canonical_capability_topic,
+    slot_update_owner,
+)
 from agent.llm.config import get_follow_up_llm
 from agent.llm.schema import FollowUpIntent
 from agent.logger import get_logger
@@ -170,6 +175,18 @@ class FollowUpAgent(BaseAgent):
 
         if parked_actions:
             return self._route_parked_action(state, parked_actions[0])
+
+        # ── Parked questions with a data owner (Phase 5, BUG-1) ─────────────
+        # BEFORE any LLM answer attempt, hand each parked question that maps
+        # to a registered replay capability to its owning agent — the owner
+        # answers from real state (_replay_provider_list / _replay_benefits),
+        # never from generation, so it can never invent a channel or address.
+        # Only questions with NO owning capability remain for the LLM path.
+        # A bare closure turn outranks stale parked items — skip routing and
+        # let the DONE path below close and drop them.
+        if parked_questions and (last_user or "").lower().strip() not in CLOSURE_KEYWORDS:
+            if hop := self._route_parked_question(state, parked_items):
+                return hop
 
         # ── PHASE 0: First entry — ask opening question ───────────────────────
         if not state.get("follow_up_turn_count"):
@@ -304,16 +321,24 @@ class FollowUpAgent(BaseAgent):
             return self._reroute_through_intake(state, "claim_services")
 
         # ── DONE ─────────────────────────────────────────────────────────────
+        # The member's explicit closure outranks any stale parked item: close
+        # NOW, drop the list loudly, and never answer a parked question in the
+        # same turn as (or after) acknowledging closure.
         if follow_up_intent == FollowUpIntent.DONE:
             logger.info(LOG_CLOSURE)
-            return _consume_parked(
-                self.signal_complete(
-                    state,
-                    message="",
-                    resolved_intents=["follow_up"],
-                    closure_requested=True,
+            if parked_items:
+                logger.warning(
+                    "follow_up_agent: closing with unresolved parked items — member closure outranks them",
+                    extra={"dropped_parked": [p.get("query", "") for p in parked_items]},
                 )
+            result = self.signal_complete(
+                state,
+                message="",
+                resolved_intents=["follow_up"],
+                closure_requested=True,
             )
+            result["parked_followups"] = []
+            return result
 
         # ── Live cross-call requests (Phase 6): redo / replay route to owner ─
         # Known capabilities are honored by re-running the owning agent —
@@ -327,6 +352,31 @@ class FollowUpAgent(BaseAgent):
         request_target = (
             (getattr(extraction_result, "request_target", None) or "").strip() if extraction_result else ""
         )
+        # Regex fallback (request_detection): FollowUpResult carries
+        # request_target (not update_target), so the Phase-1 reconcile never
+        # touches it — backfill here when the LLM produced neither field.
+        # Redo/replay fill the live-routing fields; a detected update with no
+        # answer upgrades the intent so the UPDATE_REQUEST routing below runs.
+        if request_kind in ("", "none") and not request_target:
+            from agent.core.request_detection import detect_request
+
+            detected = detect_request(last_user)
+            if detected and detected.target:
+                if detected.kind in ("redo", "replay"):
+                    request_kind, request_target = detected.kind, detected.target
+                elif detected.kind == "update" and not answer:
+                    request_kind, request_target = "update", detected.target
+                    follow_up_intent = FollowUpIntent.UPDATE_REQUEST
+                if request_target:
+                    logger.info(
+                        "follow_up_agent: regex fallback set request_kind/request_target",
+                        extra={
+                            "source": "regex_fallback",
+                            "matched": detected.matched,
+                            "kind": request_kind,
+                            "target": request_target,
+                        },
+                    )
         if (
             request_kind in ("redo", "replay")
             and request_target
@@ -441,6 +491,79 @@ class FollowUpAgent(BaseAgent):
         result["follow_up_cannot_answer_count"] = 0
         return _consume_parked(result)
 
+    # Parked-question → replay-capability inference (Phase 5, BUG-1). Keyword
+    # rules complement detect_request for question phrasings that promise data
+    # an owning agent holds; each rule names the state flag that must be True
+    # for the data to exist (never route a replay of something never produced).
+    _PARKED_REPLAY_RULES: tuple = (
+        # Claims topics first: "a notification about my claim" is a claim
+        # question, not a provider-list one.
+        (
+            re.compile(
+                r"\b(?:claim\w*|adjustment|reference\s+number)\b",
+                re.IGNORECASE,
+            ),
+            "claim_status",
+        ),
+        (
+            re.compile(
+                r"\b(?:notif\w*|list|deliver\w*|sent|send|resend|fax|email)\b",
+                re.IGNORECASE,
+            ),
+            "provider_list",
+        ),
+        (
+            re.compile(
+                r"\b(?:benefit\w*|deductible|coinsurance|out[- ]of[- ]pocket|oop)\b",
+                re.IGNORECASE,
+            ),
+            "benefits",
+        ),
+    )
+    _REPLAY_DATA_FLAGS: dict = {
+        "provider_list": "provider_list_sent",
+        "benefits": "benefits_explained",
+        "claim_status": "claim_status",
+    }
+
+    def _route_parked_question(self, state: State, parked_items: list[dict]) -> dict | None:
+        """Route the first parked question owned by a replay capability.
+
+        detect_request(query) is consulted first; the keyword rules catch
+        question phrasings the request tables don't ("will I get a
+        notification?"). The hop fires only when the owning capability exists
+        AND the underlying data flag says the data exists — the owner then
+        answers from real state, exactly like _route_parked_action does for
+        actions. Returns None when no parked question is routable.
+        """
+        from agent.core.request_detection import detect_request
+
+        for item in parked_items:
+            if item.get("kind") != "question":
+                continue
+            query = (item.get("query") or "").strip()
+            if not query:
+                continue
+            topic = ""
+            detected = detect_request(query)
+            if detected and detected.kind == "replay":
+                topic = detected.target
+            if not topic:
+                topic = next((t for pat, t in self._PARKED_REPLAY_RULES if pat.search(query)), "")
+            flag = self._REPLAY_DATA_FLAGS.get(topic, "")
+            if not (flag and state.get(flag)):
+                continue
+            hop = self.route_capability_request(state, kind="replay", target=topic, return_awaiting="")
+            if hop is None:
+                continue
+            logger.info(
+                "follow_up_agent: parked question routed to owning replay capability",
+                extra={"target": topic, "query": query},
+            )
+            hop["parked_followups"] = [p for p in parked_items if p is not item]
+            return hop
+        return None
+
     def _route_parked_action(self, state: State, action: dict) -> dict:
         """Route a parked kind="action" update request via the capability and
         slot ownership registries (core.slot_ownership) instead of
@@ -462,7 +585,16 @@ class FollowUpAgent(BaseAgent):
         pre-existing behavior of every mid-call reroute.
         """
         target = (action.get("target") or "").strip()
-        if state.get("provider_list_sent"):
+        # Capability-first gate, per topic: a redo only makes sense when the
+        # thing to re-do exists (Phase 7 extends delivery's provider_list_sent
+        # gate to the notification capability).
+        topic = canonical_capability_topic("redo", target)
+        redo_data_exists = {
+            "delivery": bool(state.get("provider_list_sent")),
+            "notification": bool(state.get("notification_channel"))
+            and state.get("notification_channel") != "not_set",
+        }.get(topic, False)
+        if redo_data_exists:
             if hop := self.route_capability_request(state, kind="redo", target=target, return_awaiting=""):
                 logger.info(
                     "follow_up_agent: parked action routed via capability registry",

@@ -3692,6 +3692,344 @@ unknown_replay_topic_parks = Scenario(
 # Registry — run order matters (scenarios share Salesforce data; run serially)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Q. Paraphrase robustness (Phases 1-7)
+#
+# Every scripted interjection below re-exercises a fixed production scenario
+# with NOVEL wording that appears in neither the extraction-prompt examples
+# nor the earlier scenarios. The deterministic request-detection layer (plus
+# the branch-level switch machinery) must carry these paraphrases even when
+# the extraction LLM under-delivers — the same guarantee the offline
+# test_paraphrase_flows.py asserts with the LLM fully disabled.
+# ──────────────────────────────────────────────────────────────────────────────
+
+paraphrase_zip_update_at_fax_readback = Scenario(
+    name="paraphrase_zip_update_at_fax_readback",
+    flow="pcp",
+    mutating=True,
+    timeout_s=420,
+    retries=2,
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",  # ZIP on file confirmed
+        "send it to my fax",  # delivery method
+        # BUG-5 paraphrase — no prompt example uses this wording.
+        "hang on — we've recently moved, so that old zip won't work",
+        "zero two one four two",  # new ZIP, collected by provider_search
+        "yes that's correct",  # fax read-back re-asked on resume → confirm
+        "no thanks",
+        "no thank you",
+        "no that's all, thanks",
+    ],
+    turn_expectations={
+        10: TurnExpectation(ai_contains=[r"fax"], slot_awaiting="fax_confirmed"),
+        11: TurnExpectation(ai_contains=[r"zip"], slot_awaiting="zip_code"),
+        12: TurnExpectation(ai_contains=[r"02142", r"fax"], slot_awaiting="fax_confirmed"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "provider_list_sent": True,
+            "delivery_method": "fax",
+            "zip_code_used": "02142",
+            "zip_code_updated": True,
+            "pending_slot_update": falsy,
+        },
+        transcript_contains=[_zip_dispatch_regex("02142")],
+    ),
+    post_checks=[sf_field_check("M907503", "zip_code", "02142")],
+    notes=(
+        "Paraphrased BUG-5 (mirrors zip_update_during_fax_confirmation with "
+        "novel wording: 'we've recently moved, so that old zip won't work'). "
+        "Mutates Emily's zip in Salesforce; teardown restores the snapshot."
+    ),
+)
+
+paraphrase_channel_switch_at_fax_readback = Scenario(
+    name="paraphrase_channel_switch_at_fax_readback",
+    flow="pcp",
+    timeout_s=420,
+    retries=2,
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",  # ZIP on file
+        "send it to my fax",  # delivery method chosen: fax
+        # BUG-3 paraphrase at the fax read-back: switch channels, never a
+        # failed confirmation, never a verbatim fax re-ask.
+        "you know what, just shoot it over by email instead",
+        "yes that's correct",  # email read-back → dispatch by email
+        "no thanks",  # decline benefits
+        "no thank you",  # decline Care Coach
+        "no that's all, thanks",
+    ],
+    turn_expectations={
+        # The AI prompt after the switch must be the EMAIL read-back.
+        11: TurnExpectation(ai_contains=[r"email"], slot_awaiting="email_confirmed"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "provider_list_sent": True,
+            "delivery_method": "email",
+        },
+    ),
+    notes=(
+        "Paraphrased BUG-3: 'just shoot it over by email instead' at the fax "
+        "read-back must flip the channel to the email confirmation — the fax "
+        "question is never repeated."
+    ),
+)
+
+paraphrase_redo_from_care_coach = Scenario(
+    name="paraphrase_redo_from_care_coach",
+    flow="pcp",
+    timeout_s=420,
+    retries=2,
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",  # dispatch by fax + benefits offer
+        "yes please",  # benefits explained + Care Coach offer
+        # BUG-2 paraphrase mid Care-Coach offer.
+        "hmm, on second thought could you shoot that list over by email instead of faxing it?",
+        "yes that's correct",  # email read-back → re-dispatch
+        "no thank you",  # Care Coach re-offer declined
+        "no that's all, thanks",
+    ],
+    turn_expectations={
+        12: TurnExpectation(ai_contains=[r"[Cc]oach"], slot_awaiting="care_coach_response"),
+        13: TurnExpectation(ai_contains=[r"email"], slot_awaiting="email_confirmed"),
+        14: TurnExpectation(ai_contains=[r"email", r"[Cc]oach"], slot_awaiting="care_coach_response"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "provider_list_sent": True,
+            "delivery_method": "email",
+            "benefits_offer_made": True,
+            "pending_cross_agent_request": falsy,
+        },
+        transcript_contains=[r"(?i)same .{0,40}list|as well"],
+    ),
+    notes=(
+        "Paraphrased BUG-2 (mirrors redo_fax_to_email_from_benefits with "
+        "novel wording). The redo routes benefits → delivery, re-dispatches "
+        "by email, and returns to the Care Coach offer exactly once."
+    ),
+)
+
+paraphrase_replay_benefits_followup = Scenario(
+    name="paraphrase_replay_benefits_followup",
+    flow="pcp",
+    timeout_s=420,
+    retries=2,
+    user_turns=PCP_VERIFY
+    + [
+        "Primary Care Physician",
+        "yes that's correct",
+        "send it to my fax",
+        "yes that's correct",
+        "yes please",  # benefits explained + Care Coach offer
+        "no thank you",  # Care Coach declined → follow-up stage
+        # Replay paraphrase at the post-flow stage.
+        "please go over my benefits once more",
+        "no that's all, thanks",
+    ],
+    turn_expectations={
+        14: TurnExpectation(ai_contains=[r"(?i)deductible"]),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "pending_cross_agent_request": falsy,
+            "benefits_explained": True,
+        },
+        transcript_count={r"(?i)individual deductible": 2},
+    ),
+    notes=(
+        "Paraphrased benefits replay ('go over my benefits once more') at "
+        "follow-up — routes to benefits via the capability registry even if "
+        "the extraction LLM returns nothing (regex fallback covers it)."
+    ),
+)
+
+paraphrase_identity_update_mid_verification = Scenario(
+    name="paraphrase_identity_update_mid_verification",
+    flow="pcp",
+    timeout_s=420,
+    retries=2,
+    user_turns=[
+        "I need to find a primary care physician in my area.",
+        "emily",
+        "carter",
+        "yes correct",  # name readback confirmed
+        # BUG-4 paraphrase: member id answered AND a last-name update
+        # requested in the same breath — never parked, never declined.
+        "m nine zero seven five zero three — and also, my last name is different now",
+        "sorry, it's actually still carter",  # the "new" last name (keeps SF verify passing)
+        "yes correct",  # the readback re-runs for the changed name
+        "April twelvee nineteen eighty-eight",  # dob — the preserved next slot
+        "I'm calling for myself",
+        "yes that's correct",  # ZIP on file
+        "send it to my fax",
+        "yes that's correct",
+        "no thanks",
+        "no thank you",
+        "no that's all, thanks",
+    ],
+    turn_expectations={
+        # The detour: the very next AI turn asks for the new last name.
+        5: TurnExpectation(ai_contains=[r"last name"], slot_awaiting="last_name"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "member_status_verify": True,
+            "provider_list_sent": True,
+        },
+    ),
+    notes=(
+        "Paraphrased BUG-4: the member-id answer is captured AND the "
+        "last-name detour opens immediately; the spelling readback re-runs "
+        "for the changed name and verification resumes at dob."
+    ),
+)
+
+paraphrase_claims_identity_update_at_reference = Scenario(
+    name="paraphrase_claims_identity_update_at_reference",
+    flow="claim",
+    timeout_s=480,
+    retries=2,
+    user_turns=CLAIM_VERIFY
+    + [
+        # Phase 7 paraphrase at the reference-number ask: identity updates
+        # route to verification and return to the exact awaiting slot.
+        "I have to change my last name first",
+        "it's still wilson actually",  # keeps the SF lookup passing
+        "yes correct",  # name readback re-confirm
+        "42695817",  # the reference ask resumes here
+        "Can I ask my doctor to send it over?",
+        "Yes, please",
+        "Yes, that's correct",
+        "Perfect. Please do that",
+        "You can send me the updates to my phone",
+        "Yes, that's correct",
+        "Okay, how long will it take to finalize the request?",
+        "email them to me",
+        "No, that's all. Thanks!",
+    ],
+    turn_expectations={
+        # The route: the next AI turn asks for the (new) last name.
+        7: TurnExpectation(ai_contains=[r"last name"], slot_awaiting="last_name"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "member_status_verify": True,
+            "claim_flow_complete": True,
+        },
+    ),
+    notes=(
+        "Phase 7 paraphrase: 'I have to change my last name first' while the "
+        "claim flow awaits the reference number routes to verification "
+        "(re-collect + re-verify + readback) and resumes at the reference ask."
+    ),
+)
+
+paraphrase_notification_switch = Scenario(
+    name="paraphrase_notification_switch",
+    flow="claim",
+    timeout_s=420,
+    retries=2,
+    user_turns=CLAIM_VERIFY
+    + [
+        "42695817",
+        "Can I ask my doctor to send it over?",
+        "Yes, please",
+        "Yes, that's correct",  # upload-link email confirmed
+        "Perfect. Please do that",  # Personal Guide accepted
+        "You can send me the updates to my phone",  # SMS chosen
+        # Phase 7 paraphrase at the phone read-back: a channel switch, never
+        # a decline of the phone number.
+        "honestly, email works better for me at this point",
+        "Yes, that's correct",  # email read-back confirmed
+        "Okay, how long will it take to finalize the request?",
+        "email them to me",  # N2 channel
+        "No, that's it for me. Thanks!",
+    ],
+    turn_expectations={
+        # After the switch: the EMAIL read-back, never "what is the correct
+        # phone number?".
+        14: TurnExpectation(ai_contains=[r"email"], slot_awaiting="email_confirmed"),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "notification_channel": "email",
+            "claim_flow_complete": True,
+        },
+    ),
+    notes=(
+        "Phase 7 paraphrase: 'email works better for me' during the SMS phone "
+        "confirmation switches the notification channel to email and "
+        "continues that channel's confirmation."
+    ),
+)
+
+paraphrase_claim_status_replay_followup = Scenario(
+    name="paraphrase_claim_status_replay_followup",
+    flow="claim",
+    timeout_s=480,
+    retries=2,
+    user_turns=CLAIM_VERIFY
+    + [
+        "42695817",
+        "Can I ask my doctor to send it over?",
+        "Yes, please",
+        "Yes, that's correct",
+        "Perfect. Please do that",
+        "You can send me the updates to my phone",
+        "Yes, that's correct",
+        "Okay, how long will it take to finalize the request?",
+        "email them to me",
+        # Phase 7 paraphrase at follow-up: a claim-status question phrased
+        # nothing like the prompt examples — answered from real state
+        # (replay hop or grounded snapshot answer), never invented.
+        "any idea when someone will get back to me about the adjustment?",
+        "No, that's all. Thanks!",
+    ],
+    turn_expectations={
+        # The reply must carry real adjustment facts (status/timeline).
+        17: TurnExpectation(ai_contains=[r"(?i)(review|business days|adjustment)"]),
+    },
+    expect=Expected(
+        completed=True,
+        escalated=False,
+        final_state={
+            "claim_flow_complete": True,
+            "pending_cross_agent_request": falsy,
+        },
+    ),
+    notes=(
+        "Phase 7 paraphrase: a post-flow claim-status question routes to "
+        "claim_adjustment's replay (or answers grounded from the snapshot) — "
+        "the reply must restate the real status/timeline, never invent one."
+    ),
+)
+
+
 SCENARIOS: list[Scenario] = [
     # A. PCP happy paths
     pcp_happy_path_fax,  # 1
@@ -3799,6 +4137,15 @@ SCENARIOS: list[Scenario] = [
     redo_inflow_before_dispatch,  # P-3 — (c) owner active pre-dispatch → in-flow, zero routing
     replay_benefits_inflow_at_coach_offer,  # P-4 — (c) in-flow benefits replay, zero routing
     unknown_replay_topic_parks,  # P-5 — (d) unknown replay topic parks as a question
+    # Q. Paraphrase robustness (Phases 1-7) — novel wording, same outcomes
+    paraphrase_zip_update_at_fax_readback,  # Q-1 — BUG-5 paraphrase (mutating)
+    paraphrase_channel_switch_at_fax_readback,  # Q-2 — BUG-3 paraphrase
+    paraphrase_redo_from_care_coach,  # Q-3 — BUG-2 paraphrase
+    paraphrase_replay_benefits_followup,  # Q-4 — benefits replay paraphrase
+    paraphrase_identity_update_mid_verification,  # Q-5 — BUG-4 paraphrase
+    paraphrase_claims_identity_update_at_reference,  # Q-6 — claims identity paraphrase
+    paraphrase_notification_switch,  # Q-7 — notification channel-switch paraphrase
+    paraphrase_claim_status_replay_followup,  # Q-8 — claim-status replay paraphrase
 ]
 
 SCENARIOS_BY_NAME: dict[str, Scenario] = {s.name: s for s in SCENARIOS}

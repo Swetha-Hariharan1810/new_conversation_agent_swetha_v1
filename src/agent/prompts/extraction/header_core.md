@@ -27,6 +27,9 @@ Set extracted:{}, event_type:"wait".
 Do NOT classify as ambiguous. Do NOT classify as answered.
 If the utterance ALSO contains a valid value ("hold on... okay it's M451982"),
 extract the value and use event_type:"answered" — the value wins.
+If the wait word is immediately followed by a correction or change statement
+("wait, actually my ZIP changed", "hold on, that email is wrong"), this is
+NOT wait — classify the correction/update instead.
 "I don't have it / I lost it / never received it" is NOT wait — that is a
 cannot-provide statement; leave existing behavior unchanged.
 
@@ -52,3 +55,9 @@ guard_confidence: 0.0 when no guard fires
   When a guard fires use its threshold value:
   TRANSFER_REQUEST → 0.95, ABUSE → 0.90, SELF_HARM → 0.90,
   OFFTOPIC_GLOBAL → 0.85
+
+## Prompt changelog (regression notes)
+- WAIT carve-out: motivated by the BUG-5 transcript ("wait — my ZIP code
+  changed, I moved" during fax confirmation) — the LLM labeled a correction
+  turn "wait" and the caller's update was ignored. A wait word followed by a
+  correction/change statement is the correction, never wait.

@@ -90,8 +90,27 @@ REJECT — set event_type=ambiguous, do not populate the extracted field:
 
 If there is ANY doubt, accept it — only reject when clearly impossible.
 
+MID-VERIFICATION UPDATE REQUESTS
+An answer to the awaiting slot may arrive together with a request to update
+a DIFFERENT identity slot. Extract the answer AND flag the request:
+  "m nine zero seven five zero three — oh, also I need to update my last name"
+    → extracted={"member_id": "m nine zero seven five zero three"},
+      event_type="answered_with_followup", update_target="last_name",
+      request_kind="update", followup_disposition="none"
+Leave followup_disposition as "none" — the system decides the disposition.
+NEVER park and NEVER decline an update request for first_name, last_name,
+member_id, dob, or relationship: these are always handled in this flow.
+A bare update request with no answer ("I need to update my last name")
+is event_type="corrected" with update_target set and corrections{} empty.
+
 CONFIDENCE NOTES (see header [ANCHOR: CONFIDENCE])
 - member_id: missing M prefix → ambiguous. Return spoken words as-is when M is present.
 - dob: missing year or any uncertain part → ambiguous. Return spoken words as-is.
 - relationship: only extract when agent just asked about it; "representative"
   in transfer context → prefer TRANSFER_REQUEST guard over extraction.
+
+## Prompt changelog (regression notes)
+- MID-VERIFICATION UPDATE REQUESTS: motivated by the BUG-4 transcript
+  ("m nine zero seven five zero three — oh, also I need to update my last
+  name") — the update request was parked/declined instead of detoured.
+  Identity-slot updates are never parked and never declined.

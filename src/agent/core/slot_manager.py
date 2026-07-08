@@ -394,6 +394,62 @@ class SlotManagerMixin:
         interrupt["wait_count"] = 0  # non-WAIT turn resets the wait streak
         return interrupt
 
+    def _route_foreign_update(
+        self,
+        state: State,
+        target: str,
+        *,
+        return_awaiting: str,
+    ) -> Optional[dict]:
+        """Route a foreign slot update to its owner (Phase 7, claims-path parity).
+
+        "route" targets (zip_code) hand off per the registry. Identity slots —
+        in_flow under verification — are honored by routing to verification
+        with the slot cleared for re-collection and the completed verification
+        invalidated (a changed identity value always re-verifies; a changed
+        name also re-triggers the readback). Returns None when the target is
+        not routable from here: in-flow branches or a retry handle it.
+        """
+        from agent.agents.verification.constants import IDENTITY_SLOT_ORDER
+        from agent.core.slot_ownership import get_ownership
+
+        target = (target or "").strip()
+        if not target:
+            return None
+        ctx = ConversationContext.from_state(state)
+        if self.resolve_update_target(target, ctx, state, {}) == "route":
+            return self._route_slot_update(state, target, ctx, return_awaiting=return_awaiting)
+        own = get_ownership(target)
+        if (
+            target in IDENTITY_SLOT_ORDER
+            and own is not None
+            and own.updatable == "in_flow"
+            and own.agent == "verification_agent"
+            and own.agent != self.AGENT_NAME
+        ):
+            route = self._route_slot_update(state, target, ctx, return_awaiting=return_awaiting)
+            route[target] = ""  # verification must re-collect, not skip
+            route["member_status_verify"] = False
+            if target in ("first_name", "last_name"):
+                route["name_confirmed"] = False  # new name → readback re-runs
+            return route
+        return None
+
+    def _reroute_detected_update(self, state: State, *, return_awaiting: str) -> Optional[dict]:
+        """Never-verbatim-repeat guard for hand-rolled confirmation branches.
+
+        Before a terminal retry re-asks the same question, check whether the
+        turn is actually a foreign update request the registry can route.
+        Returns None for genuinely unclassifiable turns — those may burn a
+        slot_fail retry.
+        """
+        from agent.core.request_detection import detect_request
+
+        detected = detect_request(_last_user_msg(list(state.get("messages") or [])))
+        if detected is None or detected.kind != "update" or not detected.target:
+            return None
+        return self._route_foreign_update(state, detected.target, return_awaiting=return_awaiting)
+
     def route_capability_request(
         self,
         state: State,
@@ -418,7 +474,7 @@ class SlotManagerMixin:
         pending_cross_agent_request records the way back; the owner signals
         COMPLETE with it still set (or clears it when handing back directly).
         """
-        from agent.core.slot_ownership import capability_topic, resolve_capability
+        from agent.core.slot_ownership import canonical_capability_topic, resolve_capability
 
         kind = (kind or "").strip().lower()
         if kind not in ("redo", "replay"):
@@ -426,7 +482,9 @@ class SlotManagerMixin:
         cap = resolve_capability(kind, target)
         if cap is None or cap.agent == self.AGENT_NAME:
             return None
-        topic = capability_topic(target)
+        # Record the CANONICAL registry topic (redo/provider_list → delivery):
+        # the owner's re-entry gates key off it (e.g. delivery's redo_active).
+        topic = canonical_capability_topic(kind, target)
         self.logger.info(
             "%s: routing %s request to owner",
             self.AGENT_NAME,
@@ -648,6 +706,10 @@ class SlotManagerMixin:
 
         if target in IDENTITY_SLOT_ORDER and state.get("member_status_verify"):
             interrupt["member_status_verify"] = False
+        # A changed name also re-triggers the spelling readback — the member
+        # must hear the NEW name confirmed before the lookup re-runs.
+        if target in ("first_name", "last_name") and state.get("name_confirmed"):
+            interrupt["name_confirmed"] = False
 
         return interrupt
 
@@ -682,6 +744,32 @@ class SlotManagerMixin:
         followup_query = (getattr(decision, "followup_query", None) or "").strip()
         disposition = getattr(decision, "followup_disposition", None)
         disposition_value = str(getattr(disposition, "value", disposition) or "none")
+
+        # Regex fallback (request_detection): the LLM sometimes answers the
+        # slot but drops a plainly-phrased update request from update_target.
+        # Backfill BEFORE disposition routing so the detour/route invariant
+        # below wins over a park/decline the LLM chose for the same words.
+        if not update_target:
+            from agent.core.request_detection import detect_request
+
+            detected = detect_request(followup_query) or detect_request(_last_user_msg(messages))
+            # Meta-questions about an already-parked/pending item stay on the
+            # promise-answer path below — never re-open a route for them.
+            if (
+                detected
+                and detected.kind == "update"
+                and detected.target
+                and not self._match_promised_item(state, followup_query or _last_user_msg(messages))
+            ):
+                update_target = detected.target
+                self.logger.info(
+                    "_handle_answered_followup: regex fallback set update_target",
+                    extra={
+                        "source": "regex_fallback",
+                        "matched": detected.matched,
+                        "target": detected.target,
+                    },
+                )
 
         # ── Case A: apply validated corrections + cascade clears BEFORE the
         # awaiting slot is confirmed, so the confirm order matches apply_corrections.
@@ -755,6 +843,10 @@ class SlotManagerMixin:
         # allow → detour (the detour ask REPLACES the normal next-slot ask);
         # route → hand off to the owning agent NOW (pending_cross_agent_request);
         # otherwise park in_flow-elsewhere targets, decline human-only ones.
+        # INVARIANT: when update_target is set and resolution is "allow" or
+        # "route", the LLM's followup_disposition is IGNORED — the detour /
+        # route path below returns unconditionally, so a park/decline the LLM
+        # chose for the same turn can never shadow an honorable update.
         if update_target and update_target not in applied:
             resolution = self.resolve_update_target(update_target, ctx, state, slot_configs)
             if resolution == "allow":
@@ -794,6 +886,20 @@ class SlotManagerMixin:
                 disposition_value = "park"
                 followup_query = followup_query or f"update {update_target.replace('_', ' ')}"
             else:
+                # Decline is only legitimate for human_only or unknown
+                # ownership — any other registry entry reaching this branch
+                # means resolve_update_target and the registry disagree.
+                if own is not None and own.updatable != "human_only":
+                    self.logger.warning(
+                        "_handle_answered_followup: declining update for a slot the "
+                        "registry says is updatable — resolution/registry mismatch",
+                        extra={
+                            "target": update_target,
+                            "updatable": own.updatable,
+                            "owner": own.agent,
+                            "agent": self.AGENT_NAME,
+                        },
+                    )
                 # Human-only decline: escalate honestly on the second
                 # identical ignored request instead of re-asking verbatim.
                 if escalation := self._ignored_request_guard(state, update_target):
@@ -976,7 +1082,26 @@ class SlotManagerMixin:
 
                     event_type = getattr(decision, "event_type", None)
 
-                    if event_type == EventType.ANSWERED_WITH_FOLLOWUP:
+                    # A valid answer accompanied by a value-less update request
+                    # must reach the followup handler even when the LLM
+                    # flattened the event to ANSWERED/CORRECTED — otherwise the
+                    # caller's request is silently dropped on the clean-confirm
+                    # path. Only bare "update" shapes route here: corrections
+                    # with values (Case A/C1) and redo/replay keep their paths.
+                    update_hint = (getattr(decision, "update_target", None) or "").strip()
+                    kind_raw = getattr(decision, "request_kind", None)
+                    kind_hint = str(getattr(kind_raw, "value", kind_raw) or "").strip().lower()
+                    corrections_hint = {
+                        k: v for k, v in (getattr(decision, "corrections", None) or {}).items() if v
+                    }
+                    answered_with_request = bool(
+                        update_hint
+                        and update_hint != slot_name
+                        and not corrections_hint
+                        and kind_hint in ("", "none", "update")
+                    )
+
+                    if event_type == EventType.ANSWERED_WITH_FOLLOWUP or answered_with_request:
                         # Slot will be confirmed inside the handler — corrections
                         # (Case A) must apply BEFORE slot_ok of the awaiting slot.
                         # Attempt counter is never incremented on this path.
@@ -1073,6 +1198,25 @@ class SlotManagerMixin:
             if event_value == EventType.CORRECTED.value:
                 corrections = {k: v for k, v in (getattr(decision, "corrections", None) or {}).items() if v}
                 update_target = (getattr(decision, "update_target", None) or "").strip()
+
+                # Regex fallback (request_detection): a CORRECTED turn the LLM
+                # left targetless still carries the target in plain words
+                # ("I need to change my email") — recover it and take the C2
+                # path instead of downgrading the caller's request to ANSWERED.
+                if not corrections and not update_target:
+                    from agent.core.request_detection import detect_request
+
+                    detected = detect_request(last_user)
+                    if detected and detected.kind == "update" and detected.target:
+                        update_target = detected.target
+                        self.logger.info(
+                            "_collect_slot: regex fallback set update_target on bare CORRECTED turn",
+                            extra={
+                                "source": "regex_fallback",
+                                "matched": detected.matched,
+                                "target": detected.target,
+                            },
+                        )
 
                 if not corrections and not update_target:
                     # Downgrade only when BOTH corrections and update_target are

@@ -15,6 +15,7 @@ Flow:
 from __future__ import annotations
 
 import random
+import re
 
 from agent.agents.notification_setup.constants import (
     AGENT_NAME,
@@ -45,6 +46,7 @@ from agent.agents.notification_setup.handlers import (
 from agent.agents.notification_setup.llm import extract_notification_decision
 from agent.conversation.context import ConversationContext
 from agent.core.agent import BaseAgent
+from agent.core.request_detection import reconcile_worker_result
 from agent.llm.config import get_extraction_llm
 from agent.llm.extractor import remaining_slots
 from agent.logger import get_logger
@@ -55,7 +57,7 @@ from agent.slots.normalizers import (
     normalize_yes_no,
 )
 from agent.slots.validators import validate_email, validate_phone_number
-from agent.state import State
+from agent.state import State, normalize_cross_agent_request
 from agent.utils import (
     _last_assistant_msg,
     _last_user_msg,
@@ -71,13 +73,24 @@ class NotificationSetupAgent(BaseAgent):
     AGENT_NAME = AGENT_NAME
 
     async def run(self, state: State) -> dict:  # noqa: C901
+        # ── CROSS-AGENT RE-ENTRY (Phase 7): notification redo aimed at us ─────
+        # "actually notify me by email instead" after setup completed: the
+        # pending marker keeps the completed-flow early exit open while the
+        # method is re-collected; _save_and_complete closes the redo (never
+        # re-running the timeline question).
+        pending_request = normalize_cross_agent_request(state)
+        redo_active = pending_request.get("kind") in ("redo", "update") and pending_request.get("target") in (
+            "notification",
+            "notification_method",
+        )
+
         # ── PHASE 0: Re-entry guard ────────────────────────────────────────────
         n1_done = state.get("notification_channel") and state.get("notification_channel") != "not_set"
         n2_done = (
             state.get("claim_timeline_notification_channel")
             and state.get("claim_timeline_notification_channel") != "not_set"
         )
-        if n1_done and n2_done:
+        if n1_done and n2_done and not redo_active:
             return self._signal_done(state)
 
         messages = list(state.get("messages") or [])
@@ -86,12 +99,23 @@ class NotificationSetupAgent(BaseAgent):
         current_awaiting = state.get("awaiting_slot", "")
         notification_method = (state.get("notification_channel") or "").strip()
 
+        # ── RESUME after a routed slot update (Phase 7, mirrors delivery) ─────
+        # The fast-path return hop restored our awaiting slot after the owner
+        # finished; re-ask the preserved question — no extraction on the stale
+        # turn (the owner already consumed the member's last utterance).
+        if state.get("slot_update_resume") and current_awaiting:
+            result = self._reask_awaiting(state, current_awaiting, prefix="All set — that's been updated. ")
+            result["slot_update_resume"] = False
+            return result
+
         # ── Determine phase from awaiting_slot ─────────────────────────────────
         if not current_awaiting:
             # Check if entering from records_coordination (bridge already delivered)
-            # by checking if Personal Guide was just triggered
-            if state.get("personal_guide_outreach_requested") or state.get("upload_link_sent"):
-                # Bridge was delivered by records_coordination — member's answer is last_user
+            # by checking if Personal Guide was just triggered. A redo re-entry
+            # also goes straight to extraction — the triggering utterance
+            # usually names the new channel.
+            if state.get("personal_guide_outreach_requested") or state.get("upload_link_sent") or redo_active:
+                # The member's answer is last_user
                 current_awaiting = "notification_method"
             else:
                 # Fresh entry — ask the question first
@@ -130,6 +154,20 @@ class NotificationSetupAgent(BaseAgent):
         if interrupt := await self.run_conversation_guards(state, user_text=last_user, result=result):
             return interrupt
 
+        # ── DETERMINISTIC RECONCILE (Phase 1) ────────────────────────────────
+        # llm.py already reconciles on success, but extraction fallbacks (and
+        # monkeypatched results) bypass it — re-running here is idempotent.
+        result = reconcile_worker_result(result, last_user)
+
+        # ── ROUTED SLOT UPDATE (Phase 7, mirrors delivery's Phase 4 block) ───
+        # "wait — my address changed" mid-notification: zip_code routes to its
+        # owner; identity slots route to verification (cleared for
+        # re-collection). In-flow targets fall through to the branches below.
+        update_target = ((getattr(result, "update_target", None) or "").strip()) if result else ""
+        if update_target:
+            if route := self._route_foreign_update(state, update_target, return_awaiting=current_awaiting):
+                return route
+
         extracted = (result.extracted or {}) if result else {}
 
         # ── timeline_question: member response to timeline offer ───────────────
@@ -161,6 +199,9 @@ class NotificationSetupAgent(BaseAgent):
                 ask_result["awaiting_slot"] = "n2_notification_method"
                 return ask_result
 
+            # Never verbatim-repeat over an unhandled request (Phase 7).
+            if handled := self._reroute_detected_update(state, return_awaiting=current_awaiting):
+                return handled
             # Ambiguous — proper slot retry pattern
             self.slot_fail("timeline_question")
             if self.get_slot("timeline_question").is_exhausted():
@@ -189,6 +230,9 @@ class NotificationSetupAgent(BaseAgent):
                 logger.info(LOG_METHOD_COLLECTED, extra={"method": "email"})
                 return self._ask_contact_confirmation(state, "email")
 
+            # Never verbatim-repeat over an unhandled request (Phase 7).
+            if handled := self._reroute_detected_update(state, return_awaiting=current_awaiting):
+                return handled
             self.slot_fail("notification_method")
             if self.get_slot("notification_method").is_exhausted():
                 return self.signal_escalate(
@@ -202,6 +246,8 @@ class NotificationSetupAgent(BaseAgent):
 
         # ── PHASE 2: Phone confirmation (SMS path) ─────────────────────────────
         if current_awaiting == "phone_confirmed":
+            if switch := self._maybe_switch_channel(state, result, current_awaiting):
+                return switch
             new_phone_raw = extracted.get("phone", "")
             contact_conf_raw = extracted.get("contact_confirmed", "")
             phone_on_file = (state.get("phone_number") or "").strip()
@@ -277,6 +323,9 @@ class NotificationSetupAgent(BaseAgent):
                 ask_result["pending_phone"] = ""
                 return ask_result
 
+            # Never verbatim-repeat over an unhandled request (Phase 7).
+            if handled := self._reroute_detected_update(state, return_awaiting=current_awaiting):
+                return handled
             self.slot_fail("phone_confirmed")
             if self.get_slot("phone_confirmed").is_exhausted():
                 return self.signal_escalate(
@@ -291,6 +340,8 @@ class NotificationSetupAgent(BaseAgent):
 
         # ── PHASE 2: Phone update ──────────────────────────────────────────────
         if current_awaiting == "phone":
+            if switch := self._maybe_switch_channel(state, result, current_awaiting):
+                return switch
             phone_raw = extracted.get("phone", "")
             if phone_raw:
                 normalized = normalize_phone_number(str(phone_raw))
@@ -318,6 +369,8 @@ class NotificationSetupAgent(BaseAgent):
 
         # ── PHASE 2: Email confirmation (email path) ───────────────────────────
         if current_awaiting == "email_confirmed":
+            if switch := self._maybe_switch_channel(state, result, current_awaiting):
+                return switch
             new_email_raw = extracted.get("email", "")
             contact_conf_raw = extracted.get("contact_confirmed", "")
             email_on_file = (state.get("email") or "").strip()
@@ -394,6 +447,9 @@ class NotificationSetupAgent(BaseAgent):
                 ask_result["pending_email"] = ""
                 return ask_result
 
+            # Never verbatim-repeat over an unhandled request (Phase 7).
+            if handled := self._reroute_detected_update(state, return_awaiting=current_awaiting):
+                return handled
             self.slot_fail("email_confirmed")
             if self.get_slot("email_confirmed").is_exhausted():
                 return self.signal_escalate(
@@ -423,6 +479,8 @@ class NotificationSetupAgent(BaseAgent):
 
         # ── PHASE 2: Email update ─────────────────────────────────────────────
         if current_awaiting == "email":
+            if switch := self._maybe_switch_channel(state, result, current_awaiting):
+                return switch
             email_raw = extracted.get("email", "")
             if email_raw:
                 normalized = normalize_email(str(email_raw))
@@ -493,6 +551,9 @@ class NotificationSetupAgent(BaseAgent):
                 }
                 return result
 
+            # Never verbatim-repeat over an unhandled request (Phase 7).
+            if handled := self._reroute_detected_update(state, return_awaiting=current_awaiting):
+                return handled
             self.slot_fail("n2_notification_method")
             if self.get_slot("n2_notification_method").is_exhausted():
                 return self.signal_escalate(
@@ -512,6 +573,115 @@ class NotificationSetupAgent(BaseAgent):
     # ──────────────────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────────────────
+
+    # Channel-switch phrasings that don't name a method field the extraction
+    # returns ("actually email me instead", "text is better"). The registry is
+    # respected: phone_number itself stays human_only (disputing the SF phone
+    # still declines honestly) — only the CHANNEL choice is in_flow.
+    _CHANNEL_SWITCH_RE = re.compile(
+        r"\b(?:email|e-mail|text|sms)\b[^.?!]*\binstead\b"
+        r"|\binstead\b[^.?!]*\b(?:email|e-mail|text|sms)\b"
+        r"|\bactually,?\s+(?:just\s+)?(?:email|e-mail|text|sms)\b"
+        r"|\b(?:email|e-mail|text|sms)\s+(?:is|works)\s+better\b"
+        r"|\b(?:email|text)\s+me\b",
+        re.IGNORECASE,
+    )
+
+    def _maybe_switch_channel(self, state: State, result, current_awaiting: str) -> dict | None:
+        """Honor a notification-channel switch during contact confirmation
+        (Phase 7, mirrors delivery's _maybe_switch_method).
+
+        Triggers: an extracted notification_method different from the current
+        channel; the other channel's valid contact value answering this
+        channel's question (carried as the pending contact); or a switch
+        phrasing naming the other channel. Returns None when no switch is
+        requested — a decline of the number/address on file stays a decline.
+        """
+        extracted = (getattr(result, "extracted", None) or {}) if result else {}
+        last_user = _last_user_msg(list(state.get("messages") or []))
+        lowered = last_user.lower()
+
+        current = "sms" if current_awaiting in ("phone_confirmed", "phone") else "email"
+
+        # (a) explicit method extracted this turn
+        raw = extracted.get("notification_method") or extracted.get("n2_notification_method") or ""
+        new_method = normalize_notification_method(str(raw)) if raw else ""
+        if new_method not in ("sms", "email") or new_method == current:
+            new_method = ""
+
+        # (b) the other channel's contact value answered this channel's question
+        carried = ""
+        if not new_method and current == "sms":
+            candidate = normalize_email(str(extracted.get("email") or ""))
+            if candidate and validate_email(candidate).valid:
+                new_method, carried = "email", candidate
+        elif not new_method and current == "email":
+            candidate = normalize_phone_number(str(extracted.get("phone") or ""))
+            if candidate and validate_phone_number(candidate).valid:
+                new_method, carried = "sms", candidate
+
+        # (c) switch phrasing naming the OTHER channel
+        if not new_method and self._CHANNEL_SWITCH_RE.search(lowered):
+            mentions_email = re.search(r"\b(?:email|e-mail)\b", lowered)
+            mentions_sms = re.search(r"\b(?:text|sms)\b", lowered)
+            if current == "sms" and mentions_email:
+                new_method = "email"
+            elif current == "email" and mentions_sms:
+                new_method = "sms"
+
+        if not new_method:
+            return None
+
+        logger.info(LOG_METHOD_COLLECTED, extra={"method": new_method, "switched_from": current})
+        # Abandon the old channel cleanly — its pending value and counters
+        # must not leak into the new channel's confirmation.
+        old_contact_slot = "phone" if current == "sms" else "email"
+        self.get_slot(f"{old_contact_slot}_change_cycles").reset()
+        self.get_slot(f"{old_contact_slot}_confirmed").reset()
+
+        if carried:
+            if new_method == "email":
+                confirm = self.ask_member(
+                    state,
+                    f"Just to be sure I have it right — your email address is "
+                    f"{speak_email(carried)}, correct?",
+                )
+                confirm["awaiting_slot"] = "email_confirmed"
+                confirm["pending_email"] = carried
+            else:
+                confirm = self.ask_member(
+                    state,
+                    f"Just to be sure I have it right — your phone number is "
+                    f"{carried[:3]}-{carried[3:6]}-{carried[6:]}, correct?",
+                )
+                confirm["awaiting_slot"] = "phone_confirmed"
+                confirm["pending_phone"] = carried
+            confirm["notification_channel"] = new_method
+            confirm[f"pending_{old_contact_slot}"] = ""
+            return confirm
+
+        switch = self._ask_contact_confirmation(state, new_method)
+        switch[f"pending_{old_contact_slot}"] = ""
+        return switch
+
+    def _reask_awaiting(self, state: State, awaiting: str, prefix: str = "") -> dict:
+        """Re-ask the preserved awaiting question on a slot_update_resume hop."""
+        if awaiting in ("phone_confirmed", "phone"):
+            result = self._ask_contact_confirmation(state, "sms")
+        elif awaiting in ("email_confirmed", "email"):
+            result = self._ask_contact_confirmation(state, "email")
+        elif awaiting == "n2_notification_method":
+            result = self.ask_member(state, pick(N2_METHOD_ASK))
+            result["awaiting_slot"] = awaiting
+        elif awaiting == "timeline_question":
+            result = self.ask_member(state, pick(TIMELINE_BRIDGE_TEMPLATES))
+            result["awaiting_slot"] = awaiting
+        else:
+            result = self.ask_member(state, pick(NOTIFICATION_METHOD_ASK))
+            result["awaiting_slot"] = "notification_method"
+        if prefix:
+            result["messages"]["content"] = prefix + result["messages"]["content"]
+        return result
 
     def _ask_contact_confirmation(self, state: State, method: str) -> dict:
         """Ask the member to confirm the contact detail on file for their chosen method."""
@@ -553,6 +723,44 @@ class NotificationSetupAgent(BaseAgent):
         # Spoken-form requirement: spell out emails in words for the AI message
         display_contact = speak_email(contact) if method == "email" else contact
         confirm_msg = random.choice(PREFERENCE_SAVED_TEMPLATES).format(method=method, contact=display_contact)
+
+        # ── REDO COMPLETION (Phase 7): a routed notification redo ends here.
+        # Announce the new preference and hand control back — the timeline
+        # question was answered in the original flow and is NEVER re-run.
+        redo_request = self.consume_cross_agent_request(
+            state, kinds=("redo", "update"), targets=("notification", "notification_method")
+        )
+        if redo_request:
+            logger.info(
+                "notification_setup_agent: notification redo complete",
+                extra={"method": method, "return_to": redo_request.get("return_to_agent", "")},
+            )
+            common = {
+                "notification_channel": method,
+                "claim_notification_contact": contact,
+                "pending_phone": "",
+                "pending_email": "",
+            }
+            if redo_request.get("return_awaiting"):
+                # Requester is a slot-collecting agent — silent COMPLETE with
+                # the request kept; the orchestrator return hop restores the
+                # awaiting slot and the requester speaks the acknowledgement.
+                result = self.signal_complete(
+                    state,
+                    message="",
+                    resolved_intents=["notification_setup"],
+                    context_updates=dict(common),
+                )
+                result.update(common)
+                return result
+            result = self.ask_member(state, confirm_msg)
+            result["next_node"] = redo_request.get("return_to_agent") or "follow_up_agent"
+            result["awaiting_slot"] = ""
+            result.update(common)
+            result["pending_cross_agent_request"] = {}
+            result["pending_slot_update"] = {}  # legacy key
+            return result
+
         timeline_bridge = pick(TIMELINE_BRIDGE_TEMPLATES)
         combined = f"{confirm_msg} {timeline_bridge}"
 

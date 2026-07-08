@@ -32,7 +32,12 @@ from agent.core.guards import ConversationGuardsMixin
 from agent.core.signal import AgentStatus
 from agent.core.signals import SignalsMixin
 from agent.core.slot_manager import SlotManagerMixin
-from agent.core.slot_ownership import CAPABILITY_REGISTRY, capability_topic, resolve_capability
+from agent.core.slot_ownership import (
+    CAPABILITY_REGISTRY,
+    canonical_capability_topic,
+    capability_topic,
+    resolve_capability,
+)
 from agent.llm.schema import FollowUpIntent, FollowUpResult, GuardType, RequestKind, WorkerResult
 from agent.orchestration.fast_path import get_fast_path_route
 from agent.state import normalize_cross_agent_request
@@ -78,6 +83,20 @@ def test_capability_topic_aliases():
     assert capability_topic("provider list") == "provider_list"
     assert capability_topic("benefit") == "benefits"
     assert capability_topic("the weather") == ""
+
+
+def test_redo_provider_list_resolves_to_delivery():
+    # Re-sending the provider list IS a delivery redo — a redo whose topic
+    # canonicalizes to provider_list falls back to the delivery capability.
+    assert resolve_capability("redo", "provider_list").agent == "delivery_management_agent"
+    assert resolve_capability("redo", "provider list").agent == "delivery_management_agent"
+    assert resolve_capability("redo", "list").agent == "delivery_management_agent"
+    # Hops must record the CANONICAL topic so delivery's redo_active fires.
+    assert canonical_capability_topic("redo", "provider_list") == "delivery"
+    assert canonical_capability_topic("redo", "delivery_method") == "delivery"
+    # Replay is NOT equivalent: replaying the provider_list recaps state.
+    assert canonical_capability_topic("replay", "provider_list") == "provider_list"
+    assert resolve_capability("replay", "provider_list").agent == "delivery_management_agent"
 
 
 def test_registry_keys_are_kind_topic_pairs():

@@ -43,6 +43,7 @@ from agent.agents.verification.pipelines import (
 )
 from agent.conversation.context import ConversationContext
 from agent.core.agent import BaseAgent
+from agent.core.request_detection import reconcile_worker_result
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
 from agent.orchestration.orchestration import AgentNode
@@ -205,6 +206,13 @@ class VerificationAgent(BaseAgent):
             if getattr(result, "guard", "") == "OFFTOPIC_AGENT":
                 return redirect_off_topic(self, state, collected, self._identity_pipeline)
             return interrupt
+
+        # ── DETERMINISTIC RECONCILE (Phase 1) ────────────────────────────────
+        # llm.py already reconciles on success, but extraction fallbacks (and
+        # monkeypatched results) bypass it — re-running here is idempotent and
+        # guarantees a mid-verification update request ("also I need to update
+        # my last name") reaches the pipeline as update_target.
+        result = reconcile_worker_result(result, last_user)
 
         corrected_fields: list[str] = []
         _was_verified = bool(state.get("member_status_verify"))

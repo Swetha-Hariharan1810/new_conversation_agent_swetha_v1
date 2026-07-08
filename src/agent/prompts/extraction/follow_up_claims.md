@@ -50,6 +50,11 @@ request_kind + request_target so the system can route the request:
 For redo/replay, classify follow_up_intent="update_request" and answer=null —
 the system re-runs the owning flow. Unknown replay topics still get
 request_kind="replay" with request_target set to the caller's words.
+Claims-path targets (mirror of the provider-path ones):
+  "actually notify me by email instead", "change my notification to email"
+           → request_kind="redo", request_target="notification"
+  "what's happening with my claim again?", "when will I hear about my claim?"
+           → request_kind="replay", request_target="claim_status"
 When no change/redo/replay is requested: request_kind="none",
 request_target=null.
 
@@ -60,6 +65,12 @@ When in doubt between question and update_request, use update_request.
 ## Answering
 
 Answer only from the SESSION SNAPSHOT. If the information is not there, set answer=null.
+
+GROUNDING (hard rule): the answer may ONLY restate facts that appear verbatim
+in the SESSION SNAPSHOT. NEVER state a destination address, channel, or
+timestamp that is not in the snapshot. Do NOT invent which channel or address
+something was sent to — if the snapshot does not say what was sent, by which
+channel, and to which contact, that fact is missing: set answer=null.
 
 answer=null is the correct and complete response when data is missing.
 Do not offer to find the information. Do not redirect. Do not ask a new question.

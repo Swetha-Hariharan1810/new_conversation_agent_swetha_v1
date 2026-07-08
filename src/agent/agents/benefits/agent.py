@@ -19,6 +19,7 @@ from agent.agents.benefits.constants import (
 from agent.agents.benefits.handlers import fetch_benefits
 from agent.agents.benefits.llm import extract_benefits_decision
 from agent.core.agent import BaseAgent
+from agent.core.request_detection import reconcile_worker_result
 from agent.core.slot_ownership import capability_topic
 from agent.llm.config import get_extraction_llm
 from agent.logger import get_logger
@@ -166,6 +167,13 @@ class BenefitsAgent(BaseAgent):
         if interrupt := await self.run_conversation_guards(state, user_text=last_user, result=result):
             return interrupt
 
+        # ── DETERMINISTIC RECONCILE (Phase 1) ────────────────────────────────
+        # llm.py already reconciles on success, but extraction fallbacks (and
+        # monkeypatched results) bypass it — re-running here is idempotent and
+        # guarantees "send that list to my email instead of fax" always yields
+        # kind redo / target delivery before the yes/no extraction below.
+        result = reconcile_worker_result(result, last_user)
+
         # ── CROSS-CALL REQUESTS (Phase 6): redo / replay voiced mid-offer ────
         kind_raw = getattr(result, "request_kind", None) if result else None
         request_kind = str(getattr(kind_raw, "value", kind_raw) or "").strip().lower()
@@ -183,15 +191,18 @@ class BenefitsAgent(BaseAgent):
                 return hop
             # Unknown topic — park as a question for follow_up (Phase 3
             # degrade path), acknowledge, and re-ask the offer. Never a
-            # hard decline.
+            # hard decline. Any delivery-phrased redo resolves via the
+            # registry (redo/provider_list → delivery) and routes above, so
+            # landing here with one means the tables have a gap — warn with
+            # the raw target for observability.
             parked = normalize_parked_followups(state.get("parked_followups"))
             parked.append(
                 {"query": last_user or f"{request_kind} {request_target}", "kind": "question", "target": ""}
             )
-            logger.info(
+            logger.warning(
                 "benefits_agent: unknown %s topic parked as question",
                 request_kind,
-                extra={"target": request_target},
+                extra={"kind": request_kind, "target": request_target, "utterance": last_user},
             )
             retry = self.ask_member(
                 state,

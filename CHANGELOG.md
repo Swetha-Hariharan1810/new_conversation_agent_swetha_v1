@@ -1,5 +1,312 @@
 # Changelog
 
+## Paraphrase end-to-end coverage (novel wording, same outcomes)
+
+Every fixed scenario re-exercised with wording that appears in neither the
+extraction-prompt examples nor the earlier tests — proving the fixes hold
+for the *meaning*, not the memorized phrases.
+
+- New `src/agent/tests/test_paraphrase_flows.py` (23 tests, in the default
+  suite): worst case by construction — the extraction LLM is faked to
+  return an EMPTY result on the paraphrased turn, so the deterministic
+  layer alone must carry it, across the real multi-agent hop mechanics.
+  Covers: BUG-5 ZIP paraphrases with full round trips ("we've recently
+  moved, so that old zip won't work", "my postal code is different now"),
+  BUG-3 switches ("just shoot it over by email instead"), BUG-4 identity
+  detours continued over a second turn ("my last name is spelled wrong on
+  the account" → new name → the spelling readback re-runs), BUG-2 redos
+  ("on second thought could you shoot that list over by email instead of
+  faxing it?") with the offer re-asked once, BUG-1 parked questions ("am I
+  going to get an alert once the list goes out?", "how much was that
+  deductible figure again?") answered from real state, the claims-path
+  variants ("we moved houses recently", "I have to change my last name
+  first", "honestly, email works better for me", "any idea when someone
+  will get back to me about the adjustment?"), plus negative controls
+  ("yes the fax is correct, send it there", "my sister just moved in with
+  me" — normal paths untouched).
+- Gaps the paraphrases exposed, now fixed: the derived update pattern
+  accepts "is spelled/listed wrong"; `_open_update_detour` clears
+  `name_confirmed` for name targets so a changed name re-triggers the
+  spelling readback (matching the cross-agent identity route); and
+  follow_up's live redo/replay path gained the regex backfill
+  (`FollowUpResult` carries `request_target`, which the Phase-1 reconcile
+  never touched) — an empty extraction on "please go over my benefits once
+  more" now still routes, and a detected bare update upgrades the intent
+  to UPDATE_REQUEST.
+- Live E2E: new section Q in `tests/live_e2e/scenarios.py` — 8 paraphrase
+  scenarios (Q-1…Q-8, one mutating) mirroring the O/P production-transcript
+  scenarios with novel wording, run against the real LLMs via the `live`
+  marker.
+
+## Claims-path parity: notification_setup, claim_adjustment, records_coordination
+
+The claims-path agents had the same structural weaknesses fixed for
+delivery_management in Phases 1–5: hand-rolled awaiting branches whose
+terminal fallbacks verbatim-repeat, no reconcile, no update/redo hooks.
+
+- Reconcile wiring: all three agents run the deterministic Phase-1
+  reconcile right after conversation guards, then a hoisted update block —
+  new shared `SlotManagerMixin._route_foreign_update` routes "route"
+  targets (zip_code) per the registry and honors identity-slot updates by
+  routing to verification with the slot cleared for re-collection,
+  `member_status_verify` invalidated, and `name_confirmed` cleared for
+  name slots (a changed identity value always re-verifies). Each agent
+  gained a `slot_update_resume` acknowledgement branch mirroring
+  delivery's — the return hop re-asks the preserved awaiting question, no
+  extraction on the stale turn — plus one round-trip test per agent.
+- Never-verbatim-repeat guards: every terminal retry fallback
+  (timeline_question, notification_method, phone_confirmed,
+  email_confirmed, n2_notification_method, reference_number,
+  upload_method, upload_consent, email, personal_guide_consent) first runs
+  the new shared `_reroute_detected_update`; only genuinely unclassifiable
+  turns burn a slot_fail retry.
+- Channel switch (`notification_setup._maybe_switch_channel`, mirroring
+  delivery's `_maybe_switch_method`): "actually email me instead" during
+  the phone read-back switches the channel and continues that channel's
+  confirmation — never treated as a phone decline. The registry is
+  respected: phone_number stays human_only (disputing the SF phone still
+  declines honestly); only the channel choice is in_flow.
+- Capability registry: ("redo", "notification") → notification_setup
+  (re-collect the method keeping the claim context — the timeline question
+  is NEVER re-run; `_save_and_complete` closes the redo and hands back)
+  and ("replay", "claim_status") → claim_adjustment
+  (`_replay_claim_status`: idempotent read from state, like
+  `_replay_provider_list`), with topic aliases (notification/
+  notifications/notification method; claim/claim status/my claim).
+  Re-entry gated on the completion flags (notification_channel set,
+  claim_status present). `detect_request` gained "address changed" →
+  zip_code (fixed-width lookbehind keeps "email address" with email) and
+  claim-status replay phrasings.
+- follow_up parity: `_route_parked_action`'s capability-first gate is now
+  per-topic (delivery → provider_list_sent; notification →
+  notification_channel), so a post-setup "change my notification to email"
+  hops to notification_setup instead of a full verification reroute;
+  parked-question routing gained a claims rule (claim/adjustment/reference
+  → replay claim_status when claim_status exists), ordered before the
+  provider-list rule so "a notification about my claim" resolves as a
+  claim question.
+- Prompt parity: channel-switch + other-slot-change sections in
+  `notification_setup.md`; other-slot-change sections in
+  `claim_adjustment.md` and `records_coordination.md`; claims-path
+  redo/replay target examples in `follow_up.md` and `follow_up_claims.md`
+  (grounding rules were already added in Phase 5;
+  `verification_claims.md` got its section in Phase 3).
+- Tests: new `src/agent/tests/test_claims_path_update_routing.py`
+  (29 tests) mirroring Phase 0's structure with claims-flavored
+  transcripts, each parametrized over extraction variants; the two claims
+  transcripts added to the Phase-6 variance matrix (8 more matrix rows).
+
+## Stability hardening: variance matrix + decision provenance
+
+- `reconcile_worker_result` now logs every field it changes with
+  `extra={"source": "regex_fallback"|"regex_veto", "field": …,
+  "llm_value": …, "final_value": …, "matched": …}` so production variance
+  (how often the deterministic layer intervenes, and on which fields) is
+  directly measurable.
+- New `src/agent/tests/test_extraction_variance_matrix.py` (27 tests) — the
+  codified definition of "stable results per run": for each of the five
+  production transcripts (BUG-1…BUG-5), every plausible extraction result
+  (ideal, dropped fields, regex-only, WAIT and AMBIGUOUS mislabels,
+  decline/park misreads) must produce an IDENTICAL final routing signature
+  (next_node + awaiting_slot + pending request + message class).
+- Prompt regression notes appended to `header_core.md`,
+  `delivery_management.md`, `verification_provider.md`,
+  `verification_claims.md`, and `follow_up.md`, each documenting the new
+  rules and the transcript that motivated them.
+
+## follow_up: parked questions route to the owning agent; closure ordering
+
+Fixes BUG-1: a parked notification/delivery question surfaced in follow_up
+was answered by the generation LLM, which hallucinated the channel/address
+something was "sent" to; and parked items could leak past an explicit
+closure.
+
+- `follow_up/agent.py`: new `_route_parked_question`, consulted right after
+  the parked-action routing and BEFORE any LLM answer attempt (including
+  the first-entry turn — no opener first). Each parked question is matched
+  via `detect_request(query)` plus keyword rules
+  (notification/list/delivery/sent/fax/email → replay `provider_list`;
+  benefits/deductible/coinsurance/OOP → replay `benefits`); when the
+  capability resolves AND the data-exists flag is set
+  (`provider_list_sent` / `benefits_explained`), the question converts to
+  a routed hop via `route_capability_request(kind="replay", …)`, consuming
+  that parked item — the owner answers from real state
+  (`_replay_provider_list` / `_replay_benefits`), never from generation.
+  Questions with no owning capability (or missing data) stay on the
+  grounded LLM path.
+- Closure ordering: a bare closure keyword skips parked routing entirely;
+  when the classifier returns DONE, follow_up closes immediately
+  (`closure_requested=True`) even with parked items — the list is cleared
+  and dropped loudly (`warning`, `extra={"dropped_parked": [...]}`). A
+  parked question is never answered in the same turn as, or after, closure.
+- Grounding: the injected PARKED QUESTIONS block (`follow_up/llm.py`) and
+  the Answering sections of `follow_up.md` / `follow_up_claims.md` now
+  carry a hard rule — answers may ONLY restate facts present verbatim in
+  the session snapshot; never state a destination address, channel, or
+  timestamp not in the snapshot ("Do NOT invent which channel or address
+  something was sent to"); missing fact → answer=null (existing
+  cannot-answer machinery takes over).
+- New `src/agent/tests/test_follow_up_parked_routing.py` (12 tests):
+  BUG-1 routing across four question phrasings, the delivery second leg
+  answering from real state, benefits replay hop, unowned/data-missing
+  questions staying on the LLM path, first-entry routing before the
+  opener, and closure ordering (bare-keyword skip + LLM DONE both close
+  immediately with the dropped-parked warning; no trailing answer).
+
+## benefits: Care-Coach offer honors a delivery redo immediately
+
+Fixes BUG-2: "send that list to my email instead of fax", voiced while the
+Care Coach offer is pending, must hand off to delivery_management NOW and
+bring the member back to the offer exactly once.
+
+- Registry (`core/slot_ownership.py`): re-sending the provider list IS a
+  delivery redo — new `_REDO_TOPIC_EQUIVALENTS` (provider_list → delivery)
+  applied inside `resolve_capability` via the new
+  `canonical_capability_topic(kind, target)`, so ("redo", "provider_list")
+  resolves to the delivery capability. Replay is NOT equivalent (replaying
+  provider_list recaps state). `route_capability_request` now records the
+  CANONICAL topic in `pending_cross_agent_request`, so delivery's
+  `redo_active` re-entry gate fires for list-phrased redos too.
+- `delivery_management`: the live-redo pre-branch and `_maybe_switch_method`
+  use `canonical_capability_topic("redo", …)` and explicitly exclude
+  replay-kind requests (replays recap, never re-send).
+- `benefits._handle_care_coach_response`: deterministic Phase-1 reconcile
+  right after conversation guards, before the redo/replay hook (which stays
+  ahead of the yes/no extraction) — a delivery-phrased redo always yields
+  kind redo / target delivery, making the "unknown topic → park" branch
+  unreachable for those turns. That branch now logs at WARNING with the
+  raw kind/target/utterance for observability.
+- benefits' `slot_update_resume` acknowledgement branch already existed —
+  covered by the round-trip test rather than re-added.
+- Tests: `test_redo_provider_list_resolves_to_delivery` in
+  test_cross_agent_requests.py; new `test_benefits_redo.py` — BUG-2 hand-off
+  across five extraction variants (ideal, provider_list-phrased, regex-only,
+  WAIT mislabel, care-coach-decline misread), never-park regex-only
+  phrasings, unknown-topic warning path, yes/no control, and a regex-only
+  round trip asserting the resume acks the re-send and re-asks the offer
+  exactly once (single "?" in the resume message).
+
+## verification: identity updates mid-collection always honored in-flow
+
+Fixes BUG-4: "m nine zero seven five zero three — oh, also I need to update
+my last name" must confirm the captured member_id AND open the last-name
+detour now — never park ("in just a moment"), never decline ("a
+representative"), regardless of how the extraction LLM labeled the turn.
+
+- `verification/agent.py`: deterministic pre-branch
+  `reconcile_worker_result` after conversation guards (same rationale as
+  delivery_management — extraction fallbacks and faked results bypass the
+  llm.py wiring).
+- `_collect_slot` (core): a valid answer accompanied by a value-less update
+  request now reaches `_handle_answered_followup` even when the LLM
+  flattened the event to ANSWERED/CORRECTED — previously the clean-confirm
+  path silently dropped the request. Corrections-with-values and
+  redo/replay keep their existing paths.
+- `reconcile_worker_result`: new veto — a bare request (update_target set,
+  no extracted values, no corrections) labeled ANSWERED upgrades to
+  CORRECTED, matching the extraction contract; only the CORRECTED path (C2)
+  can honor a target with no value.
+- Prompt hardening: `verification_provider.md` and `verification_claims.md`
+  gain a "MID-VERIFICATION UPDATE REQUESTS" section with the exact
+  transcript example (answer + update_target="last_name",
+  request_kind="update", disposition left "none") and an explicit
+  never-park / never-decline rule for first_name/last_name/member_id/dob/
+  relationship — the system decides disposition.
+- New `src/agent/tests/test_verification_identity_update.py` (13 tests) at
+  the real-pipeline level (real _NORMALIZERS/_VALIDATORS, only the LLM
+  calls faked): the transcript turn across seven extraction variants
+  (ideal, dropped target, dropped query, park/decline overridden, ANSWERED
+  flattening, CORRECTED mislabel), member_status_verify invalidation, the
+  park/decline-never regression guard, bare-request C2 detours (ANSWERED
+  and WAIT mislabels), cascade-table checks (last_name update keeps
+  first_name; member_id update keeps the dob captured in the same turn),
+  and a clean-answer control.
+
+## delivery_management: method switch + update routing in confirmation branches
+
+Fixes BUG-3 (a channel switch during fax/email confirmation was treated as a
+failed yes/no and re-asked verbatim) and BUG-5 (a "my ZIP changed" turn
+during a confirmation read-back burned retries instead of routing).
+
+- Deterministic pre-branch reconcile: `run()` re-applies
+  `reconcile_worker_result` right after conversation guards, so
+  `update_target`/`request_kind` are populated even when extraction fell
+  back to an empty result (or was faked in tests); the zip-corrections shim
+  is unchanged.
+- New `_maybe_switch_method`, consulted at the top of the `fax_confirmed`,
+  `fax`, `email_confirmed`, and `email` branches. Triggers: an extracted
+  `delivery_method` different from the current one; the other channel's
+  valid value answering this channel's question (carried through as the new
+  pending contact); or a redo/update aimed at the delivery topic — the
+  other channel is implied unless the caller named ONLY the current channel
+  (same-channel redirect, handled by the existing decline path).
+  Pre-dispatch it switches the method, clears the abandoned channel's
+  pending value and change-cycle/confirmation counters, and asks the new
+  channel's confirmation (or the pending read-back when the value arrived
+  in the same utterance), logging `LOG_METHOD_COLLECTED` with
+  `switched_from`. Post-dispatch (list sent, no redo in flight) it
+  delegates to `_begin_redispatch`.
+- Never verbatim-repeat over an unhandled request: both confirmation
+  branches' "no clear yes/no" fallbacks first run
+  `_reroute_unhandled_request` — a routable foreign update ("my ZIP
+  changed") hands off via `_route_slot_update`, a delivery switch goes
+  through `_maybe_switch_method`, a same-channel update ("change my fax
+  number") takes the decline-equivalent new-value ask. Only genuinely
+  unclassifiable turns burn a `slot_fail` retry.
+- `delivery_management.md`: new "Channel SWITCH vs same-channel redirect"
+  section (switch examples extract `delivery_method` and omit the
+  confirmation field; mirrored for fax) and an "Other-slot changes are
+  never confirmation answers" rule (ZIP change → `update_target`
+  "zip_code", `request_kind` "update", never wait/ambiguous).
+- New `src/agent/tests/test_delivery_method_switch.py`: BUG-3 and BUG-5
+  classes parametrized over extraction variants (explicit method, LLM redo
+  flag, regex-only, WAIT mislabel, decline misread, corrections shim),
+  plus counter-reset, post-dispatch redispatch, same-channel redirect, and
+  unclassifiable-retry negatives.
+
+## Deterministic request-detection layer (extraction-stability root cause)
+
+The routing built in Phases 3–6 hinges on the extraction LLM populating
+`update_target` / `request_kind` and not mislabeling correction turns; in
+production it does so intermittently. This phase adds a pure regex
+fallback + veto layer so those detections are deterministic — the LLM stays
+primary and regex never overrides a concrete LLM detection with a different
+target.
+
+- New `src/agent/core/request_detection.py`: `DetectedRequest`,
+  `detect_request()`. Per-slot update patterns are DERIVED from
+  `SLOT_OWNERSHIP` keys plus a `SLOT_LABEL_ALIASES` map (dob → "date of
+  birth"/"birthday", zip_code → "zip"/"postal code", …), so future registry
+  entries get baseline coverage automatically; hand-written patterns only
+  for phrasings that don't name the slot ("I moved" → zip_code, "instead of
+  fax" → redo delivery). Redo/replay tables map to canonical capability
+  topics (`delivery`, `benefits`, `provider_list`). Update beats redo beats
+  replay; cannot-provide statements and "when will you update…"
+  meta-questions return None. Dependency-light: stdlib + slot_ownership only.
+- `reconcile_worker_result(result, last_user)` wired in after every
+  `WorkerResult` extraction call (all agent `llm.py` modules): fills a
+  missed `update_target`/`request_kind` (logged `source=regex_fallback`)
+  and vetoes `event_type=WAIT` on correction turns — downgrades to
+  CORRECTED (bare request → C2) or ANSWERED_WITH_FOLLOWUP (value captured
+  in the same turn).
+- `agent.utils.detect_wait_request` returns False when `detect_request`
+  fires — "hold on, new zip" is a correction, not a hold request.
+- `slot_manager._handle_answered_followup`: backfills an empty
+  `update_target` from `followup_query`/last user message (skipping
+  meta-questions about already-promised items) BEFORE disposition routing,
+  and documents + enforces the invariant that allow/route detours always
+  win over the LLM's park/decline; declining a registry-updatable slot now
+  logs a resolution/registry-mismatch warning.
+- `_collect_slot` C2 path: a bare CORRECTED turn with empty corrections and
+  no `update_target` recovers the target via `detect_request` instead of
+  downgrading the caller's request to ANSWERED.
+- `header_core.md` WAIT section: explicit carve-out — a wait word followed
+  by a correction/change statement is NOT wait; classify the update instead.
+- New `src/agent/tests/test_request_detection.py` (112 tests): exhaustive
+  positive/negative tables, registry-derivation coverage, reconcile
+  semantics, and slot_manager-level variants where a missing
+  `update_target` previously broke routing.
+
 ## LLM-2 payload hygiene + dialogue routing (Bugs A–D, production transcripts)
 
 A five-phase fix series driven by three production transcripts: the Emily
