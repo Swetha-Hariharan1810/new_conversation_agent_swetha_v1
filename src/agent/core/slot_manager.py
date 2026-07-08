@@ -706,6 +706,10 @@ class SlotManagerMixin:
 
         if target in IDENTITY_SLOT_ORDER and state.get("member_status_verify"):
             interrupt["member_status_verify"] = False
+        # A changed name also re-triggers the spelling readback — the member
+        # must hear the NEW name confirmed before the lookup re-runs.
+        if target in ("first_name", "last_name") and state.get("name_confirmed"):
+            interrupt["name_confirmed"] = False
 
         return interrupt
 

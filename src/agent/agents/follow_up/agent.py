@@ -352,6 +352,31 @@ class FollowUpAgent(BaseAgent):
         request_target = (
             (getattr(extraction_result, "request_target", None) or "").strip() if extraction_result else ""
         )
+        # Regex fallback (request_detection): FollowUpResult carries
+        # request_target (not update_target), so the Phase-1 reconcile never
+        # touches it — backfill here when the LLM produced neither field.
+        # Redo/replay fill the live-routing fields; a detected update with no
+        # answer upgrades the intent so the UPDATE_REQUEST routing below runs.
+        if request_kind in ("", "none") and not request_target:
+            from agent.core.request_detection import detect_request
+
+            detected = detect_request(last_user)
+            if detected and detected.target:
+                if detected.kind in ("redo", "replay"):
+                    request_kind, request_target = detected.kind, detected.target
+                elif detected.kind == "update" and not answer:
+                    request_kind, request_target = "update", detected.target
+                    follow_up_intent = FollowUpIntent.UPDATE_REQUEST
+                if request_target:
+                    logger.info(
+                        "follow_up_agent: regex fallback set request_kind/request_target",
+                        extra={
+                            "source": "regex_fallback",
+                            "matched": detected.matched,
+                            "kind": request_kind,
+                            "target": request_target,
+                        },
+                    )
         if (
             request_kind in ("redo", "replay")
             and request_target

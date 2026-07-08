@@ -1,5 +1,43 @@
 # Changelog
 
+## Paraphrase end-to-end coverage (novel wording, same outcomes)
+
+Every fixed scenario re-exercised with wording that appears in neither the
+extraction-prompt examples nor the earlier tests — proving the fixes hold
+for the *meaning*, not the memorized phrases.
+
+- New `src/agent/tests/test_paraphrase_flows.py` (23 tests, in the default
+  suite): worst case by construction — the extraction LLM is faked to
+  return an EMPTY result on the paraphrased turn, so the deterministic
+  layer alone must carry it, across the real multi-agent hop mechanics.
+  Covers: BUG-5 ZIP paraphrases with full round trips ("we've recently
+  moved, so that old zip won't work", "my postal code is different now"),
+  BUG-3 switches ("just shoot it over by email instead"), BUG-4 identity
+  detours continued over a second turn ("my last name is spelled wrong on
+  the account" → new name → the spelling readback re-runs), BUG-2 redos
+  ("on second thought could you shoot that list over by email instead of
+  faxing it?") with the offer re-asked once, BUG-1 parked questions ("am I
+  going to get an alert once the list goes out?", "how much was that
+  deductible figure again?") answered from real state, the claims-path
+  variants ("we moved houses recently", "I have to change my last name
+  first", "honestly, email works better for me", "any idea when someone
+  will get back to me about the adjustment?"), plus negative controls
+  ("yes the fax is correct, send it there", "my sister just moved in with
+  me" — normal paths untouched).
+- Gaps the paraphrases exposed, now fixed: the derived update pattern
+  accepts "is spelled/listed wrong"; `_open_update_detour` clears
+  `name_confirmed` for name targets so a changed name re-triggers the
+  spelling readback (matching the cross-agent identity route); and
+  follow_up's live redo/replay path gained the regex backfill
+  (`FollowUpResult` carries `request_target`, which the Phase-1 reconcile
+  never touched) — an empty extraction on "please go over my benefits once
+  more" now still routes, and a detected bare update upgrades the intent
+  to UPDATE_REQUEST.
+- Live E2E: new section Q in `tests/live_e2e/scenarios.py` — 8 paraphrase
+  scenarios (Q-1…Q-8, one mutating) mirroring the O/P production-transcript
+  scenarios with novel wording, run against the real LLMs via the `live`
+  marker.
+
 ## Claims-path parity: notification_setup, claim_adjustment, records_coordination
 
 The claims-path agents had the same structural weaknesses fixed for

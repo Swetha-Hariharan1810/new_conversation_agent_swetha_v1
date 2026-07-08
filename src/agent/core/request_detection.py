@@ -87,9 +87,10 @@ def _build_update_patterns() -> dict[str, list[re.Pattern]]:
                 rf"\b(?:update|change|correct|fix)\s+(?:(?:my|the|that|your)\s+)?(?:{alt})\b",
                 re.IGNORECASE,
             ),
-            # "<label> changed / is wrong / is different / is incorrect"
+            # "<label> changed / is (spelled/listed) wrong / is different"
             re.compile(
-                rf"\b(?:{alt})\s+(?:has\s+changed|changed|is\s+(?:wrong|different|incorrect|not\s+right))\b",
+                rf"\b(?:{alt})\s+(?:has\s+changed|changed|is\s+(?:(?:spelled|listed)\s+)?"
+                rf"(?:wrong|different|incorrect|not\s+right))\b",
                 re.IGNORECASE,
             ),
             # "new <label>" — "I have a new zip", "there's a new email"
