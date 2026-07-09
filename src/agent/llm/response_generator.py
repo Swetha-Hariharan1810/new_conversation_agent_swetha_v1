@@ -20,13 +20,20 @@ logger = get_logger(__name__)
 _SLOT_LABELS: dict[str, str] = {
     "first_name": "first name",
     "last_name": "last name",
-    "member_id": "Member ID — Must begin with m followed by 6 digit",
+    "member_id": (
+        "Member ID — Must begin with m followed by 6 digit "
+        "(you can find this on your insurance card — begin with m followed by 6 digits)"
+    ),
     "dob": "date of birth — Must include year, month, and day",
     "relationship": "whether they are the plan holder or dependent",
     "phone_confirmed": "phone number on file — yes or no",
     "phone_confirmation": "phone number on file — yes or no",
     "caller_role": "relationship to the plan",
-    "provider_type": "type of provider they are looking for",
+    "provider_type": (
+        "type of provider they are looking for "
+        "(accepted values are Primary Care Physicians, Pediatricians,"
+        "Cardiologists, Dermatologists, and Orthopedic Specialists)"
+    ),
     "zip_code": "five-digit ZIP code",
     "delivery_method": "fax or email",
     "intent": "what they need help with today — ask openly, never list options",
