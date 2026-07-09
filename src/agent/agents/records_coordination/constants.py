@@ -13,8 +13,7 @@ MAX_CONTACT_CHANGE_CYCLES = 3
 
 # ── Upload link offer ──────────────────────────────────────────────────────────
 MSG_UPLOAD_OFFER = [
-    "Absolutely. I can also send you a link where you can upload the records directly. "
-    "Would you like me to do that?",
+    "I can also send you a link where you can upload the records directly. Would you like me to do that?",
     "Thank You. I can also generate a secure upload link and send it to your email. "
     "Would you like me to do that?",
     "Sure. I can also send a secure link to your email so you can upload the records yourself. "
@@ -38,7 +37,6 @@ MSG_UPLOAD_SENT = [
 
 # ── Doctor-direct acknowledgement ─────────────────────────────────────────────
 MSG_DOCTOR_DIRECT_ACK = [
-    "Absolutely.",
     "Of course — that works as well.",
     "Sure, that's fine.",
 ]
