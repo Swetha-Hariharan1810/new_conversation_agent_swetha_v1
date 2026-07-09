@@ -27,7 +27,6 @@ TRANSFER_REQUEST | 0.95 — user requests to end the interaction, disconnect, ex
 ABUSE | 0.90 — explicit profanity, insults, threats
 SELF_HARM | 0.90 — caller indicates a personal safety crisis
 OFFTOPIC_GLOBAL | 0.85 — unrelated to healthcare member services
-INTERRUPTION | 0.80 — topic switch before current step is completed
 NONE | default
 
 ## Extraction confidence rule [ANCHOR: CONFIDENCE]
